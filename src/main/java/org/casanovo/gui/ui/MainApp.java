@@ -1,0 +1,931 @@
+package org.casanovo.gui.ui;
+
+import javafx.application.Application;
+import javafx.application.Platform;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Scene;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ButtonBar;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.CheckMenuItem;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Dialog;
+import javafx.scene.control.Label;
+import javafx.scene.control.Menu;
+import javafx.scene.control.MenuBar;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.ProgressBar;
+import javafx.scene.control.RadioMenuItem;
+import javafx.scene.control.SplitPane;
+import javafx.scene.control.Tab;
+import javafx.scene.control.TabPane;
+import javafx.scene.control.TextField;
+import javafx.scene.control.ToggleGroup;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
+import javafx.stage.FileChooser;
+import javafx.stage.Stage;
+import org.casanovo.gui.core.CasanovoCommand;
+import org.casanovo.gui.core.CasanovoConfig;
+import org.casanovo.gui.core.CasanovoInstaller;
+import org.casanovo.gui.core.CasanovoRunner;
+import org.casanovo.gui.core.ConfigCache;
+import org.casanovo.gui.core.PdvLauncher;
+import org.casanovo.gui.core.PyVenv;
+import org.casanovo.gui.core.Settings;
+import org.casanovo.gui.core.UpdateChecker;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * The JavaFX application: a settings bar, a tab per Casanovo sub-command, a
+ * Parameters row, a command preview with Run/Stop, and a live Console.
+ */
+public class MainApp extends Application {
+
+    private final Settings settings = new Settings();
+    private final CasanovoConfig config = new CasanovoConfig();
+    private final CasanovoRunner runner = new CasanovoRunner();
+
+    private final TabPane tabs = new TabPane();
+    private final ConsoleView console = new ConsoleView();
+    private final List<CommandPane> panes = new ArrayList<>();
+
+    private final Label settingsLabel = new Label();
+    private final TextField commandPreview = new TextField();
+    private final Button paramsButton = new Button("Parameters…");
+    private final CheckBox useGuiParams = new CheckBox("Use GUI parameters (generate --config)");
+    private final Button installButton = new Button("Install Casanovo…");
+    private final Button pdvButton = new Button("Open in PDV…");
+    private final Button runButton = new Button("Run Casanovo");
+    private final Button stopButton = new Button("Stop");
+    private final Label statusLabel = new Label("Ready.");
+    private final ProgressBar progressBar = new ProgressBar(0);
+    private final UpdateBanner updateBanner = new UpdateBanner();
+
+    private static final Pattern PCT = Pattern.compile("(\\d+)%\\|");
+    private volatile long lastProgressMs = 0L;
+
+    private volatile boolean installing = false;
+    private Stage stage;
+
+    @Override
+    public void start(Stage primaryStage) {
+        this.stage = primaryStage;
+        Themes.apply(settings.getTheme());
+        try (java.io.InputStream icon = getClass().getResourceAsStream("/org/casanovo/gui/icon.png")) {
+            if (icon != null) {
+                primaryStage.getIcons().add(new javafx.scene.image.Image(icon));
+            }
+        } catch (Exception ignored) {
+            // no icon is fine
+        }
+        useGuiParams.setSelected(true);
+
+        panes.add(new SequencePane(primaryStage));
+        panes.add(new DbSearchPane(primaryStage));
+        panes.add(new EvalPane(primaryStage));
+        panes.add(new TrainPane(primaryStage));
+        panes.add(new ConfigurePane(primaryStage));
+
+        tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+        for (CommandPane p : panes) {
+            tabs.getTabs().add(new Tab(p.getTitle(), p.getContent()));
+        }
+        tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> refreshPreview());
+
+        VBox topArea = new VBox(tabs, buildRunBar());
+        VBox.setVgrow(tabs, Priority.ALWAYS);
+
+        SplitPane split = new SplitPane(topArea, console);
+        split.setOrientation(javafx.geometry.Orientation.VERTICAL);
+        split.setDividerPositions(0.62);
+
+        BorderPane root = new BorderPane();
+        // The update banner sits between the menu bar and the settings bar; it is
+        // hidden (and takes no space) until a check finds something.
+        root.setTop(new VBox(buildMenuBar(), updateBanner, buildSettingsBar()));
+        root.setCenter(split);
+        root.setBottom(buildStatusBar());
+        // Match the Carafe GUI base font: Segoe UI 13px (with cross-platform fallbacks).
+        root.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif; -fx-font-size: 13px;");
+
+        wireActions();
+        refreshSettingsLabel();
+        refreshPreview();
+        updateRunningState(false);
+
+        Scene scene = new Scene(root, 940, 820);
+        // Scene-level accelerators so Run/Stop work from anywhere in the window.
+        scene.getAccelerators().put(
+                new KeyCodeCombination(KeyCode.R, KeyCombination.SHORTCUT_DOWN),
+                () -> { if (!runButton.isDisabled()) runButton.fire(); });
+        scene.getAccelerators().put(
+                new KeyCodeCombination(KeyCode.ESCAPE),
+                () -> { if (!stopButton.isDisabled()) stopButton.fire(); });
+        primaryStage.setTitle("Casanovo GUI");
+        primaryStage.setScene(scene);
+        primaryStage.setMinWidth(780);
+        primaryStage.setMinHeight(640);
+        primaryStage.show();
+
+        maybeAutoCheckForUpdates();
+        maybeCheckPyArrow();
+        warmConfigCacheAsync();
+    }
+
+    @Override
+    public void stop() {
+        runner.cancel();
+    }
+
+    private MenuBar buildMenuBar() {
+        Menu fileMenu = new Menu("File");
+        MenuItem settingsItem = new MenuItem("Settings…");
+        settingsItem.setAccelerator(new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN));
+        settingsItem.setOnAction(e -> openSettings());
+        MenuItem paramsItem = new MenuItem("Parameters…");
+        paramsItem.setAccelerator(new KeyCodeCombination(KeyCode.P, KeyCombination.SHORTCUT_DOWN));
+        paramsItem.setOnAction(e -> openParameters());
+        MenuItem installItem = new MenuItem("Install Casanovo…");
+        installItem.setOnAction(e -> onInstall());
+        MenuItem pdvItem = new MenuItem("Open in PDV…");
+        pdvItem.setAccelerator(new KeyCodeCombination(KeyCode.D, KeyCombination.SHORTCUT_DOWN));
+        pdvItem.setOnAction(e -> openPdv());
+        MenuItem exitItem = new MenuItem("Exit");
+        exitItem.setAccelerator(new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN));
+        exitItem.setOnAction(e -> stage.close());
+        fileMenu.getItems().addAll(settingsItem, paramsItem, installItem, pdvItem,
+                new javafx.scene.control.SeparatorMenuItem(), exitItem);
+
+        Menu helpMenu = new Menu("Help");
+        MenuItem checkUpdatesItem = new MenuItem("Check for Updates…");
+        checkUpdatesItem.setOnAction(e -> runUpdateCheck(true));
+        CheckMenuItem autoCheckItem = new CheckMenuItem("Automatically check on startup");
+        autoCheckItem.setSelected(UpdateChecker.isAutoCheckEnabled());
+        autoCheckItem.setOnAction(e -> UpdateChecker.setAutoCheckEnabled(autoCheckItem.isSelected()));
+        MenuItem aboutItem = new MenuItem("About");
+        aboutItem.setOnAction(e -> showAbout());
+        helpMenu.getItems().addAll(checkUpdatesItem, autoCheckItem,
+                new javafx.scene.control.SeparatorMenuItem(), aboutItem);
+
+        return new MenuBar(fileMenu, buildViewMenu(), helpMenu);
+    }
+
+    private Menu buildViewMenu() {
+        Menu viewMenu = new Menu("View");
+        Menu themeMenu = new Menu("Theme");
+        ToggleGroup group = new ToggleGroup();
+        for (String name : Themes.THEME_NAMES) {
+            RadioMenuItem item = new RadioMenuItem(name);
+            item.setToggleGroup(group);
+            if (name.equals(settings.getTheme())) {
+                item.setSelected(true);
+            }
+            item.setOnAction(e -> {
+                if (Themes.apply(name)) {
+                    settings.setTheme(name);
+                    settings.save();
+                }
+            });
+            themeMenu.getItems().add(item);
+        }
+        viewMenu.getItems().add(themeMenu);
+        return viewMenu;
+    }
+
+    private Region buildSettingsBar() {
+        Button edit = new Button("Edit…");
+        edit.setOnAction(e -> openSettings());
+        HBox.setHgrow(settingsLabel, Priority.ALWAYS);
+        settingsLabel.setMaxWidth(Double.MAX_VALUE);
+        settingsLabel.getStyleClass().add("text-muted");
+        installButton.setOnAction(e -> onInstall());
+        installButton.setTooltip(new javafx.scene.control.Tooltip(
+                "Download Python + Casanovo automatically into ~/.casanovo-gui"));
+        pdvButton.setOnAction(e -> openPdv());
+        pdvButton.setTooltip(new javafx.scene.control.Tooltip(
+                "Open the spectra + Casanovo mzTab in PDV (downloads PDV on first use)"));
+        HBox bar = new HBox(8, new Label("Execution:"), settingsLabel, installButton, pdvButton, edit);
+        bar.setAlignment(Pos.CENTER_LEFT);
+        bar.setPadding(new Insets(6, 10, 6, 10));
+        return bar;
+    }
+
+    private Region buildRunBar() {
+        HBox paramsRow = new HBox(8, paramsButton, useGuiParams);
+        paramsRow.setAlignment(Pos.CENTER_LEFT);
+        paramsRow.setPadding(new Insets(6, 10, 0, 10));
+
+        runButton.getStyleClass().add("accent");
+        runButton.setTooltip(new javafx.scene.control.Tooltip("Run the current Casanovo command (Ctrl+R)"));
+        stopButton.getStyleClass().add("danger");
+        stopButton.setTooltip(new javafx.scene.control.Tooltip("Stop the running Casanovo process (Esc)"));
+        commandPreview.setEditable(false);
+        // The command preview is read-only; skip it in tab order.
+        commandPreview.setFocusTraversable(false);
+        commandPreview.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', 'Courier New', monospace; -fx-font-size: 13px;");
+        HBox.setHgrow(commandPreview, Priority.ALWAYS);
+        HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton);
+        cmdRow.setAlignment(Pos.CENTER_LEFT);
+        cmdRow.setPadding(new Insets(8, 10, 8, 10));
+
+        return new VBox(paramsRow, cmdRow);
+    }
+
+    private Region buildStatusBar() {
+        progressBar.setPrefWidth(220);
+        progressBar.setVisible(false);
+        statusLabel.getStyleClass().add("text-muted");
+        HBox bar = new HBox(8, statusLabel, progressBar);
+        bar.setAlignment(Pos.CENTER_LEFT);
+        bar.setPadding(new Insets(3, 10, 3, 10));
+        return bar;
+    }
+
+    private void wireActions() {
+        runButton.setOnAction(e -> onRun());
+        stopButton.setOnAction(e -> onStop());
+        paramsButton.setOnAction(e -> openParameters());
+        useGuiParams.setOnAction(e -> refreshPreview());
+    }
+
+    private void openParameters() {
+        boolean saved = new ConfigDialog(stage, config).showAndApply();
+        if (saved) {
+            useGuiParams.setSelected(true);
+            refreshPreview();
+        }
+    }
+
+    private void openSettings() {
+        boolean saved = new SettingsDialog(stage, settings).showAndApply();
+        if (saved) {
+            refreshSettingsLabel();
+            refreshPreview();
+        }
+    }
+
+    private CommandPane currentPane() {
+        int idx = tabs.getSelectionModel().getSelectedIndex();
+        return panes.get(Math.max(0, idx));
+    }
+
+    private void refreshPreview() {
+        try {
+            CasanovoCommand cmd = effectiveCommand(currentPane(), false);
+            commandPreview.setText(cmd.toDisplayString(settings));
+        } catch (RuntimeException ex) {
+            commandPreview.setText("");
+        }
+    }
+
+    private CasanovoCommand effectiveCommand(CommandPane pane, boolean forRun) {
+        CasanovoCommand base = pane.buildCommand();
+        if (!useGuiParams.isSelected()
+                || "configure".equals(base.getSubcommand())
+                || base.getArguments().contains("--config")) {
+            return base;
+        }
+        String configPath;
+        if (forRun) {
+            try {
+                configPath = writeEffectiveConfig().getAbsolutePath();
+            } catch (IOException e) {
+                throw new RuntimeException("Could not write generated config: " + e.getMessage(), e);
+            }
+        } else {
+            configPath = "<generated-config.yaml>";
+        }
+        List<String> args = new ArrayList<>();
+        args.add("--config");
+        args.add(configPath);
+        args.addAll(base.getArguments());
+        return new CasanovoCommand(base.getSubcommand(), args);
+    }
+
+    private void refreshSettingsLabel() {
+        if (settings.isUseConda() && !settings.getCondaEnv().isEmpty()) {
+            settingsLabel.setText(settings.getCasanovoExecutable()
+                    + "  (conda env: " + settings.getCondaEnv() + ")");
+        } else {
+            settingsLabel.setText(settings.getCasanovoExecutable() + "  (PATH / direct)");
+        }
+    }
+
+    private void onRun() {
+        if (runner.isRunning() || installing) {
+            return;
+        }
+        CommandPane pane = currentPane();
+        String error = pane.validateInputs();
+        if (error != null) {
+            alert(Alert.AlertType.WARNING, "Cannot run", error);
+            return;
+        }
+        // Pre-check: if a concrete path was configured (not just "casanovo"), make
+        // sure it exists before attempting to launch — gives a clear, actionable
+        // error instead of a generic IOException after the spawn fails.
+        String execCheck = checkExecutable();
+        if (execCheck != null) {
+            alert(Alert.AlertType.ERROR, "Casanovo not found", execCheck);
+            return;
+        }
+        CasanovoCommand command;
+        try {
+            command = effectiveCommand(pane, true);
+        } catch (RuntimeException ex) {
+            alert(Alert.AlertType.ERROR, "Cannot run", ex.getMessage());
+            return;
+        }
+        refreshPreview();
+
+        File workingDir = inferWorkingDir(command);
+        console.append(System.lineSeparator() + "$ " + command.toDisplayString(settings)
+                + System.lineSeparator());
+        statusLabel.setText("Running " + command.getSubcommand() + "…");
+        updateRunningState(true);
+        progressBar.setVisible(true);
+        progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        lastProgressMs = 0L;
+
+        runner.start(command, settings, workingDir,
+                this::onOutput,
+                (exit, err) -> Platform.runLater(() -> onFinished(exit, err)));
+    }
+
+    /**
+     * Verify the configured Casanovo executable exists when it looks like a
+     * concrete file path. Returns an error message, or {@code null} if the
+     * check passes (or cannot be performed — e.g. PATH-relative name, or Conda
+     * mode where the env resolves the binary).
+     */
+    private String checkExecutable() {
+        if (settings.isUseConda()) {
+            return null; // conda run resolves the executable inside the env
+        }
+        String exe = settings.getCasanovoExecutable();
+        if (exe == null || exe.trim().isEmpty()) {
+            return null;
+        }
+        // A bare name like "casanovo" relies on PATH — can't reliably check here.
+        if (!exe.contains(File.separator) && !exe.contains("/")) {
+            return null;
+        }
+        File f = new File(exe);
+        if (f.isFile()) {
+            return null;
+        }
+        return "The configured Casanovo executable could not be found:\n" + exe
+                + "\n\nFix it in File → Settings…, or click \"Install Casanovo…\" to "
+                + "download Python + Casanovo into ~/.casanovo-gui.";
+    }
+
+    /**
+     * Handle one chunk of process output (called from the runner's background
+     * thread). Transient chunks are progress refreshes: collapsed into a single
+     * console line and used to drive the progress bar, throttled so the UI
+     * thread is not flooded. Committed chunks are appended as permanent lines.
+     */
+    private void onOutput(String text, boolean isTransient) {
+        if (isTransient) {
+            long now = System.currentTimeMillis();
+            if (now - lastProgressMs < 80) {
+                return; // throttle high-frequency progress refreshes
+            }
+            lastProgressMs = now;
+            console.showProgress(text);
+            final String t = text;
+            Platform.runLater(() -> updateProgressBar(t));
+        } else {
+            console.appendLine(text);
+        }
+    }
+
+    /** Drive the progress bar from a tqdm-style "NN%|" token, else show indeterminate. */
+    private void updateProgressBar(String line) {
+        Matcher m = PCT.matcher(line);
+        if (m.find()) {
+            try {
+                double pct = Integer.parseInt(m.group(1)) / 100.0;
+                progressBar.setProgress(Math.max(0, Math.min(1, pct)));
+                return;
+            } catch (NumberFormatException ignored) {
+                // fall through to indeterminate
+            }
+        }
+        // Lightning's "Predicting" bar has no parseable total -> indeterminate.
+        if (progressBar.getProgress() >= 1.0 || progressBar.getProgress() < 0) {
+            progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        }
+    }
+
+    private File inferWorkingDir(CasanovoCommand command) {
+        List<String> args = command.getArguments();
+        int idx = args.indexOf("--output_dir");
+        if (idx >= 0 && idx + 1 < args.size()) {
+            File d = new File(args.get(idx + 1));
+            if (d.isDirectory()) {
+                return d;
+            }
+        }
+        return null;
+    }
+
+    private void onFinished(int exitCode, Throwable error) {
+        updateRunningState(false);
+        progressBar.setProgress(exitCode == 0 ? 1.0 : 0.0);
+        progressBar.setVisible(false);
+        if (error != null) {
+            console.appendLine("[error] " + error.getMessage());
+            statusLabel.setText("Failed to start.");
+            alert(Alert.AlertType.ERROR, "Execution error", error.getMessage());
+        } else if (exitCode == 0) {
+            console.appendLine("[done] Casanovo finished successfully (exit 0).");
+            statusLabel.setText("Finished successfully.");
+        } else if (exitCode == 130) {
+            console.appendLine("[stopped] Casanovo was cancelled by the user.");
+            statusLabel.setText("Stopped.");
+        } else {
+            console.appendLine("[error] Casanovo exited with code " + exitCode + ".");
+            statusLabel.setText("Exited with code " + exitCode + ".");
+        }
+    }
+
+    private void onStop() {
+        if (runner.isRunning()) {
+            statusLabel.setText("Stopping…");
+            runner.cancel();
+        }
+    }
+
+    /** Download + install Python and Casanovo in the background. */
+    private void onInstall() {
+        if (installing || runner.isRunning()) {
+            return;
+        }
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
+                "This will download a private Python runtime and install Casanovo into:\n"
+                        + CasanovoInstaller.defaultInstallRoot()
+                        + "\n\nIt needs internet access and can take several minutes. Continue?",
+                ButtonType.OK, ButtonType.CANCEL);
+        confirm.setTitle("Install Casanovo");
+        confirm.setHeaderText(null);
+        if (stage != null) {
+            confirm.initOwner(stage);
+        }
+        if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+            return;
+        }
+
+        installing = true;
+        setBusy(true);
+        statusLabel.setText("Installing Casanovo…");
+        console.append(System.lineSeparator() + "[install] Starting Casanovo installation…"
+                + System.lineSeparator());
+
+        Thread t = new Thread(() -> {
+            try {
+                String exe = CasanovoInstaller.installAll(
+                        CasanovoInstaller.defaultInstallRoot(), console::appendLine);
+                Platform.runLater(() -> {
+                    settings.setCasanovoExecutable(exe);
+                    settings.setUseConda(false);
+                    settings.save();
+                    warmConfigCacheAsync();
+                    installing = false;
+                    setBusy(false);
+                    refreshSettingsLabel();
+                    refreshPreview();
+                    statusLabel.setText("Casanovo installed.");
+                    alert(Alert.AlertType.INFORMATION, "Install complete",
+                            "Casanovo was installed and selected:\n" + exe);
+                });
+            } catch (Exception ex) {
+                String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> {
+                    console.appendLine("[install] FAILED: " + msg);
+                    installing = false;
+                    setBusy(false);
+                    statusLabel.setText("Install failed.");
+                    alert(Alert.AlertType.ERROR, "Install failed", msg);
+                });
+            }
+        }, "casanovo-installer");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Disable interactive controls while a long background task (install) runs. */
+    private void setBusy(boolean busy) {
+        installButton.setDisable(busy);
+        pdvButton.setDisable(busy);
+        runButton.setDisable(busy);
+        paramsButton.setDisable(busy);
+        tabs.setDisable(busy);
+    }
+
+    private void updateRunningState(boolean running) {
+        runButton.setDisable(running);
+        stopButton.setDisable(!running);
+        tabs.setDisable(running);
+        paramsButton.setDisable(running);
+        installButton.setDisable(running);
+        pdvButton.setDisable(running);
+    }
+
+    private void alert(Alert.AlertType type, String title, String msg) {
+        Alert a = new Alert(type, msg, ButtonType.OK);
+        a.setTitle(title);
+        a.setHeaderText(null);
+        if (stage != null) {
+            a.initOwner(stage);
+        }
+        a.showAndWait();
+    }
+
+    /** Pick spectra + Casanovo mzTab, then download (first use) and launch PDV's DeNovo viewer preloaded. */
+    private void openPdv() {
+        if (installing || runner.isRunning()) {
+            return;
+        }
+        FileChooser specChooser = new FileChooser();
+        specChooser.setTitle("Select spectrum file(s) (mzML / mzXML / MGF)");
+        specChooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("Spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf"));
+        java.util.List<File> spectra = specChooser.showOpenMultipleDialog(stage);
+        if (spectra == null || spectra.isEmpty()) {
+            return;
+        }
+        FileChooser mzTabChooser = new FileChooser();
+        mzTabChooser.setTitle("Select Casanovo result (mzTab)");
+        mzTabChooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("mzTab (*.mztab)", "*.mztab", "*.mzTab"));
+        File parent = spectra.get(0).getParentFile();
+        if (parent != null) {
+            mzTabChooser.setInitialDirectory(parent);
+        }
+        File mzTab = mzTabChooser.showOpenDialog(stage);
+        if (mzTab == null) {
+            return;
+        }
+
+        // Fragment m/z tolerance: value + Da/ppm unit, matching PDV's setting
+        // ("Fragment m/z Tolerance: 0.05 Da (or ppm)").
+        // Sensible defaults: 0.05 for Da, 20 for ppm. When the unit changes,
+        // swap the field value only if it still holds the previous unit's
+        // unedited default — preserves anything the user typed manually.
+        final String DA_DEFAULT = "0.05";
+        final String PPM_DEFAULT = "20";
+        TextField tolValueField = new TextField(DA_DEFAULT);
+        tolValueField.setPrefColumnCount(8);
+        ComboBox<String> tolUnitCombo = new ComboBox<>();
+        tolUnitCombo.getItems().addAll("Da", "ppm");
+        tolUnitCombo.getSelectionModel().select("Da");
+        tolUnitCombo.valueProperty().addListener((obs, oldUnit, newUnit) -> {
+            String cur = tolValueField.getText() == null ? "" : tolValueField.getText().trim();
+            if ("ppm".equals(newUnit) && DA_DEFAULT.equals(cur)) {
+                tolValueField.setText(PPM_DEFAULT);
+            } else if ("Da".equals(newUnit) && PPM_DEFAULT.equals(cur)) {
+                tolValueField.setText(DA_DEFAULT);
+            }
+        });
+
+        HBox tolRow = new HBox(8, tolValueField, tolUnitCombo);
+        tolRow.setAlignment(Pos.CENTER_LEFT);
+        GridPane tolGrid = new GridPane();
+        tolGrid.setHgap(8);
+        tolGrid.setVgap(8);
+        tolGrid.setPadding(new Insets(12));
+        tolGrid.add(new Label("Fragment m/z Tolerance:"), 0, 0);
+        tolGrid.add(tolRow, 1, 0);
+
+        Dialog<ButtonType> tolDialog = new Dialog<>();
+        tolDialog.setTitle("Fragment tolerance");
+        tolDialog.setHeaderText("Fragment ion tolerance for spectrum annotation in PDV");
+        if (stage != null) {
+            tolDialog.initOwner(stage);
+        }
+        ButtonType okType = new ButtonType("Open in PDV", ButtonBar.ButtonData.OK_DONE);
+        tolDialog.getDialogPane().getButtonTypes().addAll(okType, ButtonType.CANCEL);
+        tolDialog.getDialogPane().setContent(tolGrid);
+
+        java.util.Optional<ButtonType> tolResult = tolDialog.showAndWait();
+        if (!tolResult.isPresent() || tolResult.get() != okType) {
+            return;
+        }
+        final String fTolUnit = tolUnitCombo.getValue() == null ? "Da" : tolUnitCombo.getValue();
+        double tolVal;
+        try {
+            tolVal = Double.parseDouble(tolValueField.getText().trim());
+        } catch (NumberFormatException ignored) {
+            tolVal = "ppm".equals(fTolUnit) ? 20.0 : 0.05;
+        }
+        final double fTol = tolVal;
+
+        installing = true;
+        setBusy(true);
+        statusLabel.setText("Preparing PDV…");
+        console.append(System.lineSeparator() + "[pdv] Opening results in PDV…" + System.lineSeparator());
+
+        final java.util.List<File> fSpectra = spectra;
+        final File fMzTab = mzTab;
+        Thread t = new Thread(() -> {
+            try {
+                Path jar = PdvLauncher.ensurePdv(settings.getPdvJar(), console::appendLine);
+                PdvLauncher.launchDenovo(jar, fSpectra, fMzTab, fTol, fTolUnit, console::appendLine);
+                Platform.runLater(() -> {
+                    installing = false;
+                    setBusy(false);
+                    statusLabel.setText("PDV launched.");
+                });
+            } catch (Exception ex) {
+                String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> {
+                    console.appendLine("[pdv] FAILED: " + msg);
+                    installing = false;
+                    setBusy(false);
+                    statusLabel.setText("PDV launch failed.");
+                    alert(Alert.AlertType.ERROR, "PDV error", msg);
+                });
+            }
+        }, "pdv-launcher");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void showAbout() {
+        alert(Alert.AlertType.INFORMATION, "About Casanovo GUI",
+                "Casanovo GUI " + UpdateChecker.guiVersion() + "\n\n"
+                        + "A JavaFX front-end for Casanovo de novo peptide sequencing.\n"
+                        + "Configure inputs, run, and watch the console.\n\n"
+                        + "Casanovo: https://github.com/Noble-Lab/casanovo");
+    }
+
+    // ------------------------------------------------------------ update checks
+
+    /** Silent background check on startup, subject to the opt-out and 12h throttle. */
+    private void maybeAutoCheckForUpdates() {
+        if (!UpdateChecker.shouldAutoCheckOnStartup()) {
+            return;
+        }
+        runUpdateCheck(false);
+    }
+
+    /**
+     * Run an update check off the FX thread. When {@code manual} is true the user
+     * triggered it from the Help menu, so we give feedback even when nothing is
+     * found; auto-checks stay silent unless there's an update to show.
+     */
+    private void runUpdateCheck(boolean manual) {
+        if (manual) {
+            statusLabel.setText("Checking for updates…");
+        }
+        Thread t = new Thread(() -> {
+            UpdateChecker.CheckOutcome outcome = UpdateChecker.checkAll(settings);
+            Platform.runLater(() -> onUpdateOutcome(outcome, manual));
+        }, "update-checker");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void onUpdateOutcome(UpdateChecker.CheckOutcome outcome, boolean manual) {
+        List<UpdateChecker.UpdateInfo> available = new ArrayList<>();
+        for (UpdateChecker.UpdateInfo info : outcome.infos) {
+            if (info.updateAvailable) {
+                available.add(info);
+            }
+        }
+        if (!available.isEmpty()) {
+            updateBanner.show(available, manual, getHostServices(),
+                    this::onUpdateCasanovo, this::canSelfUpdate);
+            if (manual) {
+                statusLabel.setText("Update available.");
+            }
+            return;
+        }
+        if (manual) {
+            if (outcome.infos.isEmpty() && outcome.networkError) {
+                alert(Alert.AlertType.INFORMATION, "Check for updates",
+                        "Couldn't check for updates. Please check your internet connection.");
+            } else {
+                alert(Alert.AlertType.INFORMATION, "Check for updates", upToDateMessage(outcome));
+            }
+            statusLabel.setText("Up to date.");
+        }
+    }
+
+    private String upToDateMessage(UpdateChecker.CheckOutcome outcome) {
+        StringBuilder sb = new StringBuilder("You're up to date.\n");
+        for (UpdateChecker.UpdateInfo info : outcome.infos) {
+            sb.append("\n").append(info.displayName).append(": ").append(info.currentVersion)
+                    .append(" (latest ").append(info.latestVersion).append(")");
+        }
+        if (outcome.networkError) {
+            sb.append("\n\nNote: some version sources could not be reached.");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * True when an update can be applied in-app: it's the Casanovo tool, the GUI
+     * manages the install (executable lives under {@code ~/.casanovo-gui}) and
+     * Conda is not in use.
+     */
+    private boolean canSelfUpdate(UpdateChecker.UpdateInfo info) {
+        if (info.target != UpdateChecker.Target.CASANOVO || settings.isUseConda()) {
+            return false;
+        }
+        try {
+            Path exe = Paths.get(settings.getCasanovoExecutable()).toAbsolutePath().normalize();
+            Path root = CasanovoInstaller.defaultInstallRoot().toAbsolutePath().normalize();
+            return exe.startsWith(root);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Upgrade the GUI-managed Casanovo in place via {@code uv pip install -U casanovo}. */
+    private void onUpdateCasanovo(UpdateChecker.UpdateInfo info) {
+        if (installing || runner.isRunning()) {
+            return;
+        }
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
+                "Update Casanovo from " + info.currentVersion + " to " + info.latestVersion + "?\n\n"
+                        + "This upgrades Casanovo in:\n"
+                        + CasanovoInstaller.defaultInstallRoot()
+                        + "\nwhile keeping your current PyTorch / GPU setup.\n\n"
+                        + "It needs internet access and can take a few minutes. Continue?",
+                ButtonType.OK, ButtonType.CANCEL);
+        confirm.setTitle("Update Casanovo");
+        confirm.setHeaderText(null);
+        if (stage != null) {
+            confirm.initOwner(stage);
+        }
+        if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+            return;
+        }
+
+        installing = true;
+        setBusy(true);
+        statusLabel.setText("Updating Casanovo…");
+        console.append(System.lineSeparator() + "[update] Updating Casanovo…" + System.lineSeparator());
+
+        Thread t = new Thread(() -> {
+            try {
+                CasanovoInstaller.updateCasanovo(
+                        CasanovoInstaller.defaultInstallRoot(), console::appendLine);
+                Platform.runLater(() -> {
+                    installing = false;
+                    setBusy(false);
+                    statusLabel.setText("Casanovo updated.");
+                    warmConfigCacheAsync(); // new version -> refresh the cached base config
+                    updateBanner.removeTarget(UpdateChecker.Target.CASANOVO);
+                    alert(Alert.AlertType.INFORMATION, "Update complete",
+                            "Casanovo was updated to " + info.latestVersion + ".");
+                });
+            } catch (Exception ex) {
+                String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> {
+                    console.appendLine("[update] FAILED: " + msg);
+                    installing = false;
+                    setBusy(false);
+                    statusLabel.setText("Update failed.");
+                    alert(Alert.AlertType.ERROR, "Update failed", msg);
+                });
+            }
+        }, "casanovo-updater");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    // ------------------------------------------------------- PyArrow self-check
+
+    /**
+     * On startup, detect a PyArrow/pylance ABI mismatch in a GUI-managed venv — the
+     * combination that crashes Casanovo with exit 0xC0000005 — and offer a one-click
+     * repair. Reads dist-info only: no Python launched, no network.
+     */
+    private void maybeCheckPyArrow() {
+        Path venvRoot = managedVenvRoot();
+        if (venvRoot == null) {
+            return; // only the GUI-managed install can be auto-repaired
+        }
+        Thread t = new Thread(() -> {
+            if (CasanovoInstaller.hasPyArrowMismatch(venvRoot)) {
+                Platform.runLater(this::promptPyArrowRepair);
+            }
+        }, "pyarrow-check");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Venv root of a GUI-managed Casanovo install (executable under ~/.casanovo-gui), or null. */
+    private Path managedVenvRoot() {
+        if (settings.isUseConda()) {
+            return null;
+        }
+        try {
+            Path exe = Paths.get(settings.getCasanovoExecutable()).toAbsolutePath().normalize();
+            Path root = CasanovoInstaller.defaultInstallRoot().toAbsolutePath().normalize();
+            if (!exe.startsWith(root)) {
+                return null;
+            }
+            return PyVenv.venvRootForExecutable(settings.getCasanovoExecutable()).orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void promptPyArrowRepair() {
+        if (installing || runner.isRunning()) {
+            return;
+        }
+        ButtonType repairBtn = new ButtonType("Repair now", ButtonBar.ButtonData.OK_DONE);
+        ButtonType notNow = new ButtonType("Not now", ButtonBar.ButtonData.CANCEL_CLOSE);
+        Alert confirm = new Alert(Alert.AlertType.WARNING,
+                "The Casanovo install in:\n" + CasanovoInstaller.defaultInstallRoot()
+                        + "\nhas a PyArrow version incompatible with its pinned pylance, which"
+                        + " crashes Casanovo on startup (exit 0xC0000005).\n\n"
+                        + "Repair it now? This runs 'uv pip install \"pyarrow>=14,<17\"' and takes a few seconds.",
+                repairBtn, notNow);
+        confirm.setTitle("Repair Casanovo install");
+        confirm.setHeaderText(null);
+        if (stage != null) {
+            confirm.initOwner(stage);
+        }
+        if (confirm.showAndWait().orElse(notNow) == repairBtn) {
+            runPyArrowRepair();
+        }
+    }
+
+    private void runPyArrowRepair() {
+        installing = true;
+        setBusy(true);
+        statusLabel.setText("Repairing Casanovo (PyArrow)…");
+        console.append(System.lineSeparator() + "[repair] Re-pinning PyArrow…" + System.lineSeparator());
+        Thread t = new Thread(() -> {
+            try {
+                CasanovoInstaller.repairPyArrow(
+                        CasanovoInstaller.defaultInstallRoot(), console::appendLine);
+                Platform.runLater(() -> {
+                    installing = false;
+                    setBusy(false);
+                    statusLabel.setText("Casanovo repaired.");
+                    alert(Alert.AlertType.INFORMATION, "Repair complete",
+                            "PyArrow was re-pinned to a compatible version. Casanovo should now run.");
+                });
+            } catch (Exception ex) {
+                String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> {
+                    console.appendLine("[repair] FAILED: " + msg);
+                    installing = false;
+                    setBusy(false);
+                    statusLabel.setText("Repair failed.");
+                    alert(Alert.AlertType.ERROR, "Repair failed", msg);
+                });
+            }
+        }, "pyarrow-repair");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    // -------------------------------------------------------- config generation
+
+    /**
+     * Write the config Casanovo will run with: the user's parameters overlaid on the
+     * installed version's base config (from {@code casanovo configure}, cached) when
+     * available, otherwise the GUI's self-generated full config as a fallback. The
+     * overlay path stays valid even when a Casanovo release adds new config options.
+     */
+    private File writeEffectiveConfig() throws IOException {
+        Optional<String> base = ConfigCache.cachedBase(settings);
+        String yaml = base.isPresent() ? config.overlayOnto(base.get()) : config.toYaml();
+        return CasanovoConfig.writeTempConfig(yaml);
+    }
+
+    /** Pre-generate the installed version's base config in the background so run-time prep is instant. */
+    private void warmConfigCacheAsync() {
+        Thread t = new Thread(() -> ConfigCache.warm(settings), "config-cache-warm");
+        t.setDaemon(true);
+        t.start();
+    }
+}

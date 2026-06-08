@@ -1,0 +1,150 @@
+package org.casanovo.gui.ui;
+
+import javafx.application.HostServices;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Node;
+import javafx.scene.control.Button;
+import javafx.scene.control.Hyperlink;
+import javafx.scene.control.Label;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
+import org.casanovo.gui.core.UpdateChecker;
+import org.casanovo.gui.core.UpdateChecker.Target;
+import org.casanovo.gui.core.UpdateChecker.UpdateInfo;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+
+/**
+ * Slim notification bar parked at the top of the window. Hidden (and taking no
+ * layout space) by default; {@link #show} reveals one row per available update.
+ *
+ * <p>Each row offers <b>View</b> (open the release/PyPI page in the browser),
+ * <b>Skip this version</b> (persist the version so the auto-check stops
+ * advertising it) and <b>Dismiss</b> (hide the row for this session). The
+ * Casanovo row additionally offers <b>Update Casanovo</b> when the GUI manages
+ * the install and can upgrade it in place.</p>
+ */
+public class UpdateBanner extends VBox {
+
+    // Muted amber so the banner reads as informational, not alarming.
+    private static final String ROW_STYLE =
+            "-fx-background-color: #FFF4CE;"
+                    + "-fx-border-color: #E0C36A;"
+                    + "-fx-border-width: 0 0 1 0;";
+    private static final String TEXT_STYLE = "-fx-text-fill: #4E3A00;";
+
+    /** Rows currently shown, keyed by target so they can be removed individually. */
+    private final Map<Target, Node> rows = new LinkedHashMap<>();
+
+    public UpdateBanner() {
+        setFillWidth(true);
+        hideBanner();
+    }
+
+    /**
+     * Rebuild the banner from {@code updates}. Only entries with an update
+     * available are shown; previously-skipped versions are hidden unless
+     * {@code includeSkipped} is true (manual checks pass true so an explicit
+     * "Check for updates" always surfaces the result).
+     *
+     * @param updates        candidate updates (both targets may be present)
+     * @param includeSkipped show versions the user previously chose to skip
+     * @param hostServices   used to open links in the system browser
+     * @param onSelfUpdate   invoked when the user clicks "Update Casanovo"
+     * @param canSelfUpdate  whether a given update can be applied in-app
+     */
+    public void show(List<UpdateInfo> updates,
+                     boolean includeSkipped,
+                     HostServices hostServices,
+                     Consumer<UpdateInfo> onSelfUpdate,
+                     Predicate<UpdateInfo> canSelfUpdate) {
+        getChildren().clear();
+        rows.clear();
+        for (UpdateInfo info : updates) {
+            if (!info.updateAvailable) {
+                continue;
+            }
+            if (!includeSkipped && UpdateChecker.isSkipped(info.target, info.latestVersion)) {
+                continue;
+            }
+            Node row = buildRow(info, hostServices, onSelfUpdate, canSelfUpdate);
+            rows.put(info.target, row);
+            getChildren().add(row);
+        }
+        refreshVisibility();
+    }
+
+    private Node buildRow(UpdateInfo info,
+                          HostServices hostServices,
+                          Consumer<UpdateInfo> onSelfUpdate,
+                          Predicate<UpdateInfo> canSelfUpdate) {
+        Label message = new Label(info.displayName + " " + info.latestVersion
+                + " is available — you have " + info.currentVersion + ".");
+        message.setStyle(TEXT_STYLE);
+        message.setWrapText(true);
+        HBox.setHgrow(message, Priority.ALWAYS);
+        message.setMaxWidth(Double.MAX_VALUE);
+
+        HBox row = new HBox(8);
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(6, 8, 6, 12));
+        row.setStyle(ROW_STYLE);
+        row.getChildren().add(message);
+
+        if (canSelfUpdate != null && canSelfUpdate.test(info) && onSelfUpdate != null) {
+            Button update = new Button("Update " + info.displayName);
+            update.getStyleClass().add("accent");
+            update.setOnAction(e -> onSelfUpdate.accept(info));
+            row.getChildren().add(update);
+        }
+
+        Hyperlink view = new Hyperlink("View");
+        view.setOnAction(e -> {
+            if (hostServices != null && info.pageUrl != null) {
+                hostServices.showDocument(info.pageUrl);
+            }
+        });
+
+        Hyperlink skip = new Hyperlink("Skip this version");
+        skip.setOnAction(e -> {
+            UpdateChecker.skip(info.target, info.latestVersion);
+            removeTarget(info.target);
+        });
+
+        Hyperlink dismiss = new Hyperlink("Dismiss");
+        dismiss.setOnAction(e -> removeTarget(info.target));
+
+        row.getChildren().addAll(view, skip, dismiss);
+        return row;
+    }
+
+    /** Remove the row for one target (e.g. after a successful in-app update). */
+    public void removeTarget(Target target) {
+        Node row = rows.remove(target);
+        if (row != null) {
+            getChildren().remove(row);
+        }
+        refreshVisibility();
+    }
+
+    /** Hide the whole banner and drop all rows. */
+    public void hideBanner() {
+        getChildren().clear();
+        rows.clear();
+        refreshVisibility();
+    }
+
+    /** Visible (and laid out) only while it has at least one row. */
+    private void refreshVisibility() {
+        boolean hasRows = !getChildren().isEmpty();
+        setVisible(hasRows);
+        setManaged(hasRows);
+    }
+}
