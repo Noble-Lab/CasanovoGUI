@@ -167,8 +167,8 @@
           and macOS Apple Silicon into the shaded JAR, so a single
           casanovo-gui-<version>.jar runs on any of them with only a JDK 23+ installed.
           A single JAR cannot also carry macOS Intel: its .dylib filenames collide with
-          the Apple-Silicon ones, so shade would keep only one architecture. Intel-mac
-          users should use the native .app from CI, or `mvn javafx:run`.
+          the Apple-Silicon ones, so shade would keep only one architecture. CI ships an
+          Apple-Silicon .dmg only; Intel-mac users build from source (`mvn javafx:run`).
           The default build bundles JavaFX for the host platform only. Do NOT combine
           this profile with `javafx:run` (multiple classifiers on the module path clash).
         -->

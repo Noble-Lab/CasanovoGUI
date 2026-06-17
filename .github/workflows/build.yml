@@ -12,7 +12,7 @@ name: build & release
 #   CasanovoGUI-1.0.0.jar                     (portable, needs a JDK 23+)
 #   CasanovoGUI-1.0.0-linux-x86_64.tar.gz     (Linux portable: no root, no Java)
 #   CasanovoGUI-1.0.0-linux-x86_64.deb        (Linux install, root)
-#   CasanovoGUI-1.0.0-macos-arm64.dmg / -x86_64.dmg
+#   CasanovoGUI-1.0.0-macos-arm64.dmg         (Apple Silicon; Intel Macs use the portable JAR)
 #   CasanovoGUI-1.0.0-windows-x64.zip         (Windows app-image, no install/Java)
 
 on:
@@ -89,8 +89,9 @@ jobs:
         include:
           - { os: windows-latest, name: windows, arch: x64 }
           - { os: ubuntu-latest,  name: linux,   arch: x86_64 }
-          - { os: macos-13,       name: macos,   arch: x86_64 }   # Intel
-          - { os: macos-14,       name: macos,   arch: arm64 }    # Apple Silicon
+          # Apple Silicon only. Native Intel-mac dropped: GitHub's macos-13 (Intel) runners
+          # queue for ages; Intel-Mac users run the cross-platform portable JAR (needs a JDK).
+          - { os: macos-14,       name: macos,   arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
