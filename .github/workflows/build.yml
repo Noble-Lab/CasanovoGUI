@@ -65,8 +65,8 @@ jobs:
            contains(github.event.pull_request.labels.*.name, 'build-artifact'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('pr-build-{0}', github.event.pull_request.number) }}
-          name: ${{ github.event_name == 'push' && github.ref_name || format('Pre-release build (PR #{0})', github.event.pull_request.number) }}
+          tag_name: "${{ github.event_name == 'push' && github.ref_name || format('pr-build-{0}', github.event.pull_request.number) }}"
+          name: "${{ github.event_name == 'push' && github.ref_name || format('Pre-release build (PR #{0})', github.event.pull_request.number) }}"
           prerelease: ${{ github.event_name == 'pull_request' }}
           make_latest: ${{ (github.event_name == 'push') && 'true' || 'false' }}
           files: release/*
@@ -144,8 +144,8 @@ jobs:
            contains(github.event.pull_request.labels.*.name, 'build-artifact'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('pr-build-{0}', github.event.pull_request.number) }}
-          name: ${{ github.event_name == 'push' && github.ref_name || format('Pre-release build (PR #{0})', github.event.pull_request.number) }}
+          tag_name: "${{ github.event_name == 'push' && github.ref_name || format('pr-build-{0}', github.event.pull_request.number) }}"
+          name: "${{ github.event_name == 'push' && github.ref_name || format('Pre-release build (PR #{0})', github.event.pull_request.number) }}"
           prerelease: ${{ github.event_name == 'pull_request' }}
           make_latest: ${{ (github.event_name == 'push') && 'true' || 'false' }}
           files: release/*
