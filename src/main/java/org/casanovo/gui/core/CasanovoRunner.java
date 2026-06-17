@@ -71,10 +71,9 @@ public class CasanovoRunner {
             try {
                 ProcessBuilder pb = new ProcessBuilder(osCommand);
                 pb.redirectErrorStream(true);
-                // Windows: prevent the hard access-violation crash (0xC0000005) caused by
-                // Intel MKL's OpenMP runtime clashing with numba/llvmlite's.
-                pb.environment().putIfAbsent("KMP_DUPLICATE_LIB_OK", "TRUE");
-                pb.environment().putIfAbsent("MKL_THREADING_LAYER", "SEQUENTIAL");
+                // Windows-only: prevent the hard access-violation crash (0xC0000005) from the
+                // Intel MKL/OpenMP clash. No-op on Linux/macOS (see Os.applyNativeEnv).
+                Os.applyNativeEnv(pb);
                 if (workingDir != null && workingDir.isDirectory()) {
                     pb.directory(workingDir);
                 }

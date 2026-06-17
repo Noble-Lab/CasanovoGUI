@@ -1,0 +1,25 @@
+# Maven
+target/
+*.class
+
+# Build output (jpackage app images / installers, jpackage staging, shade-reduced POM)
+dist/
+staging/
+dependency-reduced-pom.xml
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

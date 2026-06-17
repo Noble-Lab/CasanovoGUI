@@ -59,6 +59,13 @@ final class FxUtils {
             return this;
         }
 
+        /** Add an arbitrary node spanning all three columns (full dialog width). */
+        FormGrid addFullWidth(Node node) {
+            grid.add(node, 0, row, 3, 1);
+            row++;
+            return this;
+        }
+
         /** Add full-width italic helper text. */
         FormGrid addNote(String text) {
             Label note = new Label(text);
@@ -91,7 +98,7 @@ final class FxUtils {
      */
     static Button fileButton(Window owner, TextField target, boolean multiple,
                              String filterDesc, String... extensions) {
-        Button b = new Button("Browse…");
+        Button b = new Button("Browse");
         b.setOnAction(e -> {
             FileChooser chooser = new FileChooser();
             applyExtFilter(chooser, filterDesc, extensions);
@@ -126,7 +133,7 @@ final class FxUtils {
      */
     static Button saveFileButton(Window owner, TextField target,
                                  String filterDesc, String... extensions) {
-        Button b = new Button("Browse…");
+        Button b = new Button("Browse");
         b.setOnAction(e -> {
             FileChooser chooser = new FileChooser();
             applyExtFilter(chooser, filterDesc, extensions);
@@ -168,7 +175,7 @@ final class FxUtils {
 
     /** A "Browse…" button that selects a directory into {@code target}. */
     static Button dirButton(Window owner, TextField target) {
-        Button b = new Button("Browse…");
+        Button b = new Button("Browse");
         b.setOnAction(e -> {
             DirectoryChooser chooser = new DirectoryChooser();
             File dir = initialDir(target.getText());

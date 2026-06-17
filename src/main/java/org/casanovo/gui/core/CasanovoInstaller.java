@@ -481,9 +481,7 @@ public final class CasanovoInstaller {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(workDir.toFile());
             pb.redirectErrorStream(true);
-            // Mitigate the Windows MKL/numba OpenMP clash for the verification step.
-            pb.environment().putIfAbsent("KMP_DUPLICATE_LIB_OK", "TRUE");
-            pb.environment().putIfAbsent("MKL_THREADING_LAYER", "SEQUENTIAL");
+            Os.applyNativeEnv(pb); // Windows-only MKL/OpenMP safeguard; no-op elsewhere
             Process p = pb.start();
 
             ByteArrayOutputStream captured = new ByteArrayOutputStream();

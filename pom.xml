@@ -14,9 +14,15 @@
     <url>https://github.com/Noble-Lab/casanovo</url>
 
     <properties>
-        <maven.compiler.release>11</maven.compiler.release>
+        <!-- JavaFX 25 is built against the finalized FFM API (class major 67), so it
+             requires a JDK 23+ runtime; 23 is the honest minimum. Build/CI use JDK 25. -->
+        <maven.compiler.release>23</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <javafx.version>17.0.10</javafx.version>
+        <!-- 25.0.x is the current JavaFX LTS and the FIRST release to drop sun.misc.Unsafe
+             (Marlin's OffHeapArray moved to java.lang.foreign), so the
+             "Unsafe::allocateMemory will be removed" warning is gone on modern JDKs.
+             21/23/24 still used Unsafe. -->
+        <javafx.version>25.0.3</javafx.version>
         <!-- Launcher (does NOT extend Application) so a plain classpath launch works too. -->
         <main.class>org.casanovo.gui.CasanovoGuiApp</main.class>
     </properties>
@@ -62,6 +68,29 @@
                 <version>3.11.0</version>
             </plugin>
 
+            <!-- Always rebuild the project jar from target/classes, even when classes are
+                 unchanged. Without this, an incremental `package` (e.g. from the IDE, no
+                 `clean`) skips jar:jar and lets shade re-process the PREVIOUS run's already-
+                 shaded jar, flooding the log with bogus "overlapping JavaFX classes" warnings. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <forceCreation>true</forceCreation>
+                </configuration>
+            </plugin>
+
+            <!-- Set the encoding for filtered .properties files (silences a build warning). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.4.0</version>
+                <configuration>
+                    <propertiesEncoding>UTF-8</propertiesEncoding>
+                </configuration>
+            </plugin>
+
             <!-- Primary way to run: `mvn javafx:run` (handles module path + natives). -->
             <plugin>
                 <groupId>org.openjfx</groupId>
@@ -69,6 +98,11 @@
                 <version>0.0.8</version>
                 <configuration>
                     <mainClass>${main.class}</mainClass>
+                    <!-- JDK 24+ warns when JavaFX loads its native libraries unless native
+                         access is granted. On the module path that is the javafx.graphics module. -->
+                    <options>
+                        <option>--enable-native-access=javafx.graphics</option>
+                    </options>
                 </configuration>
             </plugin>
 
@@ -93,12 +127,67 @@
                                 <transformer
                                         implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>${main.class}</mainClass>
+                                    <!-- Grant native access so the classpath `java -jar` launch does not
+                                         warn on JDK 24+ when JavaFX loads its native libraries. Ignored
+                                         by older JDKs that do not understand the attribute. -->
+                                    <manifestEntries>
+                                        <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                                    </manifestEntries>
                                 </transformer>
                             </transformers>
+                            <!-- Drop per-jar module descriptors and signatures: the app launches
+                                 from the classpath (not the module path), and the -Pportable build
+                                 merges several JavaFX classifier jars that each carry their own. -->
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>module-info.class</exclude>
+                                        <!-- Drop every source jar's manifest: the ManifestResourceTransformer
+                                             below writes the final merged MANIFEST.MF (Main-Class +
+                                             Enable-Native-Access). Without this, shade warns that all the
+                                             input jars "define 1 overlapping resource: META-INF/MANIFEST.MF". -->
+                                        <exclude>META-INF/MANIFEST.MF</exclude>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+          `mvn -Pportable clean package` bundles the JavaFX natives for Windows, Linux
+          and macOS Apple Silicon into the shaded JAR, so a single
+          casanovo-gui-<version>.jar runs on any of them with only a JDK 23+ installed.
+          A single JAR cannot also carry macOS Intel: its .dylib filenames collide with
+          the Apple-Silicon ones, so shade would keep only one architecture. Intel-mac
+          users should use the native .app from CI, or `mvn javafx:run`.
+          The default build bundles JavaFX for the host platform only. Do NOT combine
+          this profile with `javafx:run` (multiple classifiers on the module path clash).
+        -->
+        <profile>
+            <id>portable</id>
+            <dependencies>
+                <!-- javafx-base -->
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-base</artifactId><version>${javafx.version}</version><classifier>win</classifier></dependency>
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-base</artifactId><version>${javafx.version}</version><classifier>linux</classifier></dependency>
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-base</artifactId><version>${javafx.version}</version><classifier>mac-aarch64</classifier></dependency>
+                <!-- javafx-graphics (the only module with native libraries) -->
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-graphics</artifactId><version>${javafx.version}</version><classifier>win</classifier></dependency>
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-graphics</artifactId><version>${javafx.version}</version><classifier>linux</classifier></dependency>
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-graphics</artifactId><version>${javafx.version}</version><classifier>mac-aarch64</classifier></dependency>
+                <!-- javafx-controls -->
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId><version>${javafx.version}</version><classifier>win</classifier></dependency>
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId><version>${javafx.version}</version><classifier>linux</classifier></dependency>
+                <dependency><groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId><version>${javafx.version}</version><classifier>mac-aarch64</classifier></dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>

@@ -1,11 +1,15 @@
 package org.casanovo.gui.core;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
+import java.util.zip.ZipFile;
 
 /**
  * Locates Casanovo's cached default model weights so the GUI can show which
@@ -59,6 +63,42 @@ public final class CasanovoWeights {
                     .orElse(null);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /**
+     * Cached {@code *.ckpt} files that are NOT valid zip archives — i.e. corrupt or
+     * truncated downloads.
+     *
+     * <p>A PyTorch checkpoint is a zip archive: a complete one opens cleanly, an
+     * interrupted download has no readable central directory and fails to open. That is
+     * exactly the failure Casanovo reports ("PytorchStreamReader failed ... failed
+     * finding central directory" / "Weights file incompatible"). Only the zip directory
+     * is read, so this stays fast even for multi-hundred-MB checkpoints — and it never
+     * flags a complete, valid checkpoint.</p>
+     */
+    public static List<File> findCorruptCheckpoints() {
+        Path dir = cacheDir();
+        List<File> corrupt = new ArrayList<>();
+        if (dir == null || !Files.isDirectory(dir)) {
+            return corrupt;
+        }
+        try (var walk = Files.walk(dir)) {
+            walk.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".ckpt"))
+                    .filter(p -> !isValidZip(p.toFile()))
+                    .forEach(p -> corrupt.add(p.toFile()));
+        } catch (IOException ignored) {
+            // best-effort
+        }
+        return corrupt;
+    }
+
+    private static boolean isValidZip(File f) {
+        try (ZipFile z = new ZipFile(f)) {
+            return true; // central directory readable => complete archive
+        } catch (IOException e) {
+            return false;
         }
     }
 }

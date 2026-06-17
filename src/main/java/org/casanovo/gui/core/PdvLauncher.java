@@ -7,14 +7,15 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -22,21 +23,36 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Downloads (on first use) the latest <a href="https://github.com/wenbostar/PDV">PDV</a>
- * release into {@code ~/.casanovo-gui/pdv}, locates its runnable jar, and launches
- * PDV's DeNovo viewer preloaded with the given spectra + Casanovo mzTab via PDV's
- * {@code denovo-gui} command line:
+ * Downloads (on first use) a <a href="https://github.com/wenbostar/PDV">PDV</a> release
+ * into {@code ~/.casanovo-gui/pdv}, locates its runnable jar, and launches PDV's DeNovo
+ * viewer preloaded with the given spectra + Casanovo mzTab via PDV's {@code denovo-gui}
+ * command line:
  *
  * <pre>java -jar PDV.jar denovo-gui --mztab result.mztab --spectrum a.mzML[,b.mzML]</pre>
  *
- * <p>The {@code denovo-gui} entry point is the modification added to PDV
- * ({@code PDVMainClass.launchDenovoGui}); a stock PDV release predating that
- * change will not understand it.</p>
+ * <p>Version policy (a "minimum version" model): the {@code denovo-gui} entry point and
+ * {@code --tol-unit} were added in PDV {@value #PDV_MIN_VERSION}. The GUI follows GitHub's
+ * <em>latest</em> PDV release as long as it is at least {@value #PDV_MIN_VERSION}; if the
+ * latest is older (or GitHub can't be reached) it falls back to {@value #PDV_MIN_VERSION}.
+ * Releases are fetched straight from {@code github.com/.../releases/download/...}.</p>
  */
 public final class PdvLauncher {
 
+    /**
+     * Minimum PDV release the GUI accepts: the first version whose jar includes the
+     * {@code denovo-gui} command line and {@code --tol-unit}. The GUI uses the newest
+     * release at/above this; it never downloads anything older.
+     */
+    private static final String PDV_MIN_VERSION = "2.3.0";
+
     private static final String LATEST_RELEASE_API =
             "https://api.github.com/repos/wenbostar/PDV/releases/latest";
+
+    /** GitHub direct-download URL of the PDV release archive for a given version. */
+    private static String downloadUrlFor(String version) {
+        return "https://github.com/wenbostar/PDV/releases/download/v" + version
+                + "/PDV-" + version + ".zip";
+    }
 
     private PdvLauncher() {
     }
@@ -46,7 +62,13 @@ public final class PdvLauncher {
         return Paths.get(System.getProperty("user.home"), ".casanovo-gui", "pdv");
     }
 
-    /** Find an already-installed PDV jar (largest {@code PDV*.jar}), or null. */
+    private static final Pattern PDV_JAR = Pattern.compile("(?i)^pdv-(\\d[\\w.\\-]*)\\.jar$");
+
+    /**
+     * Find the installed PDV jar with the <em>highest</em> version (e.g. prefer a
+     * just-downloaded {@code PDV-2.4.0.jar} over a cached {@code PDV-2.3.0.jar}), or null.
+     * Version-aware so an upgrade supersedes an older cached copy.
+     */
     public static Path findInstalledJar() {
         Path dir = pdvDir();
         if (!Files.isDirectory(dir)) {
@@ -54,20 +76,41 @@ public final class PdvLauncher {
         }
         try (var walk = Files.walk(dir)) {
             return walk.filter(Files::isRegularFile)
-                    .filter(p -> {
-                        String n = p.getFileName().toString().toLowerCase();
-                        return n.startsWith("pdv") && n.endsWith(".jar");
-                    })
-                    .max((a, b) -> Long.compare(sizeOf(a), sizeOf(b)))
+                    .filter(p -> PDV_JAR.matcher(p.getFileName().toString()).matches())
+                    .max(Comparator.comparing(p -> versionOfJar(p.getFileName().toString()),
+                            PdvLauncher::compareVersions))
                     .orElse(null);
         } catch (IOException e) {
             return null;
         }
     }
 
+    /** Version of the highest cached PDV jar (e.g. {@code "2.3.0"}), or empty if none. */
+    public static Optional<String> installedVersion() {
+        Path jar = findInstalledJar();
+        return jar == null ? Optional.empty()
+                : Optional.of(versionOfJar(jar.getFileName().toString()));
+    }
+
+    private static String versionOfJar(String jarName) {
+        Matcher m = PDV_JAR.matcher(jarName);
+        return m.matches() ? m.group(1) : "0";
+    }
+
+    /** Semver-ish comparison reusing {@link UpdateChecker}; negative/zero/positive like {@link Comparator}. */
+    private static int compareVersions(String a, String b) {
+        if (UpdateChecker.isNewer(a, b)) {
+            return 1;
+        }
+        if (UpdateChecker.isNewer(b, a)) {
+            return -1;
+        }
+        return 0;
+    }
+
     /**
      * Return a usable PDV jar: the explicit override if given and present,
-     * otherwise the cached download, otherwise download the latest release.
+     * otherwise the cached download, otherwise download the pinned release.
      *
      * @param explicitJarPath an explicit PDV jar path from Settings (may be blank/null)
      * @param log             progress sink
@@ -86,54 +129,120 @@ public final class PdvLauncher {
             log.accept("Using cached PDV: " + installed);
             return installed;
         }
-        return downloadLatest(log);
+        return downloadPdv(log);
     }
 
-    /** Download + unzip the latest PDV release into {@link #pdvDir()} and return its jar. */
-    public static Path downloadLatest(Consumer<String> log) throws IOException, InterruptedException {
+    /**
+     * Download the pinned PDV release archive directly from its GitHub release URL,
+     * unzip it into {@link #pdvDir()}, and return its runnable jar. No GitHub API call
+     * is made — the asset is fetched straight from
+     * {@code https://github.com/wenbostar/PDV/releases/download/...}.
+     */
+    public static Path downloadPdv(Consumer<String> log) throws IOException, InterruptedException {
+        return downloadPdv(log, null);
+    }
+
+    /**
+     * Like {@link #downloadPdv(Consumer)}, but reports download progress: {@code progress}
+     * receives a fraction in {@code [0, 1]} as bytes arrive, or {@code -1.0} once when the
+     * total size is unknown (indeterminate). May be {@code null}.
+     */
+    public static Path downloadPdv(Consumer<String> log, java.util.function.DoubleConsumer progress)
+            throws IOException, InterruptedException {
         Path dir = pdvDir();
         Files.createDirectories(dir);
 
-        log.accept("Querying latest PDV release from GitHub...");
+        String version = resolvedVersion();
+        String url = downloadUrlFor(version);
+        log.accept("Downloading PDV " + version + " from " + url + " ...");
         HttpClient http = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.ALWAYS)
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
-        HttpResponse<String> meta = http.send(
-                HttpRequest.newBuilder().uri(URI.create(LATEST_RELEASE_API))
-                        .header("Accept", "application/vnd.github+json")
-                        .timeout(Duration.ofMinutes(2)).GET().build(),
-                HttpResponse.BodyHandlers.ofString());
-        if (meta.statusCode() < 200 || meta.statusCode() >= 300) {
-            throw new IOException("GitHub API returned HTTP " + meta.statusCode()
-                    + " when querying the latest PDV release.");
-        }
-
-        String assetUrl = pickAsset(meta.body());
-        if (assetUrl == null) {
-            throw new IOException("Could not find a downloadable PDV asset (.zip/.jar) in the latest release.");
-        }
-        log.accept("Downloading PDV asset: " + assetUrl);
-        String fileName = assetUrl.substring(assetUrl.lastIndexOf('/') + 1);
+        String fileName = url.substring(url.lastIndexOf('/') + 1);
         Path archive = dir.resolve(fileName);
-        HttpResponse<Path> dl = http.send(
-                HttpRequest.newBuilder().uri(URI.create(assetUrl)).timeout(Duration.ofMinutes(15)).GET().build(),
-                HttpResponse.BodyHandlers.ofFile(archive,
-                        StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));
-        if (dl.statusCode() < 200 || dl.statusCode() >= 300) {
-            throw new IOException("Failed to download PDV (HTTP " + dl.statusCode() + ").");
+        HttpResponse<InputStream> resp = http.send(
+                HttpRequest.newBuilder().uri(URI.create(url))
+                        .timeout(Duration.ofMinutes(15)).GET().build(),
+                HttpResponse.BodyHandlers.ofInputStream());
+        if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+            throw new IOException("Failed to download PDV " + version + " (HTTP " + resp.statusCode()
+                    + ") from " + url + "\nCheck that release v" + version
+                    + " exists with the asset " + fileName + ".");
         }
 
-        if (fileName.toLowerCase().endsWith(".zip")) {
-            log.accept("Extracting PDV...");
-            unzip(archive, dir);
+        long total = resp.headers().firstValueAsLong("content-length").orElse(-1L);
+        if (progress != null) {
+            progress.accept(total > 0 ? 0.0 : -1.0);
         }
+        try (InputStream in = resp.body();
+             OutputStream out = Files.newOutputStream(archive,
+                     StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            byte[] buf = new byte[1 << 16];
+            long read = 0;
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                out.write(buf, 0, n);
+                read += n;
+                if (progress != null && total > 0) {
+                    progress.accept((double) read / total);
+                }
+            }
+        }
+
+        log.accept("Extracting PDV...");
+        unzip(archive, dir);
         Path jar = findInstalledJar();
         if (jar == null) {
             throw new IOException("PDV downloaded but no runnable jar was found under " + dir);
         }
         log.accept("PDV ready: " + jar);
         return jar;
+    }
+
+    /**
+     * The PDV version "Open in PDV" would download now: GitHub's latest release if it
+     * meets the {@value #PDV_MIN_VERSION} floor, else the floor. Empty only when GitHub
+     * can't be reached, so the caller can show "couldn't check". Does a network request,
+     * so call this OFF the UI thread.
+     */
+    public static Optional<String> latestUsableVersion() {
+        return fetchLatestVersion().map(v -> meetsFloor(v) ? v : PDV_MIN_VERSION);
+    }
+
+    /** Version to actually download: {@link #latestUsableVersion()} or the floor when offline. */
+    private static String resolvedVersion() {
+        return latestUsableVersion().orElse(PDV_MIN_VERSION);
+    }
+
+    /** True when {@code version} is at or above the {@value #PDV_MIN_VERSION} floor. */
+    private static boolean meetsFloor(String version) {
+        return !UpdateChecker.isNewer(PDV_MIN_VERSION, version);
+    }
+
+    /** GitHub's latest PDV release version (leading {@code v} stripped), or empty on failure. */
+    private static Optional<String> fetchLatestVersion() {
+        try {
+            HttpClient http = HttpClient.newBuilder()
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .build();
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder().uri(URI.create(LATEST_RELEASE_API))
+                            .header("Accept", "application/vnd.github+json")
+                            .timeout(Duration.ofSeconds(15)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                return Optional.empty();
+            }
+            Matcher m = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"").matcher(resp.body());
+            return m.find() ? Optional.of(m.group(1).trim()) : Optional.empty();
+        } catch (IOException e) {
+            return Optional.empty();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Optional.empty();
+        }
     }
 
     /**
@@ -181,8 +290,7 @@ public final class PdvLauncher {
      * </ol>
      */
     private static String javaExecutable(Consumer<String> log) {
-        boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
-        String javaName = win ? "java.exe" : "java";
+        String javaName = Os.isWindows() ? "java.exe" : "java";
 
         String home = System.getProperty("java.home");
         log.accept("[pdv] java.home = " + home);
@@ -204,18 +312,24 @@ public final class PdvLauncher {
             if (lc.endsWith("java.exe") || lc.endsWith(java.io.File.separator + "java") || lc.equals("java")) {
                 candidates.add(new java.io.File(procCmd));
             }
-            // 2. jpackage layouts relative to the launcher exe.
+            // 2. jpackage app-image layouts relative to the native launcher, which differ per OS:
+            //      Windows : <app>\CasanovoGUI.exe       -> <app>\runtime\bin\java.exe
+            //      Linux   : <app>/bin/CasanovoGUI       -> <app>/lib/runtime/bin/java
+            //      macOS   : <app>.app/Contents/MacOS/.. -> <app>.app/Contents/runtime/Contents/Home/bin/java
             java.io.File dir = new java.io.File(procCmd).getParentFile();
             if (dir != null) {
-                candidates.add(new java.io.File(dir, "runtime/bin/" + javaName));     // <app>/runtime/bin
-                candidates.add(new java.io.File(dir, javaName));                       // beside the exe
+                candidates.add(new java.io.File(dir, "runtime/bin/" + javaName));   // Windows: beside the exe
+                candidates.add(new java.io.File(dir, javaName));
                 java.io.File up = dir.getParentFile();
                 if (up != null) {
                     candidates.add(new java.io.File(up, "runtime/bin/" + javaName));
+                    candidates.add(new java.io.File(up, "lib/runtime/bin/" + javaName));            // Linux app-image
+                    candidates.add(new java.io.File(up, "runtime/Contents/Home/bin/" + javaName));  // macOS .app
                 }
             }
         }
-        // 3. The current runtime (java.home) and its parent.
+        // 3. The current runtime (java.home) -- the bundled jpackage runtime on every OS, once
+        //    the build copies the stripped launcher back into its bin. Works for Win/Linux/macOS.
         if (home != null && !home.isEmpty()) {
             candidates.add(new java.io.File(home, "bin/" + javaName));
             java.io.File hp = new java.io.File(home).getParentFile();
@@ -240,32 +354,6 @@ public final class PdvLauncher {
         return javaName;
     }
 
-    /** Choose a release asset URL: prefer a PDV .zip, else any .jar, else any .zip. */
-    private static String pickAsset(String json) {
-        List<String> urls = new ArrayList<>();
-        Matcher m = Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
-        while (m.find()) {
-            urls.add(m.group(1));
-        }
-        for (String u : urls) {
-            String low = u.toLowerCase();
-            if (low.endsWith(".zip") && low.contains("pdv")) {
-                return u;
-            }
-        }
-        for (String u : urls) {
-            if (u.toLowerCase().endsWith(".jar")) {
-                return u;
-            }
-        }
-        for (String u : urls) {
-            if (u.toLowerCase().endsWith(".zip")) {
-                return u;
-            }
-        }
-        return null;
-    }
-
     private static void unzip(Path zip, Path destDir) throws IOException {
         try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zip))) {
             ZipEntry entry;
@@ -284,14 +372,6 @@ public final class PdvLauncher {
                 }
                 zis.closeEntry();
             }
-        }
-    }
-
-    private static long sizeOf(Path p) {
-        try {
-            return Files.size(p);
-        } catch (IOException e) {
-            return 0L;
         }
     }
 }

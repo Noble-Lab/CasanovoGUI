@@ -35,7 +35,7 @@ public class ConfigurePane extends CommandPane {
                 .addNote("Optional. Base name for the generated YAML "
                         + "(Casanovo appends the extension). Leave blank for Casanovo's default.");
         form.addNote("Generates a config.yaml of Casanovo defaults. Tip: you can instead edit every "
-                + "parameter in the Parameters dialog and use 'Save to file…' there.");
+                + "parameter in the Parameters dialog and use 'Save to file' there.");
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);
     }

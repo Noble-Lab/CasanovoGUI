@@ -1,13 +1,24 @@
 package org.casanovo.gui.ui;
 
+import javafx.application.Platform;
+import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.Dialog;
+import javafx.scene.control.Label;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.TextField;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
 import javafx.stage.Window;
+import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.Settings;
+import org.casanovo.gui.core.UpdateChecker;
+
+import java.util.Optional;
 
 /**
  * Dialog for configuring how the GUI locates and launches Casanovo: the
@@ -25,6 +36,11 @@ public class SettingsDialog {
     private final TextField condaExecField = FxUtils.wideField();
     private final TextField condaEnvField = FxUtils.wideField();
     private final TextField pdvField = FxUtils.wideField();
+
+    private final Label pdvStatusLabel = new Label();
+    private final Button pdvUpgradeButton = new Button();
+    private final ProgressBar pdvProgressBar = new ProgressBar();
+    private String pdvTargetVersion;
 
     public SettingsDialog(Window owner, Settings settings) {
         this.owner = owner;
@@ -53,7 +69,8 @@ public class SettingsDialog {
         form.addRow("Conda environment name:", condaEnvField);
         form.addRow("PDV jar (optional):", pdvField,
                         FxUtils.fileButton(owner, pdvField, false, "PDV jar (*.jar)", "*.jar"))
-                .addNote("Path to a PDV jar for \"Open in PDV\". Leave blank to auto-download the latest PDV.");
+                .addNote("Path to a PDV jar for \"Open in PDV\". Leave blank to auto-download the latest PDV.")
+                .addFullWidth(buildPdvStatusRow());
 
         Dialog<ButtonType> dialog = new Dialog<>();
         if (owner != null) {
@@ -74,6 +91,7 @@ public class SettingsDialog {
                     }
                 });
 
+        checkPdvVersionAsync();
         ButtonType result = dialog.showAndWait().orElse(ButtonType.CANCEL);
         if (result == saveType) {
             settings.setCasanovoExecutable(executableField.getText().trim());
@@ -91,6 +109,116 @@ public class SettingsDialog {
         boolean on = useCondaCheck.isSelected();
         condaExecField.setDisable(!on);
         condaEnvField.setDisable(!on);
+    }
+
+    // ---- PDV version status + one-click upgrade ----------------------------
+
+    private HBox buildPdvStatusRow() {
+        pdvStatusLabel.getStyleClass().add("text-muted");
+        pdvStatusLabel.setStyle("-fx-font-style: italic;");
+        pdvStatusLabel.setWrapText(true);
+        pdvStatusLabel.setMaxWidth(Double.MAX_VALUE);
+        pdvProgressBar.setPrefWidth(140);
+        pdvProgressBar.setVisible(false);
+        pdvProgressBar.setManaged(false);
+        pdvUpgradeButton.setOnAction(e -> upgradePdv());
+        hideUpgrade();
+        HBox row = new HBox(8, pdvStatusLabel, pdvProgressBar, pdvUpgradeButton);
+        row.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(pdvStatusLabel, Priority.ALWAYS);
+        return row;
+    }
+
+    /** Look up the latest PDV (off the FX thread) and reflect it in the status row. */
+    private void checkPdvVersionAsync() {
+        // The auto-download only applies when no explicit jar is configured.
+        if (!pdvField.getText().trim().isEmpty()) {
+            pdvStatusLabel.setText("Using the configured jar above (auto-download disabled).");
+            hideUpgrade();
+            return;
+        }
+        pdvStatusLabel.setText("Checking for the latest PDV…");
+        Thread t = new Thread(() -> {
+            Optional<String> latest = PdvLauncher.latestUsableVersion();
+            Optional<String> installed = PdvLauncher.installedVersion();
+            Platform.runLater(() -> applyPdvStatus(latest, installed));
+        }, "pdv-version-check");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void applyPdvStatus(Optional<String> latest, Optional<String> installed) {
+        if (latest.isEmpty()) {
+            pdvStatusLabel.setText("Could not check for the latest PDV (offline?).");
+            hideUpgrade();
+            return;
+        }
+        String latestV = latest.get();
+        pdvTargetVersion = latestV;
+        if (installed.isEmpty()) {
+            pdvStatusLabel.setText("Latest PDV: v" + latestV + " — downloaded on first \"Open in PDV\".");
+            showUpgrade("Download v" + latestV);
+        } else if (UpdateChecker.isNewer(latestV, installed.get())) {
+            pdvStatusLabel.setText("New PDV available: v" + latestV + " (you have v" + installed.get() + ").");
+            showUpgrade("Upgrade to v" + latestV);
+        } else {
+            pdvStatusLabel.setText("PDV v" + installed.get() + " is up to date.");
+            hideUpgrade();
+        }
+    }
+
+    private void upgradePdv() {
+        hideUpgrade();
+        pdvProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        pdvProgressBar.setVisible(true);
+        pdvProgressBar.setManaged(true);
+        pdvStatusLabel.setText("Downloading PDV"
+                + (pdvTargetVersion == null ? "" : " v" + pdvTargetVersion) + "…");
+        Thread t = new Thread(() -> {
+            try {
+                java.nio.file.Path jar = PdvLauncher.downloadPdv(
+                        msg -> {
+                            if (msg != null && msg.startsWith("Extracting")) {
+                                Platform.runLater(() -> {
+                                    pdvStatusLabel.setText("Extracting PDV…");
+                                    pdvProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+                                });
+                            }
+                        },
+                        frac -> Platform.runLater(() -> pdvProgressBar.setProgress(
+                                frac < 0 ? ProgressBar.INDETERMINATE_PROGRESS : frac)));
+                Optional<String> now = PdvLauncher.installedVersion();
+                Platform.runLater(() -> {
+                    pdvProgressBar.setVisible(false);
+                    pdvProgressBar.setManaged(false);
+                    // Show where it landed WITHOUT pinning the field, so auto-download stays on.
+                    pdvStatusLabel.setText("PDV v" + now.orElse(pdvTargetVersion) + " installed: " + jar);
+                    hideUpgrade();
+                });
+            } catch (Exception ex) {
+                String m = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> {
+                    pdvProgressBar.setVisible(false);
+                    pdvProgressBar.setManaged(false);
+                    pdvStatusLabel.setText("Download failed: " + m);
+                    showUpgrade(pdvTargetVersion == null ? "Retry download" : "Retry v" + pdvTargetVersion);
+                });
+            }
+        }, "pdv-upgrade");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void showUpgrade(String text) {
+        pdvUpgradeButton.setText(text);
+        pdvUpgradeButton.setDisable(false);
+        pdvUpgradeButton.setVisible(true);
+        pdvUpgradeButton.setManaged(true);
+    }
+
+    private void hideUpgrade() {
+        pdvUpgradeButton.setVisible(false);
+        pdvUpgradeButton.setManaged(false);
     }
 
     private String validate() {

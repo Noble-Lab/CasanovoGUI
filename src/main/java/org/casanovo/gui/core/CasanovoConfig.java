@@ -383,10 +383,15 @@ public class CasanovoConfig {
     public static File writeTempConfig(String yaml) throws IOException {
         File f = File.createTempFile("casanovo-gui-config-", ".yaml");
         f.deleteOnExit();
-        try (Writer w = Files.newBufferedWriter(f.toPath(), StandardCharsets.UTF_8)) {
+        writeConfigTo(yaml, f);
+        return f;
+    }
+
+    /** Write an arbitrary YAML config string to a specific file (kept on disk). */
+    public static void writeConfigTo(String yaml, File dest) throws IOException {
+        try (Writer w = Files.newBufferedWriter(dest.toPath(), StandardCharsets.UTF_8)) {
             w.write(yaml);
         }
-        return f;
     }
 
     /** Write the YAML to a specific file. */

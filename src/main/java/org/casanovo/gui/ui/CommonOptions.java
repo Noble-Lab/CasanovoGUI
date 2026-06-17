@@ -15,6 +15,14 @@ import java.util.List;
  */
 class CommonOptions {
 
+    /**
+     * Casanovo's default model selector ({@code _DEFAULT_MODEL_ID} in casanovo.py).
+     * Passing it explicitly silences the "No model was specified. Using the default
+     * model 'orbitrap'." warning. {@code --model} accepts this named selector, a
+     * {@code .ckpt} file, or a URL.
+     */
+    static final String DEFAULT_MODEL = "orbitrap";
+
     final TextField modelField = FxUtils.wideField();
     final TextField configField = FxUtils.wideField();
     final TextField outputDirField = FxUtils.wideField();
@@ -50,8 +58,24 @@ class CommonOptions {
         form.addRow("", forceOverwrite);
     }
 
-    void appendArgs(List<String> args) {
-        addFileArg(args, "--model", modelField.getText());
+    /**
+     * Append the shared options to {@code args}.
+     *
+     * @param defaultModel when {@code true} and the model field is blank, an explicit
+     *                     {@code --model orbitrap} is added so Casanovo does not emit its
+     *                     "No model was specified" warning. Training passes {@code false}:
+     *                     a blank model there means "train from scratch" and must not be
+     *                     pinned to the default model.
+     */
+    void appendArgs(List<String> args, boolean defaultModel) {
+        String model = modelField.getText() == null ? "" : modelField.getText().trim();
+        if (model.isEmpty() && defaultModel) {
+            model = DEFAULT_MODEL;
+        }
+        if (!model.isEmpty()) {
+            args.add("--model");
+            args.add(model);
+        }
         addFileArg(args, "--config", configField.getText());
         addFileArg(args, "--output_dir", outputDirField.getText());
         String root = outputRootField.getText() == null ? "" : outputRootField.getText().trim();

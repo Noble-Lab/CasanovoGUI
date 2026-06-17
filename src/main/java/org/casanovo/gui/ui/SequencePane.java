@@ -34,7 +34,7 @@ public class SequencePane extends CommandPane {
 
     @Override
     public String getTitle() {
-        return "Sequence";
+        return "De novo";
     }
 
     @Override
@@ -53,8 +53,17 @@ public class SequencePane extends CommandPane {
     @Override
     public CasanovoCommand buildCommand() {
         List<String> args = new ArrayList<>();
-        options.appendArgs(args);
+        options.appendArgs(args, true);
         args.addAll(PathFields.split(peakField));
         return new CasanovoCommand("sequence", args);
+    }
+
+    @Override
+    public List<File> resultSpectra() {
+        List<File> out = new ArrayList<>();
+        for (String p : PathFields.split(peakField)) {
+            out.add(new File(p));
+        }
+        return out;
     }
 }

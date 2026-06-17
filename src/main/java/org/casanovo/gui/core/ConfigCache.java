@@ -87,9 +87,7 @@ public final class ConfigCache {
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(work.toFile());
             pb.redirectErrorStream(true);
-            // Same Windows OpenMP safeguards the GUI uses when launching Casanovo.
-            pb.environment().putIfAbsent("KMP_DUPLICATE_LIB_OK", "TRUE");
-            pb.environment().putIfAbsent("MKL_THREADING_LAYER", "SEQUENTIAL");
+            Os.applyNativeEnv(pb); // Windows-only MKL/OpenMP safeguard; no-op elsewhere
             Process p = pb.start();
             drain(p);
             int code = p.waitFor();

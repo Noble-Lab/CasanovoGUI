@@ -65,9 +65,18 @@ public class DbSearchPane extends CommandPane {
     @Override
     public CasanovoCommand buildCommand() {
         List<String> args = new ArrayList<>();
-        options.appendArgs(args);
+        options.appendArgs(args, true);
         args.addAll(PathFields.split(peakField));
         args.add(fastaField.getText().trim());
         return new CasanovoCommand("db-search", args);
+    }
+
+    @Override
+    public List<File> resultSpectra() {
+        List<File> out = new ArrayList<>();
+        for (String p : PathFields.split(peakField)) {
+            out.add(new File(p));
+        }
+        return out;
     }
 }

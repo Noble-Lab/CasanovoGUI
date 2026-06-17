@@ -39,6 +39,7 @@ import org.casanovo.gui.core.CasanovoCommand;
 import org.casanovo.gui.core.CasanovoConfig;
 import org.casanovo.gui.core.CasanovoInstaller;
 import org.casanovo.gui.core.CasanovoRunner;
+import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
 import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.PyVenv;
@@ -71,10 +72,10 @@ public class MainApp extends Application {
 
     private final Label settingsLabel = new Label();
     private final TextField commandPreview = new TextField();
-    private final Button paramsButton = new Button("Parameters…");
+    private final Button paramsButton = new Button("Parameters");
     private final CheckBox useGuiParams = new CheckBox("Use GUI parameters (generate --config)");
-    private final Button installButton = new Button("Install Casanovo…");
-    private final Button pdvButton = new Button("Open in PDV…");
+    private final Button installButton = new Button("Install Casanovo");
+    private final Button pdvButton = new Button("Open in PDV");
     private final Button runButton = new Button("Run Casanovo");
     private final Button stopButton = new Button("Stop");
     private final Label statusLabel = new Label("Ready.");
@@ -85,6 +86,18 @@ public class MainApp extends Application {
     private volatile long lastProgressMs = 0L;
 
     private volatile boolean installing = false;
+    private volatile boolean checkpointErrorSeen = false;
+
+    // Most recent successful result (sequence / db-search / evaluate), so "Open in PDV"
+    // can load it directly. Captured at run start, resolved when the run finishes.
+    private List<File> lastResultSpectra;
+    private File lastResultMzTab;
+    private List<File> pendingSpectra;
+    private File pendingOutputDir;
+    private long pendingRunStartMs;
+    // Most recently launched PDV process + the result it shows, to avoid duplicate windows.
+    private Process lastPdvProcess;
+    private File lastPdvMzTab;
     private Stage stage;
 
     @Override
@@ -159,15 +172,15 @@ public class MainApp extends Application {
 
     private MenuBar buildMenuBar() {
         Menu fileMenu = new Menu("File");
-        MenuItem settingsItem = new MenuItem("Settings…");
+        MenuItem settingsItem = new MenuItem("Settings");
         settingsItem.setAccelerator(new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN));
         settingsItem.setOnAction(e -> openSettings());
-        MenuItem paramsItem = new MenuItem("Parameters…");
+        MenuItem paramsItem = new MenuItem("Parameters");
         paramsItem.setAccelerator(new KeyCodeCombination(KeyCode.P, KeyCombination.SHORTCUT_DOWN));
         paramsItem.setOnAction(e -> openParameters());
-        MenuItem installItem = new MenuItem("Install Casanovo…");
+        MenuItem installItem = new MenuItem("Install Casanovo");
         installItem.setOnAction(e -> onInstall());
-        MenuItem pdvItem = new MenuItem("Open in PDV…");
+        MenuItem pdvItem = new MenuItem("Open in PDV");
         pdvItem.setAccelerator(new KeyCodeCombination(KeyCode.D, KeyCombination.SHORTCUT_DOWN));
         pdvItem.setOnAction(e -> openPdv());
         MenuItem exitItem = new MenuItem("Exit");
@@ -177,7 +190,7 @@ public class MainApp extends Application {
                 new javafx.scene.control.SeparatorMenuItem(), exitItem);
 
         Menu helpMenu = new Menu("Help");
-        MenuItem checkUpdatesItem = new MenuItem("Check for Updates…");
+        MenuItem checkUpdatesItem = new MenuItem("Check for Updates");
         checkUpdatesItem.setOnAction(e -> runUpdateCheck(true));
         CheckMenuItem autoCheckItem = new CheckMenuItem("Automatically check on startup");
         autoCheckItem.setSelected(UpdateChecker.isAutoCheckEnabled());
@@ -213,7 +226,7 @@ public class MainApp extends Application {
     }
 
     private Region buildSettingsBar() {
-        Button edit = new Button("Edit…");
+        Button edit = new Button("Edit");
         edit.setOnAction(e -> openSettings());
         HBox.setHgrow(settingsLabel, Priority.ALWAYS);
         settingsLabel.setMaxWidth(Double.MAX_VALUE);
@@ -308,7 +321,7 @@ public class MainApp extends Application {
         String configPath;
         if (forRun) {
             try {
-                configPath = writeEffectiveConfig().getAbsolutePath();
+                configPath = writeEffectiveConfig(resolveOutputDir(base)).getAbsolutePath();
             } catch (IOException e) {
                 throw new RuntimeException("Could not write generated config: " + e.getMessage(), e);
             }
@@ -359,6 +372,10 @@ public class MainApp extends Application {
         refreshPreview();
 
         File workingDir = inferWorkingDir(command);
+        // Remember the inputs + where the result will land so "Open in PDV" can load it directly.
+        pendingSpectra = pane.resultSpectra();
+        pendingOutputDir = (workingDir != null) ? workingDir : new File(System.getProperty("user.dir"));
+        pendingRunStartMs = System.currentTimeMillis() - 3000L; // small clock-skew buffer
         console.append(System.lineSeparator() + "$ " + command.toDisplayString(settings)
                 + System.lineSeparator());
         statusLabel.setText("Running " + command.getSubcommand() + "…");
@@ -366,6 +383,7 @@ public class MainApp extends Application {
         progressBar.setVisible(true);
         progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
         lastProgressMs = 0L;
+        checkpointErrorSeen = false;
 
         runner.start(command, settings, workingDir,
                 this::onOutput,
@@ -395,7 +413,7 @@ public class MainApp extends Application {
             return null;
         }
         return "The configured Casanovo executable could not be found:\n" + exe
-                + "\n\nFix it in File → Settings…, or click \"Install Casanovo…\" to "
+                + "\n\nFix it in File → Settings, or click \"Install Casanovo\" to "
                 + "download Python + Casanovo into ~/.casanovo-gui.";
     }
 
@@ -416,8 +434,19 @@ public class MainApp extends Application {
             final String t = text;
             Platform.runLater(() -> updateProgressBar(t));
         } else {
+            if (looksLikeCheckpointError(text)) {
+                checkpointErrorSeen = true;
+            }
             console.appendLine(text);
         }
+    }
+
+    /** Output signatures of a corrupt/incompatible model checkpoint (e.g. a partial download). */
+    private static boolean looksLikeCheckpointError(String line) {
+        String l = line.toLowerCase();
+        return l.contains("weights file incompatible")
+                || l.contains("failed finding central directory")
+                || l.contains("pytorchstreamreader failed");
     }
 
     /** Drive the progress bar from a tqdm-style "NN%|" token, else show indeterminate. */
@@ -461,12 +490,67 @@ public class MainApp extends Application {
         } else if (exitCode == 0) {
             console.appendLine("[done] Casanovo finished successfully (exit 0).");
             statusLabel.setText("Finished successfully.");
+            captureResultForPdv();
         } else if (exitCode == 130) {
             console.appendLine("[stopped] Casanovo was cancelled by the user.");
             statusLabel.setText("Stopped.");
         } else {
             console.appendLine("[error] Casanovo exited with code " + exitCode + ".");
             statusLabel.setText("Exited with code " + exitCode + ".");
+            if (checkpointErrorSeen) {
+                maybeOfferModelRepair();
+            }
+        }
+    }
+
+    /**
+     * After a run fails while loading the model weights, look for a corrupt cached
+     * checkpoint (a truncated download) and offer to delete it and retry — Casanovo
+     * re-downloads the model on the next run. Does nothing when the cached checkpoints
+     * are all valid: the failure is then a genuinely incompatible or user-supplied
+     * model, which must not be deleted.
+     */
+    private void maybeOfferModelRepair() {
+        List<File> corrupt = CasanovoWeights.findCorruptCheckpoints();
+        if (corrupt.isEmpty()) {
+            console.appendLine("[hint] The model failed to load, but the cached checkpoints look intact. "
+                    + "If you passed a custom --model, check that file; otherwise the weights may be "
+                    + "incompatible with this Casanovo version.");
+            return;
+        }
+        StringBuilder list = new StringBuilder();
+        for (File f : corrupt) {
+            list.append("\n  - ").append(f.getName())
+                    .append(" (").append(f.length() / (1024 * 1024)).append(" MB)");
+        }
+        ButtonType clearRetry = new ButtonType("Clear & retry", ButtonBar.ButtonData.OK_DONE);
+        ButtonType cancel = new ButtonType("Cancel", ButtonBar.ButtonData.CANCEL_CLOSE);
+        Alert a = new Alert(Alert.AlertType.WARNING,
+                "Casanovo failed while loading the model weights, and a cached checkpoint looks like a"
+                        + " corrupt / incomplete download:" + list
+                        + "\n\nDelete it and retry? Casanovo will re-download the model"
+                        + " (this can take a few minutes).",
+                clearRetry, cancel);
+        a.setTitle("Corrupt model checkpoint");
+        a.setHeaderText(null);
+        if (stage != null) {
+            a.initOwner(stage);
+        }
+        if (a.showAndWait().orElse(cancel) != clearRetry) {
+            return;
+        }
+        int deleted = 0;
+        for (File f : corrupt) {
+            if (f.delete()) {
+                deleted++;
+                console.appendLine("[repair] deleted corrupt checkpoint: " + f.getAbsolutePath());
+            } else {
+                console.appendLine("[repair] could not delete: " + f.getAbsolutePath());
+            }
+        }
+        if (deleted > 0) {
+            statusLabel.setText("Deleted corrupt model; retrying…");
+            onRun(); // re-run the current command; Casanovo re-downloads the model
         }
     }
 
@@ -562,30 +646,69 @@ public class MainApp extends Application {
         a.showAndWait();
     }
 
-    /** Pick spectra + Casanovo mzTab, then download (first use) and launch PDV's DeNovo viewer preloaded. */
+    /**
+     * Open the Casanovo result in PDV's DeNovo viewer. When a recent run produced a
+     * result, its spectra + mzTab are loaded directly; otherwise the user picks the
+     * inputs as before. PDV is downloaded on first use.
+     */
     private void openPdv() {
         if (installing || runner.isRunning()) {
             return;
         }
-        FileChooser specChooser = new FileChooser();
-        specChooser.setTitle("Select spectrum file(s) (mzML / mzXML / MGF)");
-        specChooser.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter("Spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf"));
-        java.util.List<File> spectra = specChooser.showOpenMultipleDialog(stage);
-        if (spectra == null || spectra.isEmpty()) {
-            return;
+        // Mark busy at entry (not after the dialogs) so a second click can't slip through
+        // while a chooser / tolerance dialog is open or PDV is still starting up. Reset on
+        // every cancel path; the launch thread resets it once PDV has started.
+        installing = true;
+        setBusy(true);
+        java.util.List<File> spectra;
+        File mzTab;
+        boolean directLoad = lastResultMzTab != null && lastResultMzTab.isFile()
+                && lastResultSpectra != null && !lastResultSpectra.isEmpty();
+        if (directLoad) {
+            // Load the most recent Casanovo result directly — no need to re-pick files.
+            spectra = lastResultSpectra;
+            mzTab = lastResultMzTab;
+        } else {
+            FileChooser specChooser = new FileChooser();
+            specChooser.setTitle("Select spectrum file(s) (mzML / mzXML / MGF)");
+            specChooser.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("Spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf"));
+            spectra = specChooser.showOpenMultipleDialog(stage);
+            if (spectra == null || spectra.isEmpty()) {
+                resetPdvBusy();
+                return;
+            }
+            FileChooser mzTabChooser = new FileChooser();
+            mzTabChooser.setTitle("Select Casanovo result (mzTab)");
+            mzTabChooser.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("mzTab (*.mztab)", "*.mztab", "*.mzTab"));
+            File parent = spectra.get(0).getParentFile();
+            if (parent != null) {
+                mzTabChooser.setInitialDirectory(parent);
+            }
+            mzTab = mzTabChooser.showOpenDialog(stage);
+            if (mzTab == null) {
+                resetPdvBusy();
+                return;
+            }
         }
-        FileChooser mzTabChooser = new FileChooser();
-        mzTabChooser.setTitle("Select Casanovo result (mzTab)");
-        mzTabChooser.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter("mzTab (*.mztab)", "*.mztab", "*.mzTab"));
-        File parent = spectra.get(0).getParentFile();
-        if (parent != null) {
-            mzTabChooser.setInitialDirectory(parent);
-        }
-        File mzTab = mzTabChooser.showOpenDialog(stage);
-        if (mzTab == null) {
-            return;
+
+        // Guard against opening a duplicate PDV window for a result that's already open
+        // (e.g. an accidental second click while PDV is still starting up).
+        if (lastPdvProcess != null && lastPdvProcess.isAlive() && mzTab.equals(lastPdvMzTab)) {
+            ButtonType again = new ButtonType("Open another", ButtonBar.ButtonData.OK_DONE);
+            Alert dup = new Alert(Alert.AlertType.CONFIRMATION,
+                    "PDV is already open for this result (" + mzTab.getName() + ").\n\nOpen another window?",
+                    again, ButtonType.CANCEL);
+            dup.setTitle("PDV already open");
+            dup.setHeaderText(null);
+            if (stage != null) {
+                dup.initOwner(stage);
+            }
+            if (dup.showAndWait().orElse(ButtonType.CANCEL) != again) {
+                resetPdvBusy();
+                return;
+            }
         }
 
         // Fragment m/z tolerance: value + Da/ppm unit, matching PDV's setting
@@ -620,7 +743,11 @@ public class MainApp extends Application {
 
         Dialog<ButtonType> tolDialog = new Dialog<>();
         tolDialog.setTitle("Fragment tolerance");
-        tolDialog.setHeaderText("Fragment ion tolerance for spectrum annotation in PDV");
+        tolDialog.setHeaderText((directLoad
+                ? "Loading result: " + mzTab.getName() + "  ("
+                  + spectra.size() + " spectrum file" + (spectra.size() == 1 ? "" : "s") + ")\n"
+                : "")
+                + "Fragment ion tolerance for spectrum annotation in PDV");
         if (stage != null) {
             tolDialog.initOwner(stage);
         }
@@ -630,6 +757,7 @@ public class MainApp extends Application {
 
         java.util.Optional<ButtonType> tolResult = tolDialog.showAndWait();
         if (!tolResult.isPresent() || tolResult.get() != okType) {
+            resetPdvBusy();
             return;
         }
         final String fTolUnit = tolUnitCombo.getValue() == null ? "Da" : tolUnitCombo.getValue();
@@ -641,18 +769,20 @@ public class MainApp extends Application {
         }
         final double fTol = tolVal;
 
-        installing = true;
-        setBusy(true);
         statusLabel.setText("Preparing PDV…");
-        console.append(System.lineSeparator() + "[pdv] Opening results in PDV…" + System.lineSeparator());
+        console.append(System.lineSeparator() + "[pdv] Opening "
+                + (directLoad ? "last result (" + mzTab.getName() + ")" : "results")
+                + " in PDV…" + System.lineSeparator());
 
         final java.util.List<File> fSpectra = spectra;
         final File fMzTab = mzTab;
         Thread t = new Thread(() -> {
             try {
                 Path jar = PdvLauncher.ensurePdv(settings.getPdvJar(), console::appendLine);
-                PdvLauncher.launchDenovo(jar, fSpectra, fMzTab, fTol, fTolUnit, console::appendLine);
+                Process proc = PdvLauncher.launchDenovo(jar, fSpectra, fMzTab, fTol, fTolUnit, console::appendLine);
                 Platform.runLater(() -> {
+                    lastPdvProcess = proc;
+                    lastPdvMzTab = fMzTab;
                     installing = false;
                     setBusy(false);
                     statusLabel.setText("PDV launched.");
@@ -670,6 +800,49 @@ public class MainApp extends Application {
         }, "pdv-launcher");
         t.setDaemon(true);
         t.start();
+    }
+
+    /** Release the busy state set at the start of {@link #openPdv()} on a cancel path. */
+    private void resetPdvBusy() {
+        installing = false;
+        setBusy(false);
+    }
+
+    /**
+     * After a successful run, remember the produced mzTab and its input spectra so the
+     * next "Open in PDV" loads them directly. No-op (so "Open in PDV" keeps prompting for
+     * files) when the run had no spectra input or wrote no mzTab.
+     */
+    private void captureResultForPdv() {
+        if (pendingSpectra == null || pendingSpectra.isEmpty() || pendingOutputDir == null) {
+            return;
+        }
+        File mztab = findNewestMzTab(pendingOutputDir, pendingRunStartMs);
+        if (mztab != null) {
+            lastResultSpectra = pendingSpectra;
+            lastResultMzTab = mztab;
+            console.appendLine("[pdv] Result ready: " + mztab.getName()
+                    + " — click \"Open in PDV\" to view it (inputs loaded automatically).");
+        }
+    }
+
+    /** Newest {@code *.mztab} in {@code dir} modified at/after {@code sinceMs}, or null. */
+    private static File findNewestMzTab(File dir, long sinceMs) {
+        if (dir == null || !dir.isDirectory()) {
+            return null;
+        }
+        File[] files = dir.listFiles((d, name) -> name.toLowerCase().endsWith(".mztab"));
+        if (files == null) {
+            return null;
+        }
+        File newest = null;
+        for (File f : files) {
+            if (f.isFile() && f.lastModified() >= sinceMs
+                    && (newest == null || f.lastModified() > newest.lastModified())) {
+                newest = f;
+            }
+        }
+        return newest;
     }
 
     private void showAbout() {
@@ -915,11 +1088,53 @@ public class MainApp extends Application {
      * installed version's base config (from {@code casanovo configure}, cached) when
      * available, otherwise the GUI's self-generated full config as a fallback. The
      * overlay path stays valid even when a Casanovo release adds new config options.
+     *
+     * <p>The file is saved <em>next to the output</em> — in {@code outputDir} (the run's
+     * {@code --output_dir}, or the current directory when none is set) — with a
+     * timestamped name, so the exact parameters are kept alongside the results. If that
+     * location cannot be written, it falls back to a temporary file.</p>
      */
-    private File writeEffectiveConfig() throws IOException {
+    private File writeEffectiveConfig(File outputDir) throws IOException {
         Optional<String> base = ConfigCache.cachedBase(settings);
         String yaml = base.isPresent() ? config.overlayOnto(base.get()) : config.toYaml();
+        if (outputDir != null && outputDir.isDirectory()) {
+            File dest = new File(outputDir, "casanovo-gui-config-" + runStamp() + ".yaml");
+            try {
+                CasanovoConfig.writeConfigTo(yaml, dest);
+                console.appendLine("[config] Run config saved: " + dest.getAbsolutePath());
+                return dest;
+            } catch (IOException e) {
+                console.appendLine("[config] Could not save config next to output ("
+                        + e.getMessage() + "); using a temporary file instead.");
+            }
+        }
         return CasanovoConfig.writeTempConfig(yaml);
+    }
+
+    /**
+     * The output directory the run will write to: the {@code --output_dir} value
+     * (created if it does not yet exist), or the current working directory when no
+     * output directory was specified.
+     */
+    private File resolveOutputDir(CasanovoCommand base) {
+        List<String> args = base.getArguments();
+        int idx = args.indexOf("--output_dir");
+        if (idx >= 0 && idx + 1 < args.size()) {
+            File d = new File(args.get(idx + 1).trim());
+            if (!d.exists()) {
+                d.mkdirs();
+            }
+            if (d.isDirectory()) {
+                return d;
+            }
+        }
+        return new File(System.getProperty("user.dir"));
+    }
+
+    /** Timestamp ({@code yyyyMMddHHmmss}) for naming saved run configs, mirroring Casanovo's output naming. */
+    private static String runStamp() {
+        return java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
     }
 
     /** Pre-generate the installed version's base config in the background so run-time prep is instant. */

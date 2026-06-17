@@ -6,6 +6,7 @@ import javafx.scene.control.TextField;
 import javafx.stage.Window;
 import org.casanovo.gui.core.CasanovoCommand;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -54,9 +55,18 @@ public class EvalPane extends CommandPane {
     @Override
     public CasanovoCommand buildCommand() {
         List<String> args = new ArrayList<>();
-        options.appendArgs(args);
+        options.appendArgs(args, true);
         args.add("--evaluate");
         args.addAll(PathFields.split(peakField));
         return new CasanovoCommand("sequence", args);
+    }
+
+    @Override
+    public List<File> resultSpectra() {
+        List<File> out = new ArrayList<>();
+        for (String p : PathFields.split(peakField)) {
+            out.add(new File(p));
+        }
+        return out;
     }
 }

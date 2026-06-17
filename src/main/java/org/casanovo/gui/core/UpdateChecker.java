@@ -169,8 +169,7 @@ public final class UpdateChecker {
                     .toProcessCommand(settings);
             ProcessBuilder pb = new ProcessBuilder(osCmd);
             pb.redirectErrorStream(true);
-            pb.environment().putIfAbsent("KMP_DUPLICATE_LIB_OK", "TRUE");
-            pb.environment().putIfAbsent("MKL_THREADING_LAYER", "SEQUENTIAL");
+            Os.applyNativeEnv(pb); // Windows-only MKL/OpenMP safeguard; no-op elsewhere
             Process proc = pb.start();
             Pattern verLine = Pattern.compile("Casanovo Version:\\s*([0-9][0-9A-Za-z.\\-]*)");
             String found = null;

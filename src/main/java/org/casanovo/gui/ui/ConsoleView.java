@@ -96,7 +96,14 @@ public class ConsoleView extends BorderPane {
         if (batch.isEmpty()) {
             return;
         }
-        textArea.appendText(batch);
+        int end = textArea.getLength();
+        if (committedLen > end) {
+            committedLen = end;
+        }
+        // Overwrite any transient progress line with the committed text, so a finished
+        // progress bar (tqdm's "...\r99%\r100%\n") commits as a single line instead of
+        // having the last refresh concatenated onto the previous one.
+        textArea.replaceText(committedLen, end, batch);
         committedLen = textArea.getLength();
         textArea.positionCaret(textArea.getLength());
     }

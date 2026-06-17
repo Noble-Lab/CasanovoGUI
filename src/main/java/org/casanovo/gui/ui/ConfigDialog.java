@@ -56,7 +56,7 @@ public class ConfigDialog {
 
         Button reset = new Button("Reset to defaults");
         reset.setOnAction(e -> onReset());
-        Button saveFile = new Button("Save to file…");
+        Button saveFile = new Button("Save to file");
         saveFile.setOnAction(e -> onSaveToFile());
         HBox toolbar = new HBox(8, reset, saveFile);
         toolbar.setPadding(new Insets(0, 0, 8, 0));
