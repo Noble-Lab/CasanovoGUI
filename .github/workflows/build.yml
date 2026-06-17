@@ -57,15 +57,15 @@ jobs:
 
       - name: Package (Windows, app-image)
         if: runner.os == 'Windows'
-        run: pwsh ./package.ps1
+        run: pwsh ./packaging/package.ps1
 
       - name: Package (Linux, app-image + .deb)
         if: runner.os == 'Linux'
-        run: bash ./package.sh --installer
+        run: bash ./packaging/package.sh --installer
 
       - name: Package (macOS, app-image + .dmg)
         if: runner.os == 'macOS'
-        run: bash ./package.sh --installer
+        run: bash ./packaging/package.sh --installer
 
       - uses: actions/upload-artifact@v4
         with:
