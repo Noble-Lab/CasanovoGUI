@@ -20,6 +20,8 @@ Write-Host '[1/4] Building the fat JAR with Maven...'
 mvn -q -DskipTests clean package
 if ($LASTEXITCODE -ne 0) { throw 'Maven build failed.' }
 $jar = Get-ChildItem target\casanovo-gui-*.jar | Where-Object { $_.Name -notmatch 'original|shaded' } | Select-Object -First 1
+# Real app version so jpackage stamps it instead of its 1.0 default (from the jar name = pom version; override with $env:APP_VERSION).
+$Version = if ($env:APP_VERSION) { $env:APP_VERSION } else { $jar.Name -replace '^casanovo-gui-','' -replace '\.jar$','' }
 
 Write-Host '[2/4] Staging...'
 Remove-Item -Recurse -Force staging, dist -ErrorAction SilentlyContinue
@@ -30,7 +32,7 @@ $iconArg = @()
 if (Test-Path 'packaging\icon.ico') { $iconArg = @('--icon', 'packaging\icon.ico') }
 
 Write-Host '[3/4] Running jpackage (app-image)...'
-& $jpackage --type app-image --name $App --input staging --main-jar $jar.Name --main-class $MainClass --java-options "--enable-native-access=ALL-UNNAMED" --dest dist @iconArg
+& $jpackage --type app-image --name $App --app-version $Version --input staging --main-jar $jar.Name --main-class $MainClass --java-options "--enable-native-access=ALL-UNNAMED" --dest dist @iconArg
 if ($LASTEXITCODE -ne 0) { throw 'jpackage failed.' }
 
 Write-Host '[4/4] Adding a Java launcher to the bundled runtime (needed to open PDV)...'

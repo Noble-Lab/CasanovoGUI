@@ -6,7 +6,7 @@
 #    ./packaging/package.sh              app-image only
 #       Linux -> dist/CasanovoGUI/         (run dist/CasanovoGUI/bin/CasanovoGUI)
 #       macOS -> dist/CasanovoGUI.app
-#    ./packaging/package.sh --installer  also build a .deb (Linux) / .dmg (macOS)
+#    ./packaging/package.sh --installer  Linux: .deb + portable .tar.gz (no root, no Java); macOS: .dmg
 #
 #  Mirrors build-exe.bat, including copying a real `java` launcher back into the
 #  bundled runtime (jpackage strips it) so "Open in PDV" can spawn PDV.
@@ -28,7 +28,10 @@ echo "[1/4] Building the fat JAR with Maven..."
 mvn -q -DskipTests clean package
 JAR=$(ls target/casanovo-gui-*.jar | grep -vE 'original|shaded' | head -n1)
 JAR_NAME=$(basename "$JAR")
-echo "      $JAR_NAME"
+# Real app version so jpackage stamps it on the package instead of its 1.0 default.
+# Taken from the jar name (= pom version); override with APP_VERSION (e.g. a release tag).
+VERSION="${APP_VERSION:-$(basename "$JAR_NAME" .jar | sed -E 's/^casanovo-gui-//')}"
+echo "      $JAR_NAME  (version $VERSION)"
 
 echo "[2/4] Staging..."
 rm -rf staging dist
@@ -44,7 +47,7 @@ elif [ "$OS" = "Darwin" ] && [ -f packaging/icon.icns ]; then
 fi
 
 echo "[3/4] Running jpackage (app-image)..."
-"$JPACKAGE" --type app-image --name "$APP" \
+"$JPACKAGE" --type app-image --name "$APP" --app-version "$VERSION" \
   --input staging --main-jar "$JAR_NAME" --main-class "$MAIN_CLASS" \
   --java-options "--enable-native-access=ALL-UNNAMED" \
   --dest dist "${ICON_ARG[@]}"
@@ -68,13 +71,26 @@ if [ "$INSTALLER" = "1" ]; then
   echo "[+] Building installer from the app-image..."
   if [ "$OS" = "Darwin" ]; then
     "$JPACKAGE" --type dmg --app-image "dist/$APP.app" --name "$APP" --dest dist
+    rm -rf "dist/$APP.app"   # installer-only artifact: keep just the .dmg
   else
+    # Portable tarball alongside the .deb: needs no root and no system Java (the runtime is
+    # bundled), and tar preserves the executable bits a GitHub-artifact .zip would strip.
+    ARCH=$(uname -m)
+    tar -C dist -czf "dist/$APP-$VERSION-linux-$ARCH.tar.gz" "$APP"
+    echo "      portable tarball -> dist/$APP-$VERSION-linux-$ARCH.tar.gz"
     "$JPACKAGE" --type deb --app-image "dist/$APP" --name "$APP" --dest dist
+    rm -rf "dist/$APP"       # raw folder removed; the portable .tar.gz + the .deb remain
   fi
 fi
 
 echo
 echo "======================================================"
 echo " Done. Artifacts are under: dist/"
-[ "$OS" = "Darwin" ] && echo "   App: dist/$APP.app" || echo "   App: dist/$APP/bin/$APP"
+if [ "$INSTALLER" = "1" ]; then
+  for f in dist/*.deb dist/*.dmg dist/*.tar.gz; do [ -e "$f" ] && echo "   $f"; done
+elif [ "$OS" = "Darwin" ]; then
+  echo "   App: dist/$APP.app"
+else
+  echo "   App: dist/$APP/bin/$APP  (portable app-image)"
+fi
 echo "======================================================"
