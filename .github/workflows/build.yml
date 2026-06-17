@@ -1,19 +1,37 @@
-name: build
+name: build & release
 
-# Build the cross-platform portable JAR and per-OS native app images.
-# jpackage can only target the OS it runs on, so each native package is built on
-# its own runner. Runs on version tags (v*) and on demand.
+# Builds the portable JAR and the per-OS native packages, and publishes each file as a
+# SEPARATE asset on a GitHub Release. jpackage can only target the OS it runs on, so each
+# native package is built on its own runner.
+#
+#   push tag  v1.2.3            -> Release "v1.2.3" (marked latest), each file attached
+#   PR + label 'build-artifact' -> prerelease "pr-build-<N>" with downloadable links (test builds)
+#   workflow_dispatch           -> same files uploaded as workflow artifacts (no Release)
+#
+# Every built file is named CasanovoGUI-<version>-<platform>.<ext> for consistency:
+#   CasanovoGUI-1.0.0.jar                     (portable, needs a JDK 23+)
+#   CasanovoGUI-1.0.0-linux-x86_64.tar.gz     (Linux portable: no root, no Java)
+#   CasanovoGUI-1.0.0-linux-x86_64.deb        (Linux install, root)
+#   CasanovoGUI-1.0.0-macos-arm64.dmg / -x86_64.dmg
+#   CasanovoGUI-1.0.0-windows-x64.zip         (Windows app-image, no install/Java)
+
 on:
   push:
     tags: ['v*']
+  pull_request:
+    types: [labeled, synchronize, reopened]
   workflow_dispatch:
 
+# Required for softprops/action-gh-release to create/update Releases.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  # One portable JAR that runs on Windows, Linux and macOS Apple Silicon (JDK 23+ to run; built on 25).
+  # Cross-platform portable JAR (Windows + Linux + macOS Apple Silicon; needs a JDK 23+).
   portable-jar:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'build-artifact')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,26 +40,57 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -1)"
+          fi
+          echo "VER=$V" >> "$GITHUB_ENV"
       - name: Build portable JAR
         run: mvn -B -Pportable -DskipTests clean package
-      - uses: actions/upload-artifact@v4
+      - name: Collect asset
+        shell: bash
+        run: |
+          mkdir -p release
+          JAR="$(ls target/casanovo-gui-*.jar | grep -vE 'original|shaded' | head -1)"
+          cp "$JAR" "release/CasanovoGUI-$VER.jar"
+          ls -la release/
+      - name: Publish to Release
+        if: >-
+          github.event_name == 'push' ||
+          (github.event_name == 'pull_request' &&
+           contains(github.event.pull_request.labels.*.name, 'build-artifact'))
+        uses: softprops/action-gh-release@v2
         with:
-          name: casanovo-gui-portable-jar
-          path: |
-            target/casanovo-gui-*.jar
-            !target/original-*.jar
-            !target/*-shaded.jar
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('pr-build-{0}', github.event.pull_request.number) }}
+          name: ${{ github.event_name == 'push' && github.ref_name || format('Pre-release build (PR #{0})', github.event.pull_request.number) }}
+          prerelease: ${{ github.event_name == 'pull_request' }}
+          make_latest: ${{ (github.event_name == 'push') && 'true' || 'false' }}
+          files: release/*
+      - name: Upload artifact (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CasanovoGUI-portable-jar
+          path: release/*
+          if-no-files-found: error
 
-  # Native app images / installers, one per OS (and per macOS architecture).
+  # Native packages, one per OS (and per macOS architecture).
   native:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'build-artifact')
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, name: windows }
-          - { os: ubuntu-latest,  name: linux }
-          - { os: macos-13,       name: macos-intel }   # x86_64
-          - { os: macos-14,       name: macos-arm }     # Apple Silicon
+          - { os: windows-latest, name: windows, arch: x64 }
+          - { os: ubuntu-latest,  name: linux,   arch: x86_64 }
+          - { os: macos-13,       name: macos,   arch: x86_64 }   # Intel
+          - { os: macos-14,       name: macos,   arch: arm64 }    # Apple Silicon
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,25 +99,60 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -1)"
+          fi
+          echo "VER=$V" >> "$GITHUB_ENV"
       - name: Install Linux packaging tools
-        if: runner.os == 'Linux'
+        if: matrix.name == 'linux'
         run: sudo apt-get update && sudo apt-get install -y fakeroot binutils
-
-      - name: Package (Windows, app-image)
-        if: runner.os == 'Windows'
+      - name: Package (Windows app-image)
+        if: matrix.name == 'windows'
         run: pwsh ./packaging/package.ps1
-
-      - name: Package (Linux, app-image + .deb)
-        if: runner.os == 'Linux'
-        run: bash ./packaging/package.sh --installer
-
-      - name: Package (macOS, app-image + .dmg)
-        if: runner.os == 'macOS'
-        run: bash ./packaging/package.sh --installer
-
-      - uses: actions/upload-artifact@v4
+        env:
+          APP_VERSION: ${{ env.VER }}
+      - name: Package (Linux/macOS installer)
+        if: matrix.name != 'windows'
+        shell: bash
+        run: APP_VERSION="$VER" bash ./packaging/package.sh --installer
+      - name: Collect release assets (consistent CasanovoGUI-<ver>-<platform> names)
+        shell: bash
+        run: |
+          mkdir -p release
+          case "${{ matrix.name }}" in
+            linux)
+              cp dist/*.deb "release/CasanovoGUI-$VER-linux-${{ matrix.arch }}.deb"
+              cp dist/*.tar.gz release/    # already CasanovoGUI-<ver>-linux-x86_64.tar.gz
+              ;;
+            macos)
+              cp dist/*.dmg "release/CasanovoGUI-$VER-macos-${{ matrix.arch }}.dmg"
+              ;;
+            windows)
+              ( cd dist && 7z a "../release/CasanovoGUI-$VER-windows-${{ matrix.arch }}.zip" CasanovoGUI >/dev/null )
+              ;;
+          esac
+          ls -la release/
+      - name: Publish to Release
+        if: >-
+          github.event_name == 'push' ||
+          (github.event_name == 'pull_request' &&
+           contains(github.event.pull_request.labels.*.name, 'build-artifact'))
+        uses: softprops/action-gh-release@v2
         with:
-          name: casanovo-gui-${{ matrix.name }}
-          path: dist/**
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('pr-build-{0}', github.event.pull_request.number) }}
+          name: ${{ github.event_name == 'push' && github.ref_name || format('Pre-release build (PR #{0})', github.event.pull_request.number) }}
+          prerelease: ${{ github.event_name == 'pull_request' }}
+          make_latest: ${{ (github.event_name == 'push') && 'true' || 'false' }}
+          files: release/*
+      - name: Upload artifact (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CasanovoGUI-${{ matrix.name }}-${{ matrix.arch }}
+          path: release/*
           if-no-files-found: error
