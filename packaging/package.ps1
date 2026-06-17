@@ -44,7 +44,7 @@ Copy-Item (Join-Path $javaBin 'javaw.exe') "dist\$App\runtime\bin\" -Force
 
 if ($Installer) {
   Write-Host '[+] Building .msi from the app-image (requires WiX)...'
-  & $jpackage --type msi --app-image "dist\$App" --name $App --dest dist
+  & $jpackage --type msi --app-image "dist\$App" --name $App --app-version $Version --dest dist
 }
 
 Write-Host "Done. App: dist\$App\$App.exe"

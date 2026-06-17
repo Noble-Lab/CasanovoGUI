@@ -70,7 +70,7 @@ echo "      copied java -> $RT_BIN/java"
 if [ "$INSTALLER" = "1" ]; then
   echo "[+] Building installer from the app-image..."
   if [ "$OS" = "Darwin" ]; then
-    "$JPACKAGE" --type dmg --app-image "dist/$APP.app" --name "$APP" --dest dist
+    "$JPACKAGE" --type dmg --app-image "dist/$APP.app" --name "$APP" --app-version "$VERSION" --dest dist
     rm -rf "dist/$APP.app"   # installer-only artifact: keep just the .dmg
   else
     # Portable tarball alongside the .deb: needs no root and no system Java (the runtime is
@@ -78,7 +78,7 @@ if [ "$INSTALLER" = "1" ]; then
     ARCH=$(uname -m)
     tar -C dist -czf "dist/$APP-$VERSION-linux-$ARCH.tar.gz" "$APP"
     echo "      portable tarball -> dist/$APP-$VERSION-linux-$ARCH.tar.gz"
-    "$JPACKAGE" --type deb --app-image "dist/$APP" --name "$APP" --dest dist
+    "$JPACKAGE" --type deb --app-image "dist/$APP" --name "$APP" --app-version "$VERSION" --dest dist
     rm -rf "dist/$APP"       # raw folder removed; the portable .tar.gz + the .deb remain
   fi
 fi
