@@ -848,6 +848,7 @@ public class MainApp extends Application {
         pdvButton.setDisable(busy);
         runButton.setDisable(busy);
         paramsButton.setDisable(busy);
+        useGuiParams.setDisable(busy);
         tabs.setDisable(busy);
     }
 
@@ -856,6 +857,7 @@ public class MainApp extends Application {
         stopButton.setDisable(!running);
         tabs.setDisable(running);
         paramsButton.setDisable(running);
+        useGuiParams.setDisable(running);
         pdvButton.setDisable(running);
     }
 

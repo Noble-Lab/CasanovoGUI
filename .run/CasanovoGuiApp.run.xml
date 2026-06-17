@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="CasanovoGuiApp" type="Application" factoryName="Application">
+    <!-- Shared run config: grants native access so JavaFX's System.load does not warn on
+         JDK 24+ (the IDE's classpath launch ignores the jar manifest). The remaining
+         "unnamed module" line is inherent to loading JavaFX from the classpath. -->
+    <option name="MAIN_CLASS_NAME" value="org.casanovo.gui.CasanovoGuiApp" />
+    <module name="casanovo-gui" />
+    <option name="VM_PARAMETERS" value="--enable-native-access=ALL-UNNAMED" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
