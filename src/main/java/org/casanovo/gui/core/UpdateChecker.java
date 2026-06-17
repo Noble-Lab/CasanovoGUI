@@ -27,7 +27,7 @@ import java.util.regex.Pattern;
  * <ul>
  *   <li><b>Casanovo GUI</b> — this application. Its own version comes from the
  *       Maven-filtered {@code project.properties} resource; the latest is the
- *       newest GitHub release of {@code wenbostar/CasanovoGUI}.</li>
+ *       newest GitHub release of {@code Noble-Lab/CasanovoGUI}.</li>
  *   <li><b>Casanovo</b> — the Python tool the GUI drives. The <em>installed</em>
  *       version is read from the package's {@code dist-info} metadata inside the
  *       configured venv (no Python process is launched — fast, offline, and it
@@ -46,9 +46,9 @@ public final class UpdateChecker {
     // ---- endpoints ---------------------------------------------------------
 
     private static final String GUI_RELEASES_API =
-            "https://api.github.com/repos/wenbostar/CasanovoGUI/releases/latest";
+            "https://api.github.com/repos/Noble-Lab/CasanovoGUI/releases/latest";
     private static final String GUI_RELEASES_PAGE =
-            "https://github.com/wenbostar/CasanovoGUI/releases";
+            "https://github.com/Noble-Lab/CasanovoGUI/releases";
 
     private static final String CASANOVO_PYPI_JSON =
             "https://pypi.org/pypi/casanovo/json";
@@ -195,7 +195,7 @@ public final class UpdateChecker {
 
     // ---- remote lookups ----------------------------------------------------
 
-    /** GitHub release of {@code wenbostar/CasanovoGUI}, or empty if none yet (404). */
+    /** GitHub release of {@code Noble-Lab/CasanovoGUI}, or empty if none yet (404). */
     private static Optional<ReleaseInfo> fetchLatestGuiRelease()
             throws IOException, InterruptedException {
         HttpResponse<String> resp = get(GUI_RELEASES_API, "application/vnd.github+json");

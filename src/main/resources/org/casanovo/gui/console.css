@@ -1,0 +1,24 @@
+/*
+ * Colours for RichConsoleView. All colours are AtlantaFX theme variables, so they
+ * automatically adapt to the active light/dark theme. The style classes are set per
+ * line by RichConsoleView.styleFor(); the ".text.<class>" form keeps these rules more
+ * specific than the base ".text" rule so the colour always wins.
+ */
+.console-area {
+    -fx-background-color: -color-bg-default;
+}
+.console-area .text {
+    -fx-fill: -color-fg-default;
+    -fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    -fx-font-size: 13px;
+}
+
+.console-area .text.console-error    { -fx-fill: -color-danger-fg; }
+.console-area .text.console-warning  { -fx-fill: -color-warning-fg; }
+.console-area .text.console-success  { -fx-fill: -color-success-fg; }
+.console-area .text.console-cmd      { -fx-fill: -color-accent-fg; -fx-font-weight: bold; }
+.console-area .text.console-marker   { -fx-fill: -color-accent-fg; }
+.console-area .text.console-info     { -fx-fill: -color-fg-default; }
+.console-area .text.console-muted    { -fx-fill: -color-fg-muted; }
+.console-area .text.console-progress { -fx-fill: -color-fg-muted; }
+.console-area .text.console-default  { -fx-fill: -color-fg-default; }

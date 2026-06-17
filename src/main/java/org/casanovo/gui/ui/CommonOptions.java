@@ -34,6 +34,9 @@ class CommonOptions {
     CommonOptions() {
         verbosityCombo.getItems().addAll("(default)", "debug", "info", "warning", "error");
         verbosityCombo.getSelectionModel().select("(default)");
+        // Checked by default: re-runs into the same output folder just overwrite,
+        // rather than failing with "file already exists" (Casanovo's own default is off).
+        forceOverwrite.setSelected(true);
     }
 
     void addToForm(Window owner, FxUtils.FormGrid form) {
@@ -77,7 +80,14 @@ class CommonOptions {
             args.add(model);
         }
         addFileArg(args, "--config", configField.getText());
-        addFileArg(args, "--output_dir", outputDirField.getText());
+        // Pass an ABSOLUTE output dir. The runner sets the process working directory to this
+        // folder, so a relative --output_dir would resolve against it and nest (e.g. ok\ok) —
+        // which also breaks "Open in PDV" (the GUI looks for the mzTab in the un-nested folder).
+        String outDir = outputDirField.getText() == null ? "" : outputDirField.getText().trim();
+        if (!outDir.isEmpty()) {
+            args.add("--output_dir");
+            args.add(new java.io.File(outDir).getAbsolutePath());
+        }
         String root = outputRootField.getText() == null ? "" : outputRootField.getText().trim();
         if (!root.isEmpty()) {
             args.add("--output_root");

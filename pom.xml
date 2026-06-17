@@ -38,6 +38,14 @@
             <artifactId>atlantafx-base</artifactId>
             <version>2.1.0</version>
         </dependency>
+        <!-- Colour-coded console (RichConsoleView). NOTE: needs >= 0.11.7 on JavaFX 25 —
+             0.11.5 overrides TextFlow.getUnderlineShape(), which became final in JavaFX 25,
+             so it fails at startup with IncompatibleClassChangeError. Do not downgrade. -->
+        <dependency>
+            <groupId>org.fxmisc.richtext</groupId>
+            <artifactId>richtextfx</artifactId>
+            <version>0.11.7</version>
+        </dependency>
     </dependencies>
 
     <build>

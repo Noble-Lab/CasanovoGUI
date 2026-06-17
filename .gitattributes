@@ -1,0 +1,6 @@
+# Shell scripts must stay LF so they run on the Linux/macOS CI runners,
+# even when edited on Windows with core.autocrlf=true.
+*.sh text eol=lf
+
+# Windows batch files stay CRLF.
+*.bat text eol=crlf

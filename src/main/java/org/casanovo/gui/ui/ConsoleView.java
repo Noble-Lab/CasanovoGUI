@@ -3,11 +3,16 @@ package org.casanovo.gui.ui;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextArea;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 
 /**
  * A scrolling, read-only console showing the live stdout/stderr of the running
@@ -29,7 +34,7 @@ import javafx.scene.layout.HBox;
  *
  * <p>All mutating methods are safe to call from any thread.</p>
  */
-public class ConsoleView extends BorderPane {
+public class ConsoleView extends BorderPane implements ConsoleOutput {
 
     private final TextArea textArea = new TextArea();
     /** Length of text that is permanent; anything after it is the transient progress line. */
@@ -40,26 +45,48 @@ public class ConsoleView extends BorderPane {
     /** True if a flush is already scheduled; prevents N runLater tasks for N lines. */
     private boolean flushScheduled = false;
 
+    /** Bottom toolbar: an optional left slot ({@link #setLeftStatus}) plus "Clear console" pinned right. */
+    private final HBox south;
+    private final Region southSpacer = new Region();
+    private final Button clearBtn = new Button("Clear console");
+    private final Button copyBtn = new Button("Copy output");
+
     public ConsoleView() {
         textArea.setEditable(false);
         textArea.setWrapText(false);
-        // Monospace font only — colours are left to the active theme.
-        textArea.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', 'Courier New', monospace;"
+        // Match the Carafe console: the app's sans-serif base font (not monospace).
+        textArea.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif;"
                 + " -fx-font-size: 13px;");
 
         Label title = new Label("Console");
         title.setStyle("-fx-font-weight: bold;");
         title.setPadding(new Insets(4, 6, 4, 6));
 
-        Button clear = new Button("Clear console");
-        clear.setOnAction(e -> clear());
-        HBox south = new HBox(clear);
-        south.setAlignment(Pos.CENTER_RIGHT);
+        clearBtn.setOnAction(e -> clear());
+        copyBtn.setOnAction(e -> copyAll());
+        HBox.setHgrow(southSpacer, Priority.ALWAYS);
+        south = new HBox(8, southSpacer, clearBtn, copyBtn); // Clear/Copy pinned right; left slot via setLeftStatus
+        south.setAlignment(Pos.CENTER_LEFT);
         south.setPadding(new Insets(4, 6, 4, 6));
 
         setTop(title);
         setCenter(textArea);
         setBottom(south);
+    }
+
+    /**
+     * Place {@code node} at the left of the bottom toolbar (e.g. an execution readout);
+     * the "Clear console" button stays pinned to the right.
+     */
+    public void setLeftStatus(Node node) {
+        south.getChildren().setAll(node, southSpacer, clearBtn, copyBtn);
+    }
+
+    /** Copy the full console text to the system clipboard. */
+    public void copyAll() {
+        ClipboardContent content = new ClipboardContent();
+        content.putString(textArea.getText());
+        Clipboard.getSystemClipboard().setContent(content);
     }
 
     /** Append a permanent line. Any pending transient progress line is kept as-is. */
@@ -137,5 +164,10 @@ public class ConsoleView extends BorderPane {
             textArea.clear();
             committedLen = 0;
         });
+    }
+
+    @Override
+    public Region getView() {
+        return this;
     }
 }

@@ -27,6 +27,7 @@ public class Settings {
     private static final String KEY_CONDA_EXECUTABLE = "condaExecutable";
     private static final String KEY_PDV_JAR = "pdvJar";
     private static final String KEY_THEME = "theme";
+    private static final String KEY_COLORED_CONSOLE = "coloredConsole";
 
     private final Preferences prefs = Preferences.userRoot().node("org/casanovo/gui");
 
@@ -36,6 +37,7 @@ public class Settings {
     private String condaExecutable;
     private String pdvJar;
     private String theme;
+    private boolean coloredConsole;
 
     public Settings() {
         load();
@@ -49,6 +51,7 @@ public class Settings {
         condaExecutable = prefs.get(KEY_CONDA_EXECUTABLE, "conda");
         pdvJar = prefs.get(KEY_PDV_JAR, "");
         theme = prefs.get(KEY_THEME, "PrimerLight");
+        coloredConsole = prefs.getBoolean(KEY_COLORED_CONSOLE, true);
     }
 
     /** Persist the current values so they survive a restart. */
@@ -59,6 +62,7 @@ public class Settings {
         prefs.put(KEY_CONDA_EXECUTABLE, nullToEmpty(condaExecutable));
         prefs.put(KEY_PDV_JAR, nullToEmpty(pdvJar));
         prefs.put(KEY_THEME, nullToEmpty(theme));
+        prefs.putBoolean(KEY_COLORED_CONSOLE, coloredConsole);
     }
 
     public String getCasanovoExecutable() {
@@ -109,6 +113,14 @@ public class Settings {
 
     public void setTheme(String theme) {
         this.theme = theme;
+    }
+
+    public boolean isColoredConsole() {
+        return coloredConsole;
+    }
+
+    public void setColoredConsole(boolean coloredConsole) {
+        this.coloredConsole = coloredConsole;
     }
 
     private static String nullToEmpty(String s) {

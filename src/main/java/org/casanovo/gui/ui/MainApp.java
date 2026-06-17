@@ -41,6 +41,7 @@ import org.casanovo.gui.core.CasanovoInstaller;
 import org.casanovo.gui.core.CasanovoRunner;
 import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
+import org.casanovo.gui.core.Os;
 import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.PyVenv;
 import org.casanovo.gui.core.Settings;
@@ -68,14 +69,14 @@ public class MainApp extends Application {
     private final CasanovoRunner runner = new CasanovoRunner();
 
     private final TabPane tabs = new TabPane();
-    private final ConsoleView console = new ConsoleView();
+    private ConsoleOutput console;
+    private SplitPane split;
     private final List<CommandPane> panes = new ArrayList<>();
 
     private final Label settingsLabel = new Label();
     private final TextField commandPreview = new TextField();
     private final Button paramsButton = new Button("Parameters");
     private final CheckBox useGuiParams = new CheckBox("Use GUI parameters (generate --config)");
-    private final Button installButton = new Button("Install Casanovo");
     private final Button pdvButton = new Button("Open in PDV");
     private final Button runButton = new Button("Run Casanovo");
     private final Button stopButton = new Button("Stop");
@@ -127,6 +128,7 @@ public class MainApp extends Application {
     public void start(Stage primaryStage) {
         this.stage = primaryStage;
         Themes.apply(settings.getTheme());
+        console = makeConsole(settings.isColoredConsole());
         try (java.io.InputStream icon = getClass().getResourceAsStream("/org/casanovo/gui/icon.png")) {
             if (icon != null) {
                 primaryStage.getIcons().add(new javafx.scene.image.Image(icon));
@@ -151,14 +153,14 @@ public class MainApp extends Application {
         VBox topArea = new VBox(tabs, buildRunBar());
         VBox.setVgrow(tabs, Priority.ALWAYS);
 
-        SplitPane split = new SplitPane(topArea, console);
+        split = new SplitPane(topArea, console.getView());
         split.setOrientation(javafx.geometry.Orientation.VERTICAL);
         split.setDividerPositions(0.62);
 
         BorderPane root = new BorderPane();
         // The update banner sits between the menu bar and the settings bar; it is
         // hidden (and takes no space) until a check finds something.
-        root.setTop(new VBox(buildMenuBar(), updateBanner, buildSettingsBar()));
+        root.setTop(new VBox(buildMenuBar(), updateBanner));
         root.setCenter(split);
         root.setBottom(buildStatusBar());
         // Match the Carafe GUI base font: Segoe UI 13px (with cross-platform fallbacks).
@@ -166,6 +168,7 @@ public class MainApp extends Application {
 
         wireActions();
         refreshSettingsLabel();
+        console.setLeftStatus(buildExecutionReadout());
         refreshPreview();
         updateRunningState(false);
 
@@ -245,25 +248,37 @@ public class MainApp extends Application {
             themeMenu.getItems().add(item);
         }
         viewMenu.getItems().add(themeMenu);
+
+        CheckMenuItem coloredItem = new CheckMenuItem("Colored console output");
+        coloredItem.setSelected(settings.isColoredConsole());
+        coloredItem.setOnAction(e -> {
+            settings.setColoredConsole(coloredItem.isSelected());
+            settings.save();
+            swapConsole(coloredItem.isSelected());
+        });
+        viewMenu.getItems().add(coloredItem);
         return viewMenu;
     }
 
-    private Region buildSettingsBar() {
-        Button edit = new Button("Edit");
-        edit.setOnAction(e -> openSettings());
-        HBox.setHgrow(settingsLabel, Priority.ALWAYS);
-        settingsLabel.setMaxWidth(Double.MAX_VALUE);
-        settingsLabel.getStyleClass().add("text-muted");
-        installButton.setOnAction(e -> onInstall());
-        installButton.setTooltip(new javafx.scene.control.Tooltip(
-                "Download Python + Casanovo automatically into ~/.casanovo-gui"));
-        pdvButton.setOnAction(e -> openPdv());
-        pdvButton.setTooltip(new javafx.scene.control.Tooltip(
-                "Open the spectra + Casanovo mzTab in PDV (downloads PDV on first use)"));
-        HBox bar = new HBox(8, new Label("Execution:"), settingsLabel, installButton, pdvButton, edit);
-        bar.setAlignment(Pos.CENTER_LEFT);
-        bar.setPadding(new Insets(6, 10, 6, 10));
-        return bar;
+    /** Create the console implementation for the given preference. */
+    private ConsoleOutput makeConsole(boolean colored) {
+        return colored ? new RichConsoleView() : new ConsoleView();
+    }
+
+    /**
+     * Swap the console widget in place (live), preserving the split divider and the
+     * left-status readout. The previous console's text is not carried over.
+     */
+    private void swapConsole(boolean colored) {
+        ConsoleOutput previous = console;
+        console = makeConsole(colored);
+        console.setLeftStatus(buildExecutionReadout());
+        int idx = split.getItems().indexOf(previous.getView());
+        if (idx >= 0) {
+            double[] dividers = split.getDividerPositions();
+            split.getItems().set(idx, console.getView());
+            split.setDividerPositions(dividers);
+        }
     }
 
     private Region buildRunBar() {
@@ -275,12 +290,14 @@ public class MainApp extends Application {
         runButton.setTooltip(new javafx.scene.control.Tooltip("Run the current Casanovo command (Ctrl+R)"));
         stopButton.getStyleClass().add("danger");
         stopButton.setTooltip(new javafx.scene.control.Tooltip("Stop the running Casanovo process (Esc)"));
+        pdvButton.setTooltip(new javafx.scene.control.Tooltip(
+                "Open the spectra + Casanovo mzTab in PDV (downloads PDV on first use)"));
         commandPreview.setEditable(false);
         // The command preview is read-only; skip it in tab order.
         commandPreview.setFocusTraversable(false);
         commandPreview.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', 'Courier New', monospace; -fx-font-size: 13px;");
         HBox.setHgrow(commandPreview, Priority.ALWAYS);
-        HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton);
+        HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton, pdvButton);
         cmdRow.setAlignment(Pos.CENTER_LEFT);
         cmdRow.setPadding(new Insets(8, 10, 8, 10));
 
@@ -297,10 +314,20 @@ public class MainApp extends Application {
         return bar;
     }
 
+    /** The "Execution: <casanovo>" readout shown at the left of the console's bottom bar. */
+    private Region buildExecutionReadout() {
+        settingsLabel.getStyleClass().add("text-muted");
+        settingsLabel.setMaxWidth(460);
+        HBox box = new HBox(6, new Label("Execution:"), settingsLabel);
+        box.setAlignment(Pos.CENTER_LEFT);
+        return box;
+    }
+
     private void wireActions() {
         runButton.setOnAction(e -> onRun());
         stopButton.setOnAction(e -> onStop());
         paramsButton.setOnAction(e -> openParameters());
+        pdvButton.setOnAction(e -> openPdv());
         useGuiParams.setOnAction(e -> refreshPreview());
     }
 
@@ -365,6 +392,7 @@ public class MainApp extends Application {
         } else {
             settingsLabel.setText(settings.getCasanovoExecutable() + "  (PATH / direct)");
         }
+        settingsLabel.setTooltip(new javafx.scene.control.Tooltip(settingsLabel.getText()));
     }
 
     private void onRun() {
@@ -375,6 +403,25 @@ public class MainApp extends Application {
         String error = pane.validateInputs();
         if (error != null) {
             alert(Alert.AlertType.WARNING, "Cannot run", error);
+            return;
+        }
+        // Casanovo missing? Offer to install it now and then run the analysis automatically.
+        if (!casanovoAvailable()) {
+            Alert ask = new Alert(Alert.AlertType.CONFIRMATION,
+                    "Casanovo is not found or installed yet.\n\n"
+                            + "Install the latest Casanovo now and then run the analysis?\n\n"
+                            + "Downloads a private Python runtime + Casanovo into "
+                            + CasanovoInstaller.defaultInstallRoot()
+                            + "\n(needs internet; takes a few minutes).",
+                    ButtonType.YES, ButtonType.NO);
+            ask.setTitle("Casanovo not found");
+            ask.setHeaderText(null);
+            if (stage != null) {
+                ask.initOwner(stage);
+            }
+            if (ask.showAndWait().orElse(ButtonType.NO) == ButtonType.YES) {
+                runInstall(this::onRun); // install, then re-enter onRun (now available) and run
+            }
             return;
         }
         // Pre-check: if a concrete path was configured (not just "casanovo"), make
@@ -444,6 +491,60 @@ public class MainApp extends Application {
         return "The configured Casanovo executable could not be found:\n" + exe
                 + "\n\nFix it in File → Settings, or click \"Install Casanovo\" to "
                 + "download Python + Casanovo into ~/.casanovo-gui.";
+    }
+
+    /**
+     * Whether a runnable Casanovo can be found, checked in the order the command would
+     * actually resolve (so "available" means the spawn will succeed):
+     * <ol>
+     *   <li>Conda mode → the env resolves it.</li>
+     *   <li>An explicitly configured concrete path → it must exist.</li>
+     *   <li>The GUI's own managed venv → adopt it (preferred over an unknown system
+     *       Casanovo, since the installer pinned a compatible PyArrow/PyTorch stack).</li>
+     *   <li>A bare {@code casanovo} on PATH.</li>
+     * </ol>
+     */
+    private boolean casanovoAvailable() {
+        if (settings.isUseConda()) {
+            return true; // conda run resolves it inside the env
+        }
+        String exe = settings.getCasanovoExecutable();
+        if (exe.contains(File.separator) || exe.contains("/")) {
+            return new File(exe).isFile(); // explicit concrete path
+        }
+        // Bare name: prefer the GUI's own managed install over whatever is on PATH.
+        File managed = CasanovoInstaller.managedExecutable().toFile();
+        if (managed.isFile()) {
+            settings.setCasanovoExecutable(managed.getAbsolutePath());
+            settings.setUseConda(false);
+            settings.save();
+            refreshSettingsLabel();
+            refreshPreview();
+            return true;
+        }
+        return onPath(exe);
+    }
+
+    /** True if {@code name} resolves on {@code PATH} (trying Windows executable suffixes). */
+    private static boolean onPath(String name) {
+        String path = System.getenv("PATH");
+        if (path == null || path.isEmpty()) {
+            return false;
+        }
+        String[] exts = Os.isWindows()
+                ? new String[]{"", ".exe", ".cmd", ".bat"}
+                : new String[]{""};
+        for (String dir : path.split(File.pathSeparator)) {
+            if (dir.isEmpty()) {
+                continue;
+            }
+            for (String ext : exts) {
+                if (new File(dir, name + ext).isFile()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -687,6 +788,19 @@ public class MainApp extends Application {
             return;
         }
 
+        runInstall(null);
+    }
+
+    /**
+     * Download + install Casanovo on a background thread (callers handle confirmation).
+     * On success the new venv executable is selected and saved; then {@code afterSuccess}
+     * runs if given (e.g. proceed to the analysis), otherwise an "install complete" notice
+     * is shown.
+     */
+    private void runInstall(Runnable afterSuccess) {
+        if (installing || runner.isRunning()) {
+            return;
+        }
         installing = true;
         setBusy(true);
         statusLabel.setText("Installing Casanovo…");
@@ -707,8 +821,12 @@ public class MainApp extends Application {
                     refreshSettingsLabel();
                     refreshPreview();
                     statusLabel.setText("Casanovo installed.");
-                    alert(Alert.AlertType.INFORMATION, "Install complete",
-                            "Casanovo was installed and selected:\n" + exe);
+                    if (afterSuccess != null) {
+                        afterSuccess.run();
+                    } else {
+                        alert(Alert.AlertType.INFORMATION, "Install complete",
+                                "Casanovo was installed and selected:\n" + exe);
+                    }
                 });
             } catch (Exception ex) {
                 String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
@@ -727,7 +845,6 @@ public class MainApp extends Application {
 
     /** Disable interactive controls while a long background task (install) runs. */
     private void setBusy(boolean busy) {
-        installButton.setDisable(busy);
         pdvButton.setDisable(busy);
         runButton.setDisable(busy);
         paramsButton.setDisable(busy);
@@ -739,7 +856,6 @@ public class MainApp extends Application {
         stopButton.setDisable(!running);
         tabs.setDisable(running);
         paramsButton.setDisable(running);
-        installButton.setDisable(running);
         pdvButton.setDisable(running);
     }
 

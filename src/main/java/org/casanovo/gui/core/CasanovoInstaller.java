@@ -59,6 +59,18 @@ public final class CasanovoInstaller {
     }
 
     /**
+     * The {@code casanovo} executable inside the default managed venv (it may not exist
+     * yet). Mirrors the {@code .venv/Scripts|bin} layout {@link #installAll} creates, so
+     * the GUI can detect a prior managed install.
+     */
+    public static Path managedExecutable() {
+        Path venv = defaultInstallRoot().resolve(".venv");
+        return Os.isWindows()
+                ? venv.resolve("Scripts").resolve("casanovo.exe")
+                : venv.resolve("bin").resolve("casanovo");
+    }
+
+    /**
      * Install Python + Casanovo under {@code installRoot}.
      *
      * @param installRoot directory to install into (created if needed)
@@ -482,6 +494,10 @@ public final class CasanovoInstaller {
             pb.directory(workDir.toFile());
             pb.redirectErrorStream(true);
             Os.applyNativeEnv(pb); // Windows-only MKL/OpenMP safeguard; no-op elsewhere
+            // applyNativeEnv also sets FORCE_COLOR (for the run console's live Rich progress),
+            // but the install console does not strip ANSI — so opt out here. NO_COLOR overrides
+            // FORCE_COLOR, giving uv/Casanovo plain text instead of raw colour escapes.
+            pb.environment().putIfAbsent("NO_COLOR", "1");
             Process p = pb.start();
 
             ByteArrayOutputStream captured = new ByteArrayOutputStream();
