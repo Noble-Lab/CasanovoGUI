@@ -91,7 +91,7 @@ jobs:
           - { os: ubuntu-latest,  name: linux,   arch: x86_64 }
           # Apple Silicon only. Native Intel-mac dropped: GitHub's macos-13 (Intel) runners
           # queue for ages; Intel-Mac users run the cross-platform portable JAR (needs a JDK).
-          - { os: macos-14,       name: macos,   arch: arm64 }
+          - { os: macos-15,       name: macos,   arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
