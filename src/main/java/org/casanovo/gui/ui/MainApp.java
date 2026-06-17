@@ -48,6 +48,7 @@ import org.casanovo.gui.core.UpdateChecker;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -83,7 +84,29 @@ public class MainApp extends Application {
     private final UpdateBanner updateBanner = new UpdateBanner();
 
     private static final Pattern PCT = Pattern.compile("(\\d+)%\\|");
+    /**
+     * tqdm/Lightning-Rich "&lt;done&gt;/&lt;total&gt;" token. The total is a count when known,
+     * else a placeholder that varies by version ("--", "?", "None", "inf"), so it is captured
+     * loosely and treated as "unknown" unless it parses as a number.
+     */
+    private static final Pattern RICH_COUNT = Pattern.compile("(\\d+)/(\\S+)");
+    /** ANSI/VT control sequences (colour, cursor) emitted once FORCE_COLOR makes Rich stream live. */
+    private static final Pattern ANSI = Pattern.compile("\\x1B\\[[0-9;?]*[ -/]*[@-~]");
+    /** Casanovo logs "Test dataset contains N spectra." — the count of spectra to be predicted. */
+    private static final Pattern SPECTRA_COUNT = Pattern.compile("dataset contains (\\d+) spectra");
+    /** "predict_batch_size: N" line in the run's --config YAML. */
+    private static final Pattern BATCH_SIZE = Pattern.compile("^\\s*predict_batch_size:\\s*(\\d+)");
     private volatile long lastProgressMs = 0L;
+    /** Base status text for the current run ("Running …"), so progress can append a live count. */
+    private String runStatusBase = "";
+    /** Effective predict batch size for the current run (spectra per Lightning batch). */
+    private volatile int predictBatchSize = 1024;
+    /**
+     * Total Lightning batches for the current prediction, derived from the logged spectrum count
+     * and {@link #predictBatchSize}. 0 = not yet known (Lightning itself reports the total as "--"
+     * because the dataset is streamed), so the bar stays animated until this is resolved.
+     */
+    private volatile int predictTotalBatches = 0;
 
     private volatile boolean installing = false;
     private volatile boolean checkpointErrorSeen = false;
@@ -378,7 +401,13 @@ public class MainApp extends Application {
         pendingRunStartMs = System.currentTimeMillis() - 3000L; // small clock-skew buffer
         console.append(System.lineSeparator() + "$ " + command.toDisplayString(settings)
                 + System.lineSeparator());
-        statusLabel.setText("Running " + command.getSubcommand() + "…");
+        String runLabel = (pane instanceof SequencePane)
+                ? "de novo peptide sequencing"
+                : command.getSubcommand();
+        runStatusBase = "Running " + runLabel + "…";
+        statusLabel.setText(runStatusBase);
+        predictTotalBatches = 0;
+        predictBatchSize = readPredictBatchSize(command);
         updateRunningState(true);
         progressBar.setVisible(true);
         progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
@@ -424,6 +453,9 @@ public class MainApp extends Application {
      * thread is not flooded. Committed chunks are appended as permanent lines.
      */
     private void onOutput(String text, boolean isTransient) {
+        // FORCE_COLOR makes Rich stream progress live, but at the cost of embedded
+        // colour/cursor escape codes — strip them so the console and parser see plain text.
+        text = ANSI.matcher(text).replaceAll("");
         if (isTransient) {
             long now = System.currentTimeMillis();
             if (now - lastProgressMs < 80) {
@@ -437,6 +469,7 @@ public class MainApp extends Application {
             if (looksLikeCheckpointError(text)) {
                 checkpointErrorSeen = true;
             }
+            maybeCaptureSpectrumCount(text);
             console.appendLine(text);
         }
     }
@@ -449,19 +482,93 @@ public class MainApp extends Application {
                 || l.contains("pytorchstreamreader failed");
     }
 
-    /** Drive the progress bar from a tqdm-style "NN%|" token, else show indeterminate. */
+    /**
+     * Derive the prediction's total batch count from Casanovo's "… dataset contains N spectra."
+     * log line. Lightning reports the total as "--" because the dataset is streamed, but
+     * {@code totalBatches = ceil(N / predict_batch_size)} lets us show a real progress bar.
+     */
+    private void maybeCaptureSpectrumCount(String line) {
+        Matcher m = SPECTRA_COUNT.matcher(line);
+        if (m.find()) {
+            try {
+                long n = Long.parseLong(m.group(1));
+                int bs = Math.max(1, predictBatchSize);
+                predictTotalBatches = (int) ((n + bs - 1) / bs); // ceiling division
+            } catch (NumberFormatException ignored) {
+                // leave total unknown -> animated bar
+            }
+        }
+    }
+
+    /**
+     * Read {@code predict_batch_size} from the run's {@code --config} YAML (the exact file
+     * Casanovo reads). Defaults to 1024 — Casanovo's own default — when absent or unreadable.
+     */
+    private int readPredictBatchSize(CasanovoCommand command) {
+        List<String> args = command.getArguments();
+        int idx = args.indexOf("--config");
+        if (idx >= 0 && idx + 1 < args.size()) {
+            File cfg = new File(args.get(idx + 1));
+            if (cfg.isFile()) {
+                try {
+                    for (String line : Files.readAllLines(cfg.toPath())) {
+                        Matcher m = BATCH_SIZE.matcher(line);
+                        if (m.find()) {
+                            return Integer.parseInt(m.group(1));
+                        }
+                    }
+                } catch (IOException | NumberFormatException ignored) {
+                    // fall through to the default
+                }
+            }
+        }
+        return 1024;
+    }
+
+    /** Drive the progress bar from a tqdm "NN%|" or Lightning-Rich "done/total" token. */
     private void updateProgressBar(String line) {
+        // tqdm style: "NN%|" gives an exact percentage.
         Matcher m = PCT.matcher(line);
         if (m.find()) {
             try {
                 double pct = Integer.parseInt(m.group(1)) / 100.0;
-                progressBar.setProgress(Math.max(0, Math.min(1, pct)));
+                // A stage hitting 100% does not mean the run is done: Casanovo still
+                // aggregates predictions and writes the output file afterwards, and
+                // further stages may follow. Show the animated indeterminate bar so a
+                // completed stage doesn't look stuck/finished while work continues.
+                progressBar.setProgress(pct >= 1.0
+                        ? ProgressBar.INDETERMINATE_PROGRESS
+                        : Math.max(0, pct));
                 return;
             } catch (NumberFormatException ignored) {
-                // fall through to indeterminate
+                // fall through
             }
         }
-        // Lightning's "Predicting" bar has no parseable total -> indeterminate.
+        // Lightning's Rich progress bar: "<done>/<total>". For de novo Lightning prints the
+        // total as "--" (the dataset is streamed), so we substitute the total we derived from
+        // the logged spectrum count (see maybeCaptureSpectrumCount). With a total we show a real
+        // filling bar; without one (e.g. the count line was suppressed) we fall back to an
+        // animated bar plus the live count.
+        Matcher r = RICH_COUNT.matcher(line);
+        if (r.find()) {
+            try {
+                int done = Integer.parseInt(r.group(1));
+                String total = r.group(2);
+                int t = total.chars().allMatch(Character::isDigit)
+                        ? Integer.parseInt(total)
+                        : predictTotalBatches;
+                progressBar.setProgress(t > 0 && done < t
+                        ? (double) done / t
+                        : ProgressBar.INDETERMINATE_PROGRESS);
+                statusLabel.setText(runStatusBase
+                        + (t > 0 ? " (" + done + "/" + t + " batches)"
+                                 : " (" + done + " batches)"));
+                return;
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
+        // No parseable progress token -> keep an animated bar going.
         if (progressBar.getProgress() >= 1.0 || progressBar.getProgress() < 0) {
             progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
         }

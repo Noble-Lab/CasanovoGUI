@@ -40,6 +40,12 @@ public final class Os {
      *       GUI as UTF-8 instead of literal {@code \\uXXXX} escapes. When Python's stdout is
      *       a pipe it otherwise defaults to the OS code page (e.g. Windows cp1252) and
      *       backslash-escapes anything it can't encode.</li>
+     *   <li><b>All platforms:</b> {@code FORCE_COLOR=1} so PyTorch Lightning's Rich progress
+     *       bar (the default on Lightning ≥2.x when {@code rich} is installed) treats our
+     *       captured pipe as a terminal and streams progress refreshes <em>live</em>. Without
+     *       it Rich detects a non-TTY and only flushes the bar once, at the very end of the
+     *       run — so the GUI sees no progress until it is already done. The colour escape
+     *       codes this enables are stripped before display (see {@code MainApp.onOutput}).</li>
      *   <li><b>Windows only:</b> the Intel OpenMP / MKL workaround that otherwise lets
      *       Casanovo crash with a hard access violation (exit {@code 0xC0000005}). Not
      *       applied elsewhere: there is no such DLL clash, and forcing
@@ -48,6 +54,7 @@ public final class Os {
      */
     public static void applyNativeEnv(ProcessBuilder pb) {
         pb.environment().putIfAbsent("PYTHONIOENCODING", "utf-8");
+        pb.environment().putIfAbsent("FORCE_COLOR", "1");
         if (isWindows()) {
             pb.environment().putIfAbsent("KMP_DUPLICATE_LIB_OK", "TRUE");
             pb.environment().putIfAbsent("MKL_THREADING_LAYER", "SEQUENTIAL");
