@@ -28,6 +28,9 @@ public class Settings {
     private static final String KEY_PDV_JAR = "pdvJar";
     private static final String KEY_THEME = "theme";
     private static final String KEY_COLORED_CONSOLE = "coloredConsole";
+    private static final String KEY_LL_URL = "limelightWebAppUrl";
+    private static final String KEY_LL_KEY = "limelightSubmitImportKey";
+    private static final String KEY_LL_PROJECT_ID = "limelightLastProjectId";
 
     private final Preferences prefs = Preferences.userRoot().node("org/casanovo/gui");
 
@@ -38,6 +41,9 @@ public class Settings {
     private String pdvJar;
     private String theme;
     private boolean coloredConsole;
+    private String limelightUrl;
+    private String limelightKey;
+    private String limelightProjectId;
 
     public Settings() {
         load();
@@ -52,6 +58,9 @@ public class Settings {
         pdvJar = prefs.get(KEY_PDV_JAR, "");
         theme = prefs.get(KEY_THEME, "PrimerLight");
         coloredConsole = prefs.getBoolean(KEY_COLORED_CONSOLE, true);
+        limelightUrl = prefs.get(KEY_LL_URL, "");
+        limelightKey = prefs.get(KEY_LL_KEY, "");
+        limelightProjectId = prefs.get(KEY_LL_PROJECT_ID, "");
     }
 
     /** Persist the current values so they survive a restart. */
@@ -63,6 +72,9 @@ public class Settings {
         prefs.put(KEY_PDV_JAR, nullToEmpty(pdvJar));
         prefs.put(KEY_THEME, nullToEmpty(theme));
         prefs.putBoolean(KEY_COLORED_CONSOLE, coloredConsole);
+        prefs.put(KEY_LL_URL, nullToEmpty(limelightUrl));
+        prefs.put(KEY_LL_KEY, nullToEmpty(limelightKey));
+        prefs.put(KEY_LL_PROJECT_ID, nullToEmpty(limelightProjectId));
     }
 
     public String getCasanovoExecutable() {
@@ -121,6 +133,30 @@ public class Settings {
 
     public void setColoredConsole(boolean coloredConsole) {
         this.coloredConsole = coloredConsole;
+    }
+
+    public String getLimelightUrl() {
+        return limelightUrl == null ? "" : limelightUrl.trim();
+    }
+
+    public void setLimelightUrl(String limelightUrl) {
+        this.limelightUrl = limelightUrl;
+    }
+
+    public String getLimelightKey() {
+        return limelightKey == null ? "" : limelightKey.trim();
+    }
+
+    public void setLimelightKey(String limelightKey) {
+        this.limelightKey = limelightKey;
+    }
+
+    public String getLimelightProjectId() {
+        return limelightProjectId == null ? "" : limelightProjectId.trim();
+    }
+
+    public void setLimelightProjectId(String limelightProjectId) {
+        this.limelightProjectId = limelightProjectId;
     }
 
     private static String nullToEmpty(String s) {

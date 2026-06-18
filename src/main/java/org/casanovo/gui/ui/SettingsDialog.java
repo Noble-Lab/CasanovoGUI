@@ -14,6 +14,7 @@ import javafx.scene.control.TextField;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.stage.Window;
+import org.casanovo.gui.core.LimelightUploader;
 import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.Settings;
 import org.casanovo.gui.core.UpdateChecker;
@@ -41,6 +42,9 @@ public class SettingsDialog {
     private final Button pdvUpgradeButton = new Button();
     private final ProgressBar pdvProgressBar = new ProgressBar();
     private String pdvTargetVersion;
+
+    private final Label limelightStatusLabel = new Label();
+    private final Button limelightDownloadButton = new Button("Download / update");
 
     public SettingsDialog(Window owner, Settings settings) {
         this.owner = owner;
@@ -71,6 +75,9 @@ public class SettingsDialog {
                         FxUtils.fileButton(owner, pdvField, false, "PDV jar (*.jar)", "*.jar"))
                 .addNote("Path to a PDV jar for \"Open in PDV\". Leave blank to auto-download the latest PDV.")
                 .addFullWidth(buildPdvStatusRow());
+        form.addRow("Limelight converter:", buildLimelightToolRow())
+                .addNote("Casanovo→Limelight XML converter, auto-downloaded on first \"Upload to Limelight\". "
+                        + "Use this to pre-download or update it.");
 
         Dialog<ButtonType> dialog = new Dialog<>();
         if (owner != null) {
@@ -219,6 +226,48 @@ public class SettingsDialog {
     private void hideUpgrade() {
         pdvUpgradeButton.setVisible(false);
         pdvUpgradeButton.setManaged(false);
+    }
+
+    // ---- Limelight converter download ----------------------------------------
+
+    private HBox buildLimelightToolRow() {
+        limelightStatusLabel.getStyleClass().add("text-muted");
+        limelightStatusLabel.setStyle("-fx-font-style: italic;");
+        limelightStatusLabel.setWrapText(true);
+        limelightStatusLabel.setMaxWidth(Double.MAX_VALUE);
+        Optional<String> v = LimelightUploader.converterVersion();
+        limelightStatusLabel.setText(v.isPresent()
+                ? "Converter installed: v" + v.get()
+                : "Converter not downloaded yet.");
+        limelightDownloadButton.setOnAction(e -> downloadLimelightConverter());
+        HBox row = new HBox(8, limelightStatusLabel, limelightDownloadButton);
+        row.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(limelightStatusLabel, Priority.ALWAYS);
+        return row;
+    }
+
+    private void downloadLimelightConverter() {
+        limelightDownloadButton.setDisable(true);
+        limelightStatusLabel.setText("Downloading the latest Casanovo→Limelight converter…");
+        Thread t = new Thread(() -> {
+            try {
+                LimelightUploader.ensureConverterJar(true, msg -> { }, null);
+                Optional<String> now = LimelightUploader.converterVersion();
+                Platform.runLater(() -> {
+                    limelightStatusLabel.setText("Converter installed"
+                            + (now.isPresent() ? ": v" + now.get() : "."));
+                    limelightDownloadButton.setDisable(false);
+                });
+            } catch (Exception ex) {
+                String m = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> {
+                    limelightStatusLabel.setText("Download failed: " + m);
+                    limelightDownloadButton.setDisable(false);
+                });
+            }
+        }, "limelight-converter-download");
+        t.setDaemon(true);
+        t.start();
     }
 
     private String validate() {

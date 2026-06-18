@@ -41,6 +41,8 @@ import org.casanovo.gui.core.CasanovoInstaller;
 import org.casanovo.gui.core.CasanovoRunner;
 import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
+import org.casanovo.gui.core.JavaLauncher;
+import org.casanovo.gui.core.LimelightUploader;
 import org.casanovo.gui.core.Os;
 import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.PyVenv;
@@ -78,6 +80,7 @@ public class MainApp extends Application {
     private final Button paramsButton = new Button("Parameters");
     private final CheckBox useGuiParams = new CheckBox("Use GUI parameters (generate --config)");
     private final Button pdvButton = new Button("Open in PDV");
+    private final Button limelightButton = new Button("Upload to Limelight");
     private final Button runButton = new Button("Run Casanovo");
     private final Button stopButton = new Button("Stop");
     private final Label statusLabel = new Label("Ready.");
@@ -118,8 +121,14 @@ public class MainApp extends Application {
     // can load it directly. Captured at run start, resolved when the run finishes.
     private List<File> lastResultSpectra;
     private File lastResultMzTab;
+    // The config file the last successful run used (may be null), and whether it was a
+    // `casanovo sequence` run — both needed by "Upload to Limelight".
+    private File lastResultConfig;
+    private boolean lastResultIsSequence;
     private List<File> pendingSpectra;
     private File pendingOutputDir;
+    private File pendingConfigFile;
+    private boolean pendingIsSequence;
     private long pendingRunStartMs;
     // Most recently launched PDV process + the result it shows, to avoid duplicate windows.
     private Process lastPdvProcess;
@@ -211,10 +220,12 @@ public class MainApp extends Application {
         MenuItem pdvItem = new MenuItem("Open in PDV");
         pdvItem.setAccelerator(new KeyCodeCombination(KeyCode.D, KeyCombination.SHORTCUT_DOWN));
         pdvItem.setOnAction(e -> openPdv());
+        MenuItem limelightItem = new MenuItem("Upload to Limelight");
+        limelightItem.setOnAction(e -> onUploadToLimelight());
         MenuItem exitItem = new MenuItem("Exit");
         exitItem.setAccelerator(new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN));
         exitItem.setOnAction(e -> stage.close());
-        fileMenu.getItems().addAll(settingsItem, paramsItem, installItem, pdvItem,
+        fileMenu.getItems().addAll(settingsItem, paramsItem, installItem, pdvItem, limelightItem,
                 new javafx.scene.control.SeparatorMenuItem(), exitItem);
 
         Menu helpMenu = new Menu("Help");
@@ -294,12 +305,14 @@ public class MainApp extends Application {
         stopButton.setTooltip(new javafx.scene.control.Tooltip("Stop the running Casanovo process (Esc)"));
         pdvButton.setTooltip(new javafx.scene.control.Tooltip(
                 "Open the spectra + Casanovo mzTab in PDV (downloads PDV on first use)"));
+        limelightButton.setTooltip(new javafx.scene.control.Tooltip(
+                "Convert the latest de novo result to Limelight XML and upload it (downloads tools on first use)"));
         commandPreview.setEditable(false);
         // The command preview is read-only; skip it in tab order.
         commandPreview.setFocusTraversable(false);
         commandPreview.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', 'Courier New', monospace; -fx-font-size: 13px;");
         HBox.setHgrow(commandPreview, Priority.ALWAYS);
-        HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton, pdvButton);
+        HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton, pdvButton, limelightButton);
         cmdRow.setAlignment(Pos.CENTER_LEFT);
         cmdRow.setPadding(new Insets(8, 10, 8, 10));
 
@@ -330,6 +343,7 @@ public class MainApp extends Application {
         stopButton.setOnAction(e -> onStop());
         paramsButton.setOnAction(e -> openParameters());
         pdvButton.setOnAction(e -> openPdv());
+        limelightButton.setOnAction(e -> onUploadToLimelight());
         useGuiParams.setOnAction(e -> refreshPreview());
     }
 
@@ -447,6 +461,9 @@ public class MainApp extends Application {
         // Remember the inputs + where the result will land so "Open in PDV" can load it directly.
         pendingSpectra = pane.resultSpectra();
         pendingOutputDir = (workingDir != null) ? workingDir : new File(System.getProperty("user.dir"));
+        // Remember the config used and whether this is a `sequence` run, for "Upload to Limelight".
+        pendingConfigFile = configArgOf(command);
+        pendingIsSequence = "sequence".equals(command.getSubcommand());
         pendingRunStartMs = System.currentTimeMillis() - 3000L; // small clock-skew buffer
         console.append(System.lineSeparator() + "$ " + command.toDisplayString(settings)
                 + System.lineSeparator());
@@ -885,6 +902,7 @@ public class MainApp extends Application {
         paramsButton.setDisable(busy);
         useGuiParams.setDisable(busy);
         tabs.setDisable(busy);
+        limelightButton.setDisable(busy || !hasUploadableResult());
     }
 
     private void updateRunningState(boolean running) {
@@ -894,6 +912,7 @@ public class MainApp extends Application {
         paramsButton.setDisable(running);
         useGuiParams.setDisable(running);
         pdvButton.setDisable(running);
+        limelightButton.setDisable(running || !hasUploadableResult());
     }
 
     private void alert(Alert.AlertType type, String title, String msg) {
@@ -1081,8 +1100,15 @@ public class MainApp extends Application {
         if (mztab != null) {
             lastResultSpectra = pendingSpectra;
             lastResultMzTab = mztab;
+            lastResultConfig = pendingConfigFile;
+            lastResultIsSequence = pendingIsSequence;
+            limelightButton.setDisable(!hasUploadableResult());
             console.appendLine("[pdv] Result ready: " + mztab.getName()
                     + " — click \"Open in PDV\" to view it (inputs loaded automatically).");
+            if (hasUploadableResult()) {
+                console.appendLine("[limelight] Result can be uploaded to Limelight "
+                        + "(File → Upload to Limelight).");
+            }
         }
     }
 
@@ -1103,6 +1129,233 @@ public class MainApp extends Application {
             }
         }
         return newest;
+    }
+
+    // -------------------------------------------------------- Limelight upload
+
+    /** Whether the most recent successful run is a de novo result that can be uploaded. */
+    private boolean hasUploadableResult() {
+        return lastResultIsSequence
+                && lastResultMzTab != null && lastResultMzTab.isFile()
+                && lastResultSpectra != null;
+    }
+
+    /**
+     * Convert the most recent de novo result to Limelight XML and upload it. Collects the
+     * instance URL / submit key / project ID in a modal dialog, then runs the two external
+     * jars in sequence with their output streamed to the console.
+     */
+    private void onUploadToLimelight() {
+        if (installing || runner.isRunning()) {
+            return;
+        }
+        if (!hasUploadableResult()) {
+            alert(Alert.AlertType.INFORMATION, "Nothing to upload",
+                    "Run a De novo (or Evaluate) search first. The most recent result is "
+                            + "uploaded to Limelight.");
+            return;
+        }
+        final File mzTab = lastResultMzTab;
+        if (!mzTab.isFile()) {
+            alert(Alert.AlertType.ERROR, "Result not found",
+                    "The result mzTab no longer exists:\n" + mzTab.getAbsolutePath());
+            return;
+        }
+        // Scan files: only mzML / mzXML inputs are uploadable; others are skipped (--no-scan-files).
+        final List<File> scanFiles = new ArrayList<>();
+        for (File f : lastResultSpectra) {
+            String n = f.getName().toLowerCase();
+            if (f.isFile() && (n.endsWith(".mzml") || n.endsWith(".mzxml"))) {
+                scanFiles.add(f);
+            }
+        }
+
+        LimelightDialog dlg = new LimelightDialog(stage, settings,
+                stripExtension(mzTab.getName()), buildLimelightInputsSummary(mzTab, scanFiles));
+        if (!dlg.showAndCollect()) {
+            return;
+        }
+        final String url = dlg.getUrl();
+        final String key = dlg.getKey();
+        final String projectId = dlg.getProjectId();
+        final String description = dlg.getDescription();
+        final File configForRun = lastResultConfig;
+        final File outXml = new File(mzTab.getParentFile(),
+                stripExtension(mzTab.getName()) + ".limelight.xml");
+
+        installing = true; // reuse the existing long-task busy flag (Run/Install/Upload are exclusive)
+        setBusy(true);
+        statusLabel.setText("Uploading to Limelight…");
+        console.append(System.lineSeparator() + "[limelight] Preparing upload…" + System.lineSeparator());
+
+        Thread t = new Thread(() -> {
+            try {
+                String javaExe = JavaLauncher.find(console::appendLine);
+                java.nio.file.Path converterJar =
+                        LimelightUploader.ensureConverterJar(false, console::appendLine, null);
+                java.nio.file.Path importerJar =
+                        LimelightUploader.ensureImporterJar(false, console::appendLine, null);
+                File cfg = resolveLimelightConfig(configForRun);
+                console.appendLine("[limelight] Config: " + cfg.getAbsolutePath());
+                List<String> convertCmd =
+                        LimelightUploader.convertCommand(javaExe, converterJar, mzTab, cfg, outXml);
+                List<String> uploadCmd = LimelightUploader.uploadCommand(javaExe, importerJar, url, key,
+                        projectId, outXml, description, scanFiles);
+                File workDir = mzTab.getParentFile();
+                Platform.runLater(() -> runLimelightPipeline(convertCmd, uploadCmd, workDir, outXml));
+            } catch (Exception ex) {
+                String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> finishLimelight(false, "Preparation failed: " + msg));
+            }
+        }, "limelight-prepare");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Run convert → (on success) upload, streaming both to the console. Call on the FX thread. */
+    private void runLimelightPipeline(List<String> convertCmd, List<String> uploadCmd,
+                                      File workDir, File outXml) {
+        console.append(System.lineSeparator() + "$ " + displayCommand(convertCmd) + System.lineSeparator());
+        statusLabel.setText("Limelight: converting to XML…");
+        runner.start(convertCmd, workDir, this::onLimelightOutput,
+                (code, err) -> Platform.runLater(() -> {
+                    if (err != null) {
+                        finishLimelight(false, "Conversion failed: " + err.getMessage());
+                    } else if (code != 0) {
+                        finishLimelight(false, "Conversion exited with code " + code + ".");
+                    } else if (!outXml.isFile()) {
+                        finishLimelight(false, "Conversion finished but produced no XML file.");
+                    } else {
+                        console.append(System.lineSeparator() + "$ " + maskedUploadDisplay(uploadCmd)
+                                + System.lineSeparator());
+                        statusLabel.setText("Limelight: uploading…");
+                        runner.start(uploadCmd, workDir, this::onLimelightOutput,
+                                (c2, e2) -> Platform.runLater(() -> {
+                                    if (e2 != null) {
+                                        finishLimelight(false, "Upload failed: " + e2.getMessage());
+                                    } else if (c2 == 0) {
+                                        finishLimelight(true, "Uploaded to Limelight successfully.");
+                                    } else if (c2 == 130) {
+                                        finishLimelight(false, "Upload was cancelled.");
+                                    } else {
+                                        finishLimelight(false, "Upload exited with code " + c2 + ".");
+                                    }
+                                }));
+                    }
+                }));
+    }
+
+    /** Stream Limelight jar output to the console (no Casanovo-specific progress parsing). */
+    private void onLimelightOutput(String text, boolean isTransient) {
+        text = ANSI.matcher(text).replaceAll("");
+        if (isTransient) {
+            long now = System.currentTimeMillis();
+            if (now - lastProgressMs < 80) {
+                return;
+            }
+            lastProgressMs = now;
+            console.showProgress(text);
+        } else {
+            console.appendLine(text);
+        }
+    }
+
+    /** Clear the busy state and report the outcome of a Limelight upload. */
+    private void finishLimelight(boolean ok, String message) {
+        installing = false;
+        setBusy(false);
+        console.appendLine("[limelight] " + message);
+        if (ok) {
+            statusLabel.setText("Uploaded to Limelight.");
+            alert(Alert.AlertType.INFORMATION, "Limelight upload", message);
+        } else {
+            statusLabel.setText("Limelight upload failed.");
+            alert(Alert.AlertType.ERROR, "Limelight upload failed", message);
+        }
+    }
+
+    /**
+     * The config file for the conversion: the one the run used when available, otherwise the
+     * installed version's default (generated via {@code casanovo configure}, cached). Spawns
+     * Casanovo for the fallback, so call this OFF the FX thread.
+     */
+    private File resolveLimelightConfig(File configForRun) throws IOException {
+        if (configForRun != null && configForRun.isFile()) {
+            return configForRun;
+        }
+        console.appendLine("[limelight] No config from the run; generating the default…");
+        ConfigCache.warm(settings);
+        Optional<String> base = ConfigCache.cachedBase(settings);
+        String yaml = base.isPresent() ? base.get() : config.toYaml();
+        return CasanovoConfig.writeTempConfig(yaml);
+    }
+
+    /** A short, read-only summary of what an upload will include, shown in the dialog. */
+    private String buildLimelightInputsSummary(File mzTab, List<File> scanFiles) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Result mzTab: ").append(mzTab.getName()).append('\n');
+        sb.append("Config: ").append(
+                lastResultConfig != null && lastResultConfig.isFile()
+                        ? lastResultConfig.getName()
+                        : "auto-generated default").append('\n');
+        if (scanFiles.isEmpty()) {
+            sb.append("Scan files: none (mzML/mzXML only) — uploading with --no-scan-files");
+        } else {
+            List<String> names = new ArrayList<>();
+            for (File f : scanFiles) {
+                names.add(f.getName());
+            }
+            sb.append("Scan files: ").append(String.join(", ", names));
+        }
+        return sb.toString();
+    }
+
+    /** The {@code --config} argument of a command (an existing file), or null. */
+    private static File configArgOf(CasanovoCommand command) {
+        List<String> args = command.getArguments();
+        int idx = args.indexOf("--config");
+        if (idx >= 0 && idx + 1 < args.size()) {
+            File f = new File(args.get(idx + 1));
+            if (f.isFile()) {
+                return f;
+            }
+        }
+        return null;
+    }
+
+    /** Strip a single trailing extension from a file name ({@code a.mztab} -> {@code a}). */
+    private static String stripExtension(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
+    }
+
+    /** Render an OS command as a shell-style string for the console echo (quoting spaces). */
+    private static String displayCommand(List<String> cmd) {
+        StringBuilder sb = new StringBuilder();
+        for (String part : cmd) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            if (part.isEmpty()) {
+                sb.append("\"\"");
+            } else if (part.chars().anyMatch(Character::isWhitespace)) {
+                sb.append('"').append(part).append('"');
+            } else {
+                sb.append(part);
+            }
+        }
+        return sb.toString();
+    }
+
+    /** Like {@link #displayCommand} but masks the Limelight submit key so it never hits the console. */
+    private static String maskedUploadDisplay(List<String> cmd) {
+        List<String> shown = new ArrayList<>();
+        for (String part : cmd) {
+            shown.add(part.startsWith("--user-submit-import-key=")
+                    ? "--user-submit-import-key=********"
+                    : part);
+        }
+        return displayCommand(shown);
     }
 
     private void showAbout() {
