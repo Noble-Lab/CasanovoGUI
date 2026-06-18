@@ -101,6 +101,8 @@ public class MainApp extends Application {
     /** "predict_batch_size: N" line in the run's --config YAML. */
     private static final Pattern BATCH_SIZE = Pattern.compile("^\\s*predict_batch_size:\\s*(\\d+)");
     private volatile long lastProgressMs = 0L;
+    /** Last time a real "%|" tqdm bar was shown; non-%| progress noise is dropped within 1 s of it. */
+    private volatile long lastBarMs = 0L;
     /** Base status text for the current run ("Running …"), so progress can append a live count. */
     private String runStatusBase = "";
     /** Effective predict batch size for the current run (spectra per Lightning batch). */
@@ -476,6 +478,7 @@ public class MainApp extends Application {
         progressBar.setVisible(true);
         progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
         lastProgressMs = 0L;
+        lastBarMs = 0L;
         checkpointErrorSeen = false;
 
         runner.start(command, settings, workingDir,
@@ -574,22 +577,54 @@ public class MainApp extends Application {
         // FORCE_COLOR makes Rich stream progress live, but at the cost of embedded
         // colour/cursor escape codes — strip them so the console and parser see plain text.
         text = ANSI.matcher(text).replaceAll("");
-        if (isTransient) {
-            long now = System.currentTimeMillis();
-            if (now - lastProgressMs < 80) {
-                return; // throttle high-frequency progress refreshes
-            }
-            lastProgressMs = now;
-            console.showProgress(text);
-            final String t = text;
-            Platform.runLater(() -> updateProgressBar(t));
-        } else {
-            if (looksLikeCheckpointError(text)) {
-                checkpointErrorSeen = true;
-            }
-            maybeCaptureSpectrumCount(text);
-            console.appendLine(text);
+        // 1) A real tqdm "<pct>%|<bar>|" chunk (db-search "Scoring candidates", spectrum loading)
+        //    is the live progress — show it as the single updating line, whether it arrived as a
+        //    \r refresh or newline-terminated.
+        if (text.indexOf("%|") >= 0) {
+            lastBarMs = System.currentTimeMillis();
+            showProgressThrottled(text);
+            return;
         }
+        // 2) A non-%| progress chunk: Lightning's "Predicting" Rich bar (the live bar in de novo),
+        //    or — in db-search — an interleave fragment ("3641.07PSM/s]") / "Predicting 0/--" that
+        //    collides with the tqdm bar in the pipe. While a %| bar is live (just seen), drop this
+        //    noise so the console isn't flooded with rate tails; otherwise show it (de novo's bar).
+        if (isTransient || isProgressNoise(text)) {
+            if (System.currentTimeMillis() - lastBarMs < 1000) {
+                return;
+            }
+            showProgressThrottled(text);
+            return;
+        }
+        // 3) A real committed log line. Drop whitespace-only lines: Lightning's Rich bar pads to
+        //    the terminal width, which after ANSI stripping leaves a committed line of spaces.
+        //    Casanovo's own log is all prefixed INFO:/WARNING: lines, so no meaningful blank is lost.
+        if (text.isBlank()) {
+            return;
+        }
+        if (looksLikeCheckpointError(text)) {
+            checkpointErrorSeen = true;
+        }
+        maybeCaptureSpectrumCount(text);
+        console.appendLine(text);
+    }
+
+    /** A progress chunk with no "%|" bar — a tqdm rate tail or Lightning's Rich "Predicting" bar. */
+    private static boolean isProgressNoise(String s) {
+        return s.indexOf("/s]") >= 0 || s.indexOf("it/s") >= 0
+                || s.indexOf("Predicting") >= 0 || s.indexOf('•') >= 0;
+    }
+
+    /** Show a progress refresh as the single transient line, rate-limited to protect the FX thread. */
+    private void showProgressThrottled(String text) {
+        long now = System.currentTimeMillis();
+        if (now - lastProgressMs < 80) {
+            return; // throttle high-frequency progress refreshes
+        }
+        lastProgressMs = now;
+        console.showProgress(text);
+        final String t = text;
+        Platform.runLater(() -> updateProgressBar(t));
     }
 
     /** Output signatures of a corrupt/incompatible model checkpoint (e.g. a partial download). */
