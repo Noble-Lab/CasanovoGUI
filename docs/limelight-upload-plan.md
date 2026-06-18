@@ -1,10 +1,15 @@
-# Implementation Plan — "Upload to Limelight"
+# "Upload to Limelight" — plan & as-built record
 
-A new feature for Casanovo GUI that converts a de novo search result to Limelight XML
-and uploads it to a [Limelight](https://limelight-ms.readthedocs.io/) instance, using two
-downloaded jars run as child processes whose output streams into the app console.
+A Casanovo GUI feature that converts a de novo search result to Limelight XML and uploads it
+to a [Limelight](https://limelight-ms.readthedocs.io/) instance, using two downloaded jars run
+as child processes whose output streams into the app console.
 
-Status: **planned** (design approved; not yet implemented).
+**Status: implemented.** Verified by a full `javac` compile of the whole source tree against
+JavaFX + RichTextFX + AtlantaFX (the sandbox lacks JDK 23+/Maven, so it has **not** been run
+end-to-end yet). This document started as the plan and is kept current as the as-built record;
+where the build deviated from the original plan it is called out inline (see §4.4 and §4.6 on
+**Stop**, and §4a on the **jar update mechanism**).
+
 Target: de novo results (`casanovo sequence`, including `--evaluate`). Not db-search/train/configure.
 
 ---
@@ -34,10 +39,15 @@ downloaded jars — the same shape the app already uses for PDV (`core/PdvLaunch
 ### 1.2 Step 2 — upload Limelight XML → Limelight server
 
 - **Jar:** `limelightSubmitImport.jar` (Java required on the system).
-- **Source — per Limelight instance** (so the importer matches the server version):
-  `<web-app-url>/static/limelightSubmitImport/limelightSubmitImport.jar`
-  - The web-app URL **includes a `/limelight` path**, e.g. `https://limelight.yeastrc.org/limelight`.
-  - So the jar URL = `<web-app-url>` + `/static/limelightSubmitImport/limelightSubmitImport.jar`.
+- **Source — latest `yeastrc/limelight-core` release** (stable asset name → `latest/download`
+  redirect, same mechanism as the converter):
+  `https://github.com/yeastrc/limelight-core/releases/latest/download/limelightSubmitImport.jar`
+  - The user's instance URL is **not** the jar source; it is still passed to the importer as
+    `--limelight-web-app-url` (the upload target). That URL **includes a `/limelight` path**,
+    e.g. `https://limelight.yeastrc.org/limelight`.
+  - *History:* the importer was originally pulled per-instance from
+    `<web-app-url>/static/limelightSubmitImport/limelightSubmitImport.jar`; it now comes from
+    the canonical limelight-core release instead.
 - **CLI:**
   ```
   java -jar limelightSubmitImport.jar \
@@ -53,10 +63,11 @@ downloaded jars — the same shape the app already uses for PDV (`core/PdvLaunch
   - **Required:** `--limelight-web-app-url`, `--project-id`, `--user-submit-import-key`,
     `--limelight-xml-file`, and a scan-file directive.
   - `--scan-file` is **repeatable**; when there are no mzML/mzXML inputs pass **`--no-scan-files`**.
-  - `--search-short-label`, `--search-description`, `--search-tag` are **optional** (work but
-    undocumented). We add `--search-tag=CasanovoGUI` automatically.
+  - `--search-short-label`, `--search-description`, `--search-tag` are **optional** at the CLI.
+    The GUI sends `--search-description` (required in its dialog) and `--search-tag=CasanovoGUI`;
+    it does **not** send `--search-short-label`.
   - The **"API key" is the *user submit import key*** — obtained per-project from Limelight's
-    *Command Line Import Information → Show Key*. Field label/help text should say this.
+    *Command Line Import Information → Show Key*. Field label/help text says this.
 
 ### 1.3 Sources
 
@@ -66,25 +77,29 @@ downloaded jars — the same shape the app already uses for PDV (`core/PdvLaunch
 
 ---
 
-## 2. Approved design decisions
+## 2. Design decisions (as implemented)
 
 1. **Scope:** enabled for the **De novo** tab and **Evaluate** tab (both emit a `casanovo
    sequence` mzTab). Not db-search/train/configure.
-2. **Importer jar is fetched from the user's instance URL** (version-matched). Converter jar
-   is fetched from GitHub latest. Both cached under `~/.casanovo-gui/limelight/`, with a
-   refresh action.
+2. **Both jars are fetched from the latest GitHub release** — converter from
+   `yeastrc/limelight-import-casanovo`, importer from `yeastrc/limelight-core` — via the stable
+   `latest/download` redirect. Cached under `~/.casanovo-gui/limelight/` and refreshed **once
+   per app session** (auto-download), plus a manual force-refresh in Settings. See §4a. The
+   user's instance URL remains the upload target via `--limelight-web-app-url`. (The importer
+   was originally per-instance; switched to the canonical limelight-core release.)
 3. **Persisted settings:** instance URL, submit-import key, and **last** project ID
    (project ID is prefilled but editable per upload). Stored via `Preferences` like the rest
    of the app.
-4. **Optional dialog fields:** search short label (default = mzTab base name) and description.
+4. **Dialog fields:** a **required** description (defaults to the mzTab base name). There is no
+   short-name field — `--search-short-label` is not sent.
 5. **Config source:** the config file the last run used; if the run had none on disk,
    auto-generate the version-correct default via `core/ConfigCache`.
 6. **Scan files:** filter the last run's spectra to `.mzML`/`.mzXML`; one `--scan-file=` each,
    or `--no-scan-files` if none qualify.
 7. **UI:** a modal `LimelightDialog` (like `SettingsDialog`); an **"Upload to Limelight"**
-   button in the run bar next to "Open in PDV".
+   button in the run bar next to "Open in PDV", plus a File-menu item.
 8. **Security:** the submit key is stored in plaintext `Preferences` (consistent with the
-   app), masked in the UI. Documented as a known limitation.
+   app), masked in the dialog and in the console command echo. A known limitation.
 
 ---
 
@@ -95,250 +110,264 @@ Reuses existing patterns; **adds no new Maven dependencies** (JDK `HttpClient` +
 
 | Existing asset | How it's reused |
 |---|---|
-| `core/PdvLauncher` (download/cache jar; locate `java`) | Template for `LimelightUploader`; its `javaExecutable()` is extracted into a shared helper |
-| `core/CasanovoRunner` (async process + transient/committed streaming) | Generalized to run an arbitrary `List<String>`; both jar steps stream to the console with live progress and a working **Stop** button |
+| `core/PdvLauncher` (download/cache jar; locate `java`) | Template for `LimelightUploader`; its `javaExecutable()` was extracted into the shared `core/JavaLauncher` |
+| `core/CasanovoRunner` (async process + transient/committed streaming) | Generalized to run an arbitrary `List<String>`; both jar steps stream to the console. The pipeline uses the app's long-task busy pattern, **not** the Stop button — see §4.4 |
 | `core/ConfigCache` | Generates the default config when a run had none |
 | `core/Settings` | New persisted fields follow the `coloredConsole` pattern |
-| `ui/SettingsDialog` | Template for the modal `LimelightDialog` |
-| MainApp last-run tracking (mzTab + spectra for PDV) | Extended to also remember the config file used; reused to source upload inputs |
+| `ui/SettingsDialog` | Template for the modal `LimelightDialog`; also hosts the converter version + force-refresh |
+| MainApp last-run tracking (mzTab + spectra for PDV) | Extended to also remember the config file used and whether the run was `sequence`; reused to source upload inputs |
 
 > Note: running external jars requires a real `java` launcher. The packaging scripts already
-> copy `java` back into the bundled jpackage runtime for PDV; Limelight reuses that. No
-> packaging change needed.
+> copy `java` back into the bundled jpackage runtime for PDV; Limelight reuses that via
+> `JavaLauncher`. No packaging change needed.
 
 ---
 
-## 4. File-by-file changes
+## 4. File-by-file (as built)
 
-### 4.1 `core/Settings.java` (modify)
+### 4.1 `core/Settings.java`
 
-Add three fields following the existing pattern (`KEY_*` constant → field → `load()` →
-`save()` → getter/setter):
+Added three fields following the existing pattern (`KEY_*` constant → field → `load()` →
+`save()` → getter/setter): `limelightWebAppUrl`, `limelightSubmitImportKey`,
+`limelightLastProjectId`, each defaulting to `""`.
 
-```java
-private static final String KEY_LL_URL        = "limelightWebAppUrl";
-private static final String KEY_LL_KEY         = "limelightSubmitImportKey";
-private static final String KEY_LL_PROJECT_ID  = "limelightLastProjectId";
+### 4.2 `core/JavaLauncher.java` (new)
 
-private String limelightUrl;
-private String limelightKey;
-private String limelightProjectId;
-
-// load():
-limelightUrl       = prefs.get(KEY_LL_URL, "");
-limelightKey       = prefs.get(KEY_LL_KEY, "");
-limelightProjectId = prefs.get(KEY_LL_PROJECT_ID, "");
-
-// save():
-prefs.put(KEY_LL_URL, nullToEmpty(limelightUrl));
-prefs.put(KEY_LL_KEY, nullToEmpty(limelightKey));
-prefs.put(KEY_LL_PROJECT_ID, nullToEmpty(limelightProjectId));
-```
-Plus trimmed getters and setters. (Note the 8192-char `Preferences` value cap is irrelevant
-for these.)
-
-### 4.2 `core/JavaLauncher.java` (new) — or fold into `core/Os`
-
-Extract `PdvLauncher.javaExecutable(Consumer<String> log)` verbatim into a shared static
-helper and have **both** `PdvLauncher` and `LimelightUploader` call it.
-
-```java
-public final class JavaLauncher {
-    /** Locate a real `java` launcher across plain, jar, and jpackage app-image layouts. */
-    public static String find(Consumer<String> log) { /* moved from PdvLauncher */ }
-}
-```
-Refactor `PdvLauncher.launchDenovo` to call `JavaLauncher.find(...)`. No behavior change.
+`PdvLauncher.javaExecutable(Consumer<String> log)` was extracted verbatim into a shared
+`JavaLauncher.find(Consumer<String> log)`; `PdvLauncher.launchDenovo` now calls it. No behavior
+change. Used by both PDV and Limelight.
 
 ### 4.3 `core/LimelightUploader.java` (new)
 
-Modeled on `PdvLauncher`. Responsibilities: ensure both jars (download+cache), build the two
-command lines, expose the cache dir. **No process execution here** — execution goes through
-the generalized `CasanovoRunner` so output streams to the console with the Stop button.
+Modeled on `PdvLauncher`. Provisions both jars (download/cache/refresh) and builds the two
+command lines. **No process execution here** — execution goes through the generalized
+`CasanovoRunner` so output streams to the console.
 
 ```java
 public final class LimelightUploader {
 
     private static final String CONVERTER_URL =
-        "https://github.com/yeastrc/limelight-import-casanovo/releases/latest/download/casanovoToLimelightXML.jar";
+        ".../limelight-import-casanovo/releases/latest/download/casanovoToLimelightXML.jar";
+    private static final String IMPORTER_URL =
+        ".../limelight-core/releases/latest/download/limelightSubmitImport.jar";
     private static final String CONVERTER_JAR = "casanovoToLimelightXML.jar";
     private static final String IMPORTER_JAR  = "limelightSubmitImport.jar";
+    private static final String SEARCH_TAG    = "CasanovoGUI";
 
-    /** ~/.casanovo-gui/limelight */
-    public static Path limelightDir() { ... }
+    // Per-app-session refresh latches (reset on restart) — see §4a.
+    private static volatile boolean converterRefreshedThisSession;
+    private static volatile boolean importerRefreshedThisSession;
 
-    // ---- jar provisioning (download with progress; cache; reuse) ----
+    public static Path limelightDir();              // ~/.casanovo-gui/limelight
 
-    /** Cached converter jar, downloading the latest from GitHub if absent or refresh=true. */
+    /**
+     * Cached converter jar. Fetches the latest GitHub release when missing, refresh=true, or
+     * not yet refreshed this app session. A failed refresh falls back to the cached jar; only
+     * a missing jar with no network propagates.
+     */
     public static Path ensureConverterJar(boolean refresh, Consumer<String> log,
                                           DoubleConsumer progress) throws IOException, InterruptedException;
 
     /**
-     * Cached importer jar for the given instance. Derives the URL from webAppUrl, downloads
-     * if absent / refresh / the recorded source URL differs (instance changed). The source
-     * URL is recorded in a sibling file so a different instance triggers a re-download.
+     * Cached importer jar from the latest yeastrc/limelight-core release. Re-fetches when
+     * missing / refresh / not yet refreshed this session; a failed refresh falls back to the
+     * cached jar (offline-safe). Structurally identical to ensureConverterJar.
      */
-    public static Path ensureImporterJar(String webAppUrl, boolean refresh, Consumer<String> log,
+    public static Path ensureImporterJar(boolean refresh, Consumer<String> log,
                                          DoubleConsumer progress) throws IOException, InterruptedException;
 
-    /** webAppUrl (trailing slash trimmed) + "/static/limelightSubmitImport/limelightSubmitImport.jar" */
-    public static String importerUrlFor(String webAppUrl);
+    public static String normalizeUrl(String url);           // trims trailing slashes (--limelight-web-app-url)
 
-    // ---- command construction ----
-
-    /** java -jar <converter> -m <mzTab> -c <config> -o <outXml> -v */
     public static List<String> convertCommand(String javaExe, Path converterJar,
                                               File mzTab, File config, File outXml);
-
-    /** The full importer command; scanFiles empty => --no-scan-files. */
     public static List<String> uploadCommand(String javaExe, Path importerJar, String webAppUrl,
                                              String submitKey, String projectId, File xml,
-                                             String shortLabel, String description, List<File> scanFiles);
+                                             String description, List<File> scanFiles);
 
-    /** Optional: read Implementation-Version from a jar manifest for display. */
+    public static Optional<String> converterVersion();       // manifest Implementation-Version of cached jar
     public static Optional<String> jarVersion(Path jar);
 }
 ```
 
-Download/unzip helpers mirror `PdvLauncher` (the converter is a bare jar — **no unzip**;
-just stream to file). Cache layout:
+The download helper streams to a `.part` temp and moves it into place only on success (no
+unzip — both are bare jars), so a failed/partial download never corrupts the cached jar. Cache
+layout:
 ```
 ~/.casanovo-gui/limelight/
   casanovoToLimelightXML.jar
   limelightSubmitImport.jar
-  limelightSubmitImport.source     # the instance URL the importer was fetched from
+  *.part                           # transient download temp (moved into place on success)
 ```
 
 **`uploadCommand` rules:**
 - Always: `--retry-count-limit=5`, `--limelight-web-app-url`, `--user-submit-import-key`,
-  `--project-id`, `--limelight-xml-file`, `--search-tag=CasanovoGUI`.
-- Add `--search-short-label=<label>` / `--search-description=<desc>` only when non-blank.
+  `--project-id`, `--limelight-xml-file`, `--search-description=<desc>` (required by the dialog),
+  `--search-tag=CasanovoGUI`. No `--search-short-label`.
 - `scanFiles` non-empty → one `--scan-file=<path>` per file; empty → `--no-scan-files`.
-- Each token is a **separate list element** → spaces in label/description need no quoting.
+- Each token is a **separate list element** → spaces in the description need no quoting.
 
-### 4.4 `core/CasanovoRunner.java` (modify) — generalize
+### 4.4 `core/CasanovoRunner.java`
 
-Add a raw-command entry point; the existing Casanovo entry delegates to it. Keep the
-transient-`\r`/committed-line streaming and the single-process guard.
+Added a raw-command entry point; the existing Casanovo entry delegates to it. Keeps the
+transient-`\r`/committed-line streaming and the single-process guard:
 
 ```java
-/** Existing API — unchanged signature; now delegates. */
 public synchronized void start(CasanovoCommand command, Settings settings, File workingDir,
         BiConsumer<String,Boolean> onOutput, BiConsumer<Integer,Throwable> onFinished) {
     start(command.toProcessCommand(settings), workingDir, onOutput, onFinished);
 }
-
-/** New: run any prebuilt command with the same streaming + cancel semantics. */
 public synchronized void start(List<String> osCommand, File workingDir,
         BiConsumer<String,Boolean> onOutput, BiConsumer<Integer,Throwable> onFinished) { ... }
 ```
-`Os.applyNativeEnv` stays applied (harmless for these jars). The `isRunning()` /
-`cancel()` machinery now covers Limelight steps too, so **Stop** works during upload.
+`Os.applyNativeEnv` stays applied (harmless for these jars). The generic start failure message
+was made non-Casanovo-specific.
+
+**Deviation from the plan — Stop during the pipeline.** The runner *is* generalized and its
+`cancel()` works, but the Limelight pipeline deliberately uses the app's existing long-task
+busy pattern (`installing` flag + `setBusy`), exactly like Install / Update / PDV — so the
+**Stop button is not enabled during a Limelight upload**. Rationale: consistency with every
+other network task, lower risk, and killing the importer mid-upload could leave a partial
+import server-side. Wiring Stop later is easy (see §8).
 
 ### 4.5 `ui/LimelightDialog.java` (new)
 
 Modal dialog modeled on `SettingsDialog` (`initOwner(stage)`, returns true on "Upload").
+Constructor: `LimelightDialog(Window owner, Settings settings, String defaultDescription,
+String inputsSummary)`.
 
 Fields (prefilled from `Settings`):
-- **Limelight web-app URL** — e.g. `https://limelight.yeastrc.org/limelight`. Help text:
-  "include the `/limelight` path".
-- **Submit import key** — `PasswordField` (masked). Help: "from your project's Command Line
+- **Limelight URL** — e.g. `https://limelight.yeastrc.org/limelight`. Help: "include the
+  `/limelight` path".
+- **Import key** — `PasswordField` (masked). Help: "from your project's Command Line
   Import Information → Show Key".
 - **Project ID** — prefilled with last value, editable.
-- **Search short label** (optional) — default = mzTab base name.
-- **Description** (optional).
-- **Read-only summary** of detected inputs: mzTab path, config source ("from run" /
-  "auto-generated default"), and the scan files that will be attached (or "no scan files").
+- **Description** (required) — defaults to the mzTab base name.
+- **Read-only summary** of detected inputs: mzTab, config source ("from run" / "auto-generated
+  default"), and the scan files that will be attached (or "no scan files").
 
-Validation before enabling "Upload": URL non-blank and `http(s)://`; key non-blank; project
-ID non-blank (and numeric). On "Upload", write the three persisted settings (`settings.save()`)
-and return the collected values to `MainApp`.
+On "Upload", a validating event filter checks: URL starts with `http(s)://`, key non-blank,
+project ID present and numeric, and description non-blank. It then persists URL/key/project ID
+(`settings.save()`) and the collected values are read via getters.
 
-### 4.6 `ui/MainApp.java` (modify) — button, gating, orchestration
+### 4.6 `ui/MainApp.java`
 
-1. **Button:** add `Button limelightButton = new Button("Upload to Limelight")` to the run
-   bar next to `pdvButton`; tooltip explains it converts + uploads the last result.
-2. **Last-run tracking:** where the app currently records the last successful run's mzTab +
-   spectra (for PDV), also record **the config file path used** (the generated temp config or
-   the explicit `--config`, or `null`). Add a flag/record of whether the last run was a
-   `sequence` run.
-3. **Enablement:** enable `limelightButton` only when there is a last successful `sequence`
-   run with an existing mzTab; disable during any busy/running state.
+1. **Button:** `limelightButton` ("Upload to Limelight") in the run bar next to `pdvButton`,
+   plus a "Upload to Limelight" File-menu item; both call `onUploadToLimelight()`.
+2. **Last-run tracking:** alongside the last successful run's mzTab + spectra (for PDV), it
+   records the **config file used** (`pendingConfigFile`/`lastResultConfig`, from the command's
+   `--config` arg, or null) and **whether the run was `sequence`** (`pendingIsSequence`/
+   `lastResultIsSequence`).
+3. **Enablement (`hasUploadableResult()`):** the button is enabled only when the last run was a
+   `sequence` run with an existing mzTab and non-null spectra; disabled during any busy/running
+   state. Folded into both `setBusy` and `updateRunningState`.
 4. **Handler `onUploadToLimelight()`** (outline):
    ```
-   if (!hasUploadableResult()) { warn; return; }
-   LimelightDialog dlg = new LimelightDialog(stage, settings, detectedInputsSummary);
-   if (!dlg.showAndCollect()) return;            // persists url/key/projectId
+   if (!hasUploadableResult()) { info; return; }
+   scanFiles = lastResultSpectra.filter(.mzML/.mzXML)
+   dlg = new LimelightDialog(stage, settings, stripExtension(mzTab), inputsSummary)
+   if (!dlg.showAndCollect()) return;             // persists url/key/projectId
+   outXml = sibling(mzTab, base + ".limelight.xml")
+   installing = true; setBusy(true);
 
-   mzTab     = lastMzTab;                          // re-check exists
-   scanFiles = lastSpectra.filter(mzML|mzXML);
-   outXml    = sibling(mzTab, base + ".limelight.xml");
-   setRunningState(true);
-
-   background:
-     java = JavaLauncher.find(console::appendLine);
-     converter = LimelightUploader.ensureConverterJar(false, sink, progress);
-     importer  = LimelightUploader.ensureImporterJar(url, false, sink, progress);
-     config    = resolveConfig();                  // last config, else ConfigCache → temp file
-     onFx -> runner.start(convertCommand, workDir, onOutput, (code, err) -> {
-                if (code == 0 && outXml.exists())
-                    runner.start(uploadCommand, workDir, onOutput, finalFinished);
-                else
-                    reportFailure("Conversion failed", code, err);
-             });
+   background thread:
+     java      = JavaLauncher.find(console::appendLine)
+     converter = LimelightUploader.ensureConverterJar(false, console::appendLine, null)
+     importer  = LimelightUploader.ensureImporterJar(false, console::appendLine, null)
+     cfg       = resolveLimelightConfig(lastResultConfig)   // last config, else ConfigCache → temp
+     convertCmd / uploadCmd = LimelightUploader.{convert,upload}Command(...)
+     runLater -> runLimelightPipeline(convertCmd, uploadCmd, workDir, outXml)
    ```
-   Chaining is safe: the runner's `onFinished` fires after `active` is cleared, so starting
-   step 2 from inside it does not trip the single-process guard. All UI/runner kicks marshal
-   to the FX thread.
-5. **`resolveConfig()`:** if `lastConfigFile != null && exists` → use it; else
-   `ConfigCache.warm(settings)` then `cachedBase(settings)`, written to a temp file (reuse
-   `CasanovoConfig.writeTempConfig`); if that fails, `new CasanovoConfig().toYaml()` fallback.
-   Runs on the background thread (it may spawn `casanovo configure`).
-6. **Busy-state consolidation:** fold Limelight into the existing `setBusy`/
-   `updateRunningState` so Run/Install/Upload are mutually exclusive and Stop cancels the
-   active step.
-7. **Settings dialog (optional):** add a "Limelight tools" row with a "Re-download converter"
-   action calling `ensureConverterJar(refresh=true, ...)`, mirroring the PDV upgrade button.
+5. **`runLimelightPipeline()` (FX thread):** echo + run `convertCmd`; on exit 0 with the XML
+   present, echo (**key masked** via `maskedUploadDisplay`) + run `uploadCmd`; report success /
+   failure / non-zero exit via `finishLimelight()`. Chaining is safe — the runner clears
+   `active` before invoking `onFinished`, and the callback is marshaled to the FX thread, so
+   starting step 2 from inside it never trips the single-process guard.
+6. **`resolveLimelightConfig()`:** if the run's config exists → use it; else
+   `ConfigCache.warm(settings)` + `cachedBase(settings)` written to a temp file (with
+   `CasanovoConfig.toYaml()` as the final fallback). Runs on the background thread.
+7. **Busy-state:** the pipeline uses `installing` + `setBusy(true)` (same as Install / PDV), so
+   Run/Install/Upload are mutually exclusive; `finishLimelight()` clears it. No Stop (§4.4).
+8. **Helpers:** `onLimelightOutput` (ANSI-stripped streaming, no Casanovo-specific parsing),
+   `configArgOf`, `stripExtension`, `displayCommand`, `maskedUploadDisplay`,
+   `buildLimelightInputsSummary`.
+
+### 4.7 `ui/SettingsDialog.java`
+
+A "Limelight converter:" row shows the cached converter's manifest version (or "not downloaded
+yet") and a **Download / update** button that force-refreshes it
+(`ensureConverterJar(refresh=true, …)`) on a background thread.
+
+---
+
+## 4a. Jar update mechanism (as built)
+
+The jars stay current via a **once-per-app-session, auto-download** policy (chosen over
+per-upload checks and manual-only):
+
+- `LimelightUploader` holds two static latches — `converterRefreshedThisSession` and
+  `importerRefreshedThisSession` — that reset on each app launch.
+- **First upload of a session:** both jars are fetched fresh from their GitHub `latest/download`
+  URLs (converter from limelight-import-casanovo, importer from limelight-core) and the latches
+  are set.
+- **Later uploads in the same session:** the cached jars are reused.
+- **Next launch:** latches reset, so a new converter or importer release is picked up on the
+  first upload again.
+- **Auto-download** is silent; the console logs the outcome, including the converter version
+  read from the jar manifest (e.g. `Converter ready: … (v1.5.3)`).
+
+Robustness:
+- **Crash-safe download:** stream to `*.part`, move into place only on success — a failed
+  refresh never truncates the cached jar.
+- **Offline fallback:** a failed once-per-session refresh falls back to the cached jar and
+  proceeds (logged) — for both jars — so a flaky network doesn't block an upload.
+- **Manual force-refresh:** Settings → "Download / update" → `ensureConverterJar(refresh=true)`.
+
+No GitHub releases-API call or version-diffing is needed: bounding to one download per jar per
+session makes a conditional check unnecessary. (A future "check every upload" mode is where an
+API/version-compare or conditional-GET/ETag approach would earn its keep — see §8.)
 
 ---
 
 ## 5. Runtime flow (happy path)
 
-1. User runs a de novo search → mzTab produced; app records mzTab + spectra + config path.
+1. User runs a de novo search → mzTab produced; app records mzTab + spectra + config path +
+   "is sequence".
 2. User clicks **Upload to Limelight** → modal dialog (prefilled) → fills key/URL/project →
    **Upload**.
-3. Background: locate `java`; ensure converter jar (download if first use); ensure importer
-   jar from the instance URL; resolve config.
+3. Background: locate `java`; ensure converter + importer jars (once-per-session refresh from
+   their GitHub latest releases); resolve config.
 4. Console streams **Step 1** (`casanovoToLimelightXML.jar … -v`) → writes
-   `<result>.limelight.xml`.
-5. On exit 0, console streams **Step 2** (`limelightSubmitImport.jar …`) → uploads XML +
-   scan files (or `--no-scan-files`).
+   `<result>.limelight.xml` next to the mzTab.
+5. On exit 0, console streams **Step 2** (`limelightSubmitImport.jar …`, key masked in the echo)
+   → uploads XML + scan files (or `--no-scan-files`).
 6. On success: status "Uploaded to Limelight"; the XML is left on disk for inspection.
 
 ---
 
 ## 6. Edge cases & error handling
 
-- **No internet / jar download fails** → clear console error; abort before running.
-- **mzTab missing** (deleted/moved since the run) → re-validate at click time; disable or warn.
-- **Conversion exits non-zero** → do **not** upload; surface stderr; keep the XML.
-- **Upload auth/permission failure** → importer's message streams to the console; non-zero
-  exit reported in the status bar.
+- **No internet / jar refresh fails** → fall back to the cached jar and proceed (logged); only a
+  *missing* jar with no network aborts with a clear error.
+- **mzTab missing** (deleted/moved since the run) → re-validated at click time; warns.
+- **Conversion exits non-zero / produces no XML** → do **not** upload; surface output; keep XML.
+- **Upload auth/permission failure** → importer's message streams to the console; non-zero exit
+  reported in the status bar + alert.
 - **No mzML/mzXML inputs** (e.g. MGF run) → `--no-scan-files`.
 - **Multiple spectrum files** → multiple `--scan-file=` args.
-- **Instance URL formatting** → trim trailing slash before deriving the jar URL; pass the URL
-  verbatim to `--limelight-web-app-url` (user enters the full `…/limelight` form, per docs).
-- **Instance changed** since last cache → importer re-downloaded (recorded `.source` differs).
-- **Spaces** in label/description → fine (separate `ProcessBuilder` args; the command-preview
-  display string should quote them, execution needs nothing).
-- **Stop pressed mid-pipeline** → `runner.cancel()` kills the current step; the chain stops
-  (don't start step 2 if step 1 was cancelled — treat cancel/exit 130 as failure).
+- **Instance URL formatting** → trailing slash trimmed for the `--limelight-web-app-url` arg
+  (user enters the full `…/limelight` form, per docs).
+- **Spaces** in the description → fine (separate `ProcessBuilder` args). The console echo
+  quotes them; the import key is masked.
+- **No Stop during the pipeline** (§4.4): the Stop button stays disabled. Convert is fast; the
+  importer manages its own retries/timeout. A convert exit of 130 is treated as a failure and
+  step 2 is not started.
 
 ---
 
 ## 7. Testing plan
 
-Manual (no automated test harness exists in this project):
+Manual (no automated test harness exists in this project; only a `javac` compile was possible
+in the dev sandbox):
 
 1. **End-to-end, mzML input:** de novo run on an `.mzML` → Upload → verify both steps stream,
    XML is written, and the search appears in Limelight with the `CasanovoGUI` tag + scan file.
@@ -347,10 +376,13 @@ Manual (no automated test harness exists in this project):
    config and conversion succeeds.
 4. **Multiple inputs:** run on 2+ mzML files; confirm repeated `--scan-file=` args.
 5. **Persistence:** restart the app; confirm URL/key/project ID prefill (key masked).
-6. **Custom instance:** point the URL at a non-yeastrc instance; confirm the importer jar is
-   fetched from that instance (`.source` recorded) and re-fetched when the URL changes.
-7. **Offline:** disconnect; confirm a clean error rather than a hang/stack trace.
-8. **Stop:** cancel during step 1; confirm step 2 does not start.
+6. **Custom instance:** point the URL at a non-yeastrc instance; confirm the upload targets it
+   (`--limelight-web-app-url`) while the importer jar still comes from the limelight-core release.
+7. **Offline with cache:** disconnect after a prior successful upload; confirm the once-per-session
+   refresh falls back to the cached jars (logged) and conversion still runs. With no cached jar,
+   confirm a clean error rather than a hang/stack trace.
+8. **Session refresh:** confirm the jars are fetched on the first upload of a session and reused
+   afterwards; restart and confirm they refresh again on the next upload.
 9. **Gating:** confirm the button is disabled with no result, during a run, and for
    db-search/train/configure results.
 
@@ -358,25 +390,27 @@ Manual (no automated test harness exists in this project):
 
 ## 8. Open questions / future enhancements
 
-- Display the cached converter/importer versions (from jar manifest) in the Settings dialog.
 - Optional "validate key/URL" pre-flight before running the full pipeline.
+- Optional **Stop** support during the pipeline (the runner already supports cancellation — §4.4).
+- A **"check every upload"** freshness mode (conditional-GET/ETag, or GitHub releases API +
+  version-compare) if once-per-session proves too lax.
 - Optional secure storage for the submit key (OS keychain) instead of plaintext `Preferences`
   — deferred to stay consistent with the app's current approach and zero-dependency stance.
 - Allow uploading a previously generated mzTab via a file picker (currently only the last run).
 
 ---
 
-## 9. Summary of new/changed files
+## 9. New/changed files
 
 ```
+NEW  src/main/java/org/casanovo/gui/core/JavaLauncher.java        (extracted from PdvLauncher)
 NEW  src/main/java/org/casanovo/gui/core/LimelightUploader.java
-NEW  src/main/java/org/casanovo/gui/core/JavaLauncher.java          (extracted from PdvLauncher)
 NEW  src/main/java/org/casanovo/gui/ui/LimelightDialog.java
-MOD  src/main/java/org/casanovo/gui/core/Settings.java               (+3 persisted fields)
-MOD  src/main/java/org/casanovo/gui/core/CasanovoRunner.java         (raw List<String> overload)
-MOD  src/main/java/org/casanovo/gui/core/PdvLauncher.java            (use JavaLauncher.find)
-MOD  src/main/java/org/casanovo/gui/ui/MainApp.java                  (button, gating, orchestration,
-                                                                      last-run config tracking)
-MOD  src/main/java/org/casanovo/gui/ui/SettingsDialog.java           (optional: re-download converter)
+MOD  src/main/java/org/casanovo/gui/core/Settings.java            (+3 persisted fields)
+MOD  src/main/java/org/casanovo/gui/core/CasanovoRunner.java      (raw List<String> overload)
+MOD  src/main/java/org/casanovo/gui/core/PdvLauncher.java         (use JavaLauncher.find)
+MOD  src/main/java/org/casanovo/gui/ui/MainApp.java               (button + menu, gating,
+                                                                   orchestration, last-run tracking)
+MOD  src/main/java/org/casanovo/gui/ui/SettingsDialog.java        (converter version + download/update)
 ```
 No `pom.xml` / packaging changes required.

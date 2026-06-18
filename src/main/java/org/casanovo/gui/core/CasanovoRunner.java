@@ -58,12 +58,29 @@ public class CasanovoRunner {
                                    File workingDir,
                                    BiConsumer<String, Boolean> onOutput,
                                    BiConsumer<Integer, Throwable> onFinished) {
+        start(command.toProcessCommand(settings), workingDir, onOutput, onFinished);
+    }
+
+    /**
+     * Launch an arbitrary prebuilt OS command asynchronously, with the same merged-output
+     * streaming and cancellation semantics as the Casanovo overload. Used for the external
+     * Limelight converter/importer jars so their output appears in the same console.
+     *
+     * @param osCommand  the full process command (program + args)
+     * @param workingDir working directory for the process, or {@code null}
+     * @param onOutput   receives (text, isTransient); isTransient marks a progress refresh
+     * @param onFinished receives (exitCode, throwable); throwable non-null only on
+     *                   start/interrupt failure (exitCode -1 in that case)
+     */
+    public synchronized void start(List<String> osCommand,
+                                   File workingDir,
+                                   BiConsumer<String, Boolean> onOutput,
+                                   BiConsumer<Integer, Throwable> onFinished) {
         if (active) {
-            throw new IllegalStateException("A Casanovo process is already running.");
+            throw new IllegalStateException("A process is already running.");
         }
         cancelled = false;
         active = true;
-        final List<String> osCommand = command.toProcessCommand(settings);
 
         worker = new Thread(() -> {
             int exitCode = -1;
@@ -81,8 +98,9 @@ public class CasanovoRunner {
                 readStream(process.getInputStream(), onOutput);
                 exitCode = process.waitFor();
             } catch (IOException e) {
-                error = new IOException("Failed to start Casanovo. Check the executable path "
-                        + "and Conda settings.\n" + e.getMessage(), e);
+                String prog = osCommand.isEmpty() ? "the process" : osCommand.get(0);
+                error = new IOException("Failed to start " + prog
+                        + ". Check the executable path and settings.\n" + e.getMessage(), e);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 error = e;
