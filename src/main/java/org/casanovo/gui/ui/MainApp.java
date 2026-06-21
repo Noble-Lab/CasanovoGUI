@@ -71,7 +71,12 @@ public class MainApp extends Application {
     private final TabPane tabs = new TabPane();
     private ConsoleOutput console;
     private SplitPane split;
+    /** Run bar and console view; hidden on the Plot tab so only the plot + its settings show. */
+    private Region runBar;
+    private Region consoleView;
     private final List<CommandPane> panes = new ArrayList<>();
+    /** The analysis/plot tab; auto-populated with the result mzTab after a successful run. */
+    private PlotPane plotPane;
 
     private final Label settingsLabel = new Label();
     private final TextField commandPreview = new TextField();
@@ -150,12 +155,22 @@ public class MainApp extends Application {
         for (CommandPane p : panes) {
             tabs.getTabs().add(new Tab(p.getTitle(), p.getContent()));
         }
-        tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> refreshPreview());
+        // Analysis tab (not a Casanovo command): plots PSM / unique-peptide counts vs
+        // peptide score from an mzTab result. It lives past the command panes, so
+        // currentPane() returns null while it is selected and the run bar is disabled.
+        plotPane = new PlotPane(primaryStage);
+        tabs.getTabs().add(new Tab("View", plotPane));
+        tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
+            refreshPreview();
+            updateChromeForTab();
+        });
 
-        VBox topArea = new VBox(tabs, buildRunBar());
+        runBar = buildRunBar();
+        VBox topArea = new VBox(tabs, runBar);
         VBox.setVgrow(tabs, Priority.ALWAYS);
 
-        split = new SplitPane(topArea, console.getView());
+        consoleView = console.getView();
+        split = new SplitPane(topArea, consoleView);
         split.setOrientation(javafx.geometry.Orientation.VERTICAL);
         split.setDividerPositions(0.62);
 
@@ -172,6 +187,7 @@ public class MainApp extends Application {
         refreshSettingsLabel();
         console.setLeftStatus(buildExecutionReadout());
         refreshPreview();
+        updateChromeForTab();
         updateRunningState(false);
 
         Scene scene = new Scene(root, 940, 820);
@@ -351,15 +367,45 @@ public class MainApp extends Application {
 
     private CommandPane currentPane() {
         int idx = tabs.getSelectionModel().getSelectedIndex();
-        return panes.get(Math.max(0, idx));
+        if (idx < 0 || idx >= panes.size()) {
+            return null; // a non-command tab (e.g. the Plot tab) is selected
+        }
+        return panes.get(idx);
     }
 
     private void refreshPreview() {
+        CommandPane pane = currentPane();
+        if (pane == null) {
+            // Non-command tab (Plot): nothing to preview or run.
+            commandPreview.setText("");
+            runButton.setDisable(true);
+            return;
+        }
+        runButton.setDisable(runner.isRunning() || installing);
         try {
-            CasanovoCommand cmd = effectiveCommand(currentPane(), false);
+            CasanovoCommand cmd = effectiveCommand(pane, false);
             commandPreview.setText(cmd.toDisplayString(settings));
         } catch (RuntimeException ex) {
             commandPreview.setText("");
+        }
+    }
+
+    /**
+     * Declutter the Plot (non-command) tab: hide the run bar (command preview, Run/Stop,
+     * Open in PDV, Parameters, Use GUI parameters) and the console so only the plot and its
+     * settings show. Restore both on the command tabs.
+     */
+    private void updateChromeForTab() {
+        boolean commandTab = currentPane() != null;
+        runBar.setVisible(commandTab);
+        runBar.setManaged(commandTab);
+        if (commandTab) {
+            if (!split.getItems().contains(consoleView)) {
+                split.getItems().add(consoleView);
+                split.setDividerPositions(0.62);
+            }
+        } else {
+            split.getItems().remove(consoleView);
         }
     }
 
@@ -402,6 +448,9 @@ public class MainApp extends Application {
             return;
         }
         CommandPane pane = currentPane();
+        if (pane == null) {
+            return; // not a command tab (e.g. Plot) — nothing to run
+        }
         String error = pane.validateInputs();
         if (error != null) {
             alert(Alert.AlertType.WARNING, "Cannot run", error);
@@ -1083,6 +1132,9 @@ public class MainApp extends Application {
             lastResultMzTab = mztab;
             console.appendLine("[pdv] Result ready: " + mztab.getName()
                     + " — click \"Open in PDV\" to view it (inputs loaded automatically).");
+            // Auto-populate the Plot tab with the new result and render its score plot.
+            plotPane.showResult(mztab);
+            console.appendLine("[plot] Score plot generated in the View tab.");
         }
     }
 
@@ -1108,7 +1160,7 @@ public class MainApp extends Application {
     private void showAbout() {
         alert(Alert.AlertType.INFORMATION, "About Casanovo GUI",
                 "Casanovo GUI " + UpdateChecker.guiVersion() + "\n\n"
-                        + "A JavaFX front-end for Casanovo de novo peptide sequencing.\n"
+                        + "A GUI for Casanovo de novo peptide sequencing.\n"
                         + "Configure inputs, run, and watch the console.\n\n"
                         + "Casanovo: https://github.com/Noble-Lab/casanovo");
     }
