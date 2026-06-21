@@ -190,7 +190,13 @@ public class MainApp extends Application {
         updateChromeForTab();
         updateRunningState(false);
 
-        Scene scene = new Scene(root, 940, 820);
+        // Preferred size, but never larger than the screen's usable area, so the window
+        // fits on small or DPI-scaled displays. The realized window (with its title bar and
+        // borders) is clamped precisely after show(), below.
+        javafx.geometry.Rectangle2D screen = javafx.stage.Screen.getPrimary().getVisualBounds();
+        Scene scene = new Scene(root,
+                Math.min(940, screen.getWidth()),
+                Math.min(820, screen.getHeight()));
         // Scene-level accelerators so Run/Stop work from anywhere in the window.
         scene.getAccelerators().put(
                 new KeyCodeCombination(KeyCode.R, KeyCombination.SHORTCUT_DOWN),
@@ -200,9 +206,12 @@ public class MainApp extends Application {
                 () -> { if (!stopButton.isDisabled()) stopButton.fire(); });
         primaryStage.setTitle("Casanovo GUI");
         primaryStage.setScene(scene);
-        primaryStage.setMinWidth(780);
-        primaryStage.setMinHeight(640);
+        primaryStage.setMinWidth(Math.min(780, screen.getWidth()));
+        primaryStage.setMinHeight(Math.min(640, screen.getHeight()));
         primaryStage.show();
+        // The realized window includes the title bar/borders; shrink and nudge it if the
+        // whole window still overflows the usable screen area.
+        clampToScreen(primaryStage);
 
         maybeAutoCheckForUpdates();
         maybeCheckPyArrow();
@@ -212,6 +221,32 @@ public class MainApp extends Application {
     @Override
     public void stop() {
         runner.cancel();
+    }
+
+    /** Ensure the realized window fits within the primary screen's usable (taskbar-excluded) area. */
+    private static void clampToScreen(Stage stage) {
+        javafx.geometry.Rectangle2D vb = javafx.stage.Screen.getPrimary().getVisualBounds();
+        if (stage.getHeight() > vb.getHeight()) {
+            stage.setHeight(vb.getHeight());
+        }
+        if (stage.getWidth() > vb.getWidth()) {
+            stage.setWidth(vb.getWidth());
+        }
+        // Pin the top/left first — a window centered while taller than the screen ends up with
+        // its title bar above the screen top — then pull up/left if it still spills off the
+        // bottom/right edge.
+        if (stage.getY() < vb.getMinY()) {
+            stage.setY(vb.getMinY());
+        }
+        if (stage.getY() + stage.getHeight() > vb.getMaxY()) {
+            stage.setY(Math.max(vb.getMinY(), vb.getMaxY() - stage.getHeight()));
+        }
+        if (stage.getX() < vb.getMinX()) {
+            stage.setX(vb.getMinX());
+        }
+        if (stage.getX() + stage.getWidth() > vb.getMaxX()) {
+            stage.setX(Math.max(vb.getMinX(), vb.getMaxX() - stage.getWidth()));
+        }
     }
 
     private MenuBar buildMenuBar() {
