@@ -1,0 +1,34 @@
+/* Compact number spinners for the analysis tabs' settings (View and Mapping): smaller
+   up/down arrow buttons and arrow glyphs, plus a tighter editor, so each input box
+   hugs its (≤4-char) value. */
+.compact-spinner .increment-arrow-button,
+.compact-spinner .decrement-arrow-button {
+    -fx-padding: 1px 4px 1px 4px;
+}
+.compact-spinner .increment-arrow,
+.compact-spinner .decrement-arrow {
+    -fx-padding: 0.25em;
+}
+.compact-spinner .text-field {
+    -fx-padding: 3px 4px 3px 4px;
+}
+
+/* Mapping panel: a uniform top gap between the inner result-tab bar and each tab's content,
+   so every tab (including the table-only ones) has the same breathing room at the top. */
+.result-tabs > .tab-content-area {
+    -fx-padding: 10px 0 0 0;
+}
+
+/* Mapping result tables: compact column headers to match the compact rows. */
+.result-tabs .table-view .column-header {
+    -fx-pref-height: 26px;
+    -fx-min-height: 26px;
+}
+.result-tabs .table-view .column-header .label {
+    -fx-padding: 0 5px 0 5px;
+}
+
+/* Overview plots: slightly smaller chart titles. */
+.result-tabs .chart-title {
+    -fx-font-size: 13px;
+}

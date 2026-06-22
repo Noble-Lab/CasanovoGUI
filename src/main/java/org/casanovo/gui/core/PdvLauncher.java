@@ -251,7 +251,7 @@ public final class PdvLauncher {
      */
     public static Process launchDenovo(Path pdvJar, List<java.io.File> spectra, java.io.File mzTab,
                                         double fragTol, String tolUnit, Consumer<String> log) throws IOException {
-        String javaExe = javaExecutable(log);
+        String javaExe = JavaLauncher.find(log);
         String unit = (tolUnit == null || tolUnit.trim().isEmpty()) ? "Da" : tolUnit.trim();
         List<String> spectraPaths = new ArrayList<>();
         for (java.io.File f : spectra) {
@@ -276,82 +276,6 @@ public final class PdvLauncher {
         pb.redirectErrorStream(true);
         pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
         return pb.start();
-    }
-
-    /**
-     * Locate a real {@code java} launcher to start PDV, robust across launch
-     * modes. Order:
-     * <ol>
-     *   <li>{@code ProcessHandle} command if it is already a java launcher;</li>
-     *   <li>if this app was started from a jpackage native launcher
-     *       (e.g. {@code CasanovoGUI.exe}), the bundled {@code runtime/bin/java};</li>
-     *   <li>{@code java.home/bin/java};</li>
-     *   <li>bare {@code java} on PATH.</li>
-     * </ol>
-     */
-    private static String javaExecutable(Consumer<String> log) {
-        String javaName = Os.isWindows() ? "java.exe" : "java";
-
-        String home = System.getProperty("java.home");
-        log.accept("[pdv] java.home = " + home);
-
-        String procCmd = null;
-        try {
-            java.util.Optional<String> cmd = ProcessHandle.current().info().command();
-            if (cmd.isPresent()) {
-                procCmd = cmd.get();
-            }
-        } catch (Throwable ignored) {
-        }
-        log.accept("[pdv] launcher command = " + procCmd);
-
-        java.util.List<java.io.File> candidates = new ArrayList<>();
-        // 1. The launcher itself, if it is already a java binary.
-        if (procCmd != null) {
-            String lc = procCmd.toLowerCase();
-            if (lc.endsWith("java.exe") || lc.endsWith(java.io.File.separator + "java") || lc.equals("java")) {
-                candidates.add(new java.io.File(procCmd));
-            }
-            // 2. jpackage app-image layouts relative to the native launcher, which differ per OS:
-            //      Windows : <app>\CasanovoGUI.exe       -> <app>\runtime\bin\java.exe
-            //      Linux   : <app>/bin/CasanovoGUI       -> <app>/lib/runtime/bin/java
-            //      macOS   : <app>.app/Contents/MacOS/.. -> <app>.app/Contents/runtime/Contents/Home/bin/java
-            java.io.File dir = new java.io.File(procCmd).getParentFile();
-            if (dir != null) {
-                candidates.add(new java.io.File(dir, "runtime/bin/" + javaName));   // Windows: beside the exe
-                candidates.add(new java.io.File(dir, javaName));
-                java.io.File up = dir.getParentFile();
-                if (up != null) {
-                    candidates.add(new java.io.File(up, "runtime/bin/" + javaName));
-                    candidates.add(new java.io.File(up, "lib/runtime/bin/" + javaName));            // Linux app-image
-                    candidates.add(new java.io.File(up, "runtime/Contents/Home/bin/" + javaName));  // macOS .app
-                }
-            }
-        }
-        // 3. The current runtime (java.home) -- the bundled jpackage runtime on every OS, once
-        //    the build copies the stripped launcher back into its bin. Works for Win/Linux/macOS.
-        if (home != null && !home.isEmpty()) {
-            candidates.add(new java.io.File(home, "bin/" + javaName));
-            java.io.File hp = new java.io.File(home).getParentFile();
-            if (hp != null) {
-                candidates.add(new java.io.File(hp, "bin/" + javaName));
-                candidates.add(new java.io.File(hp, "runtime/bin/" + javaName));
-            }
-        }
-        // 4. JAVA_HOME environment variable.
-        String envHome = System.getenv("JAVA_HOME");
-        if (envHome != null && !envHome.isEmpty()) {
-            candidates.add(new java.io.File(envHome, "bin/" + javaName));
-        }
-
-        for (java.io.File c : candidates) {
-            if (c.isFile()) {
-                log.accept("[pdv] using java: " + c.getAbsolutePath());
-                return c.getAbsolutePath();
-            }
-        }
-        log.accept("[pdv] no bundled java found; falling back to '" + javaName + "' on PATH.");
-        return javaName;
     }
 
     private static void unzip(Path zip, Path destDir) throws IOException {

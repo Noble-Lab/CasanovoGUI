@@ -358,6 +358,14 @@ public class CasanovoConfig {
                 if (v.isEmpty()) {
                     sb.append(key).append(":\n");
                 } else {
+                    // On Apple Silicon, translate accelerator "auto" -> "mps". Casanovo
+                    // overrides "auto" to "cpu" on arm64 macs, so "auto" would skip the GPU;
+                    // naming "mps" explicitly bypasses that and runs ~2.3x faster with
+                    // identical output. Honours an explicit non-"auto" choice unchanged.
+                    if (key.equals("accelerator") && v.equalsIgnoreCase("auto")
+                            && Os.isMac() && Os.isAarch64()) {
+                        v = "mps";
+                    }
                     sb.append(key).append(": \"").append(v).append("\"\n");
                 }
                 break;

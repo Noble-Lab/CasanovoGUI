@@ -23,6 +23,7 @@ import javafx.scene.control.SplitPane;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
@@ -75,8 +76,10 @@ public class MainApp extends Application {
     private Region runBar;
     private Region consoleView;
     private final List<CommandPane> panes = new ArrayList<>();
-    /** The analysis/plot tab; auto-populated with the result mzTab after a successful run. */
-    private PlotPane plotPane;
+    /** The View (score-plot) tab; auto-populated with the result mzTab after a successful run. */
+    private ViewPane viewPane;
+    /** The peptide-mapping tab; auto-populated with the result mzTab after a successful run. */
+    private MappingPane mappingPane;
 
     private final Label settingsLabel = new Label();
     private final TextField commandPreview = new TextField();
@@ -153,13 +156,24 @@ public class MainApp extends Application {
 
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         for (CommandPane p : panes) {
-            tabs.getTabs().add(new Tab(p.getTitle(), p.getContent()));
+            Tab tab = new Tab(p.getTitle(), p.getContent());
+            tab.setTooltip(tabTip(tabTooltip(p.getTitle())));
+            tabs.getTabs().add(tab);
         }
         // Analysis tab (not a Casanovo command): plots PSM / unique-peptide counts vs
         // peptide score from an mzTab result. It lives past the command panes, so
         // currentPane() returns null while it is selected and the run bar is disabled.
-        plotPane = new PlotPane(primaryStage);
-        tabs.getTabs().add(new Tab("View", plotPane));
+        viewPane = new ViewPane(primaryStage);
+        Tab viewTab = new Tab("View", viewPane);
+        viewTab.setTooltip(tabTip("Plot and inspect an existing Casanovo mzTab result, e.g. PSM and "
+                + "unique-peptide counts versus the peptide-score threshold."));
+        tabs.getTabs().add(viewTab);
+        mappingPane = new MappingPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s));
+        mappingPane.runningProperty().addListener((o, a, b) -> updateChromeForTab());
+        Tab mappingTab = new Tab("Mapping", mappingPane);
+        mappingTab.setTooltip(tabTip("Map the de novo peptides in an mzTab back to proteins in a reference "
+                + "FASTA, with coverage and per-protein views."));
+        tabs.getTabs().add(mappingTab);
         tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
             refreshPreview();
             updateChromeForTab();
@@ -348,7 +362,8 @@ public class MainApp extends Application {
         commandPreview.setEditable(false);
         // The command preview is read-only; skip it in tab order.
         commandPreview.setFocusTraversable(false);
-        commandPreview.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', 'Courier New', monospace; -fx-font-size: 13px;");
+        // Match the console output: the app's sans-serif base font (not monospace).
+        commandPreview.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif; -fx-font-size: 13px;");
         HBox.setHgrow(commandPreview, Priority.ALWAYS);
         HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton, pdvButton);
         cmdRow.setAlignment(Pos.CENTER_LEFT);
@@ -408,6 +423,31 @@ public class MainApp extends Application {
         return panes.get(idx);
     }
 
+    /** A wrapped, slightly-delayed tooltip describing what a top-level tab does. */
+    private static Tooltip tabTip(String text) {
+        Tooltip t = new Tooltip(text);
+        t.setShowDelay(javafx.util.Duration.millis(300));
+        t.setWrapText(true);
+        t.setMaxWidth(320);
+        return t;
+    }
+
+    /** Tooltip text for a command tab, keyed by its title. */
+    private static String tabTooltip(String title) {
+        return switch (title) {
+            case "De novo" -> "De novo peptide sequencing of an MS/MS spectrum file (mzML/mzXML/MGF) "
+                    + "with a trained model; produces an mzTab of predicted peptides.";
+            case "DB Search" -> "Score spectra against a protein/peptide database (casanovo db-search) "
+                    + "instead of pure de novo sequencing.";
+            case "Evaluate" -> "Sequence a spectrum file with known/annotated peptides and report "
+                    + "accuracy metrics for the predictions.";
+            case "Train" -> "Train or fine-tune a Casanovo model from annotated spectra.";
+            case "Configure" -> "Generate or edit the Casanovo YAML config of model and search parameters "
+                    + "(casanovo configure).";
+            default -> title;
+        };
+    }
+
     private void refreshPreview() {
         CommandPane pane = currentPane();
         if (pane == null) {
@@ -432,16 +472,48 @@ public class MainApp extends Application {
      */
     private void updateChromeForTab() {
         boolean commandTab = currentPane() != null;
+        // The Mapping tab streams pepmap output to the shared console; show it only while a mapping
+        // runs, and size it to sit just below the Run button so the settings panel stays unscrolled.
+        boolean mapping = isMappingTab() && mappingPane.runningProperty().get();
         runBar.setVisible(commandTab);
         runBar.setManaged(commandTab);
-        if (commandTab) {
+        if (commandTab || mapping) {
+            boolean added = false;
             if (!split.getItems().contains(consoleView)) {
                 split.getItems().add(consoleView);
+                added = true;
+            }
+            if (mapping) {
+                // Size the console below the Run button synchronously (the metrics are pref-based and
+                // stable), so the settings panel never momentarily crams and flashes a scroll bar.
+                sizeMappingConsole();
+                Platform.runLater(this::sizeMappingConsole); // refine once more after layout settles
+            } else if (added) {
                 split.setDividerPositions(0.62);
             }
         } else {
             split.getItems().remove(consoleView);
         }
+    }
+
+    /** Set the split divider so the console begins just below the Mapping tab's Run button. */
+    private void sizeMappingConsole() {
+        if (!split.getItems().contains(consoleView)) {
+            return;
+        }
+        javafx.geometry.Bounds mp = mappingPane.localToScene(mappingPane.getBoundsInLocal());
+        javafx.geometry.Bounds sb = split.localToScene(split.getBoundsInLocal());
+        if (sb.getHeight() <= 0 || mp.getHeight() <= 0) {
+            split.setDividerPositions(0.85); // safe: leaves the settings plenty of room until the next pulse
+            return;
+        }
+        double y = (mp.getMinY() - sb.getMinY()) + mappingPane.settingsExtent() + 10;
+        split.setDividerPositions(Math.max(0.35, Math.min(0.9, y / sb.getHeight())));
+    }
+
+    private boolean isMappingTab() {
+        Tab t = tabs.getSelectionModel().getSelectedItem();
+        return t != null && t.getContent() == mappingPane;
     }
 
     private CasanovoCommand effectiveCommand(CommandPane pane, boolean forRun) {
@@ -1168,8 +1240,10 @@ public class MainApp extends Application {
             console.appendLine("[pdv] Result ready: " + mztab.getName()
                     + " — click \"Open in PDV\" to view it (inputs loaded automatically).");
             // Auto-populate the Plot tab with the new result and render its score plot.
-            plotPane.showResult(mztab);
+            viewPane.showResult(mztab);
             console.appendLine("[plot] Score plot generated in the View tab.");
+            // Also auto-fill the Mapping tab's peptides field (mapping is run on demand).
+            mappingPane.setPeptides(mztab);
         }
     }
 

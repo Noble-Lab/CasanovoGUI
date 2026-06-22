@@ -25,7 +25,20 @@ public final class Themes {
 
     public static final String DEFAULT = "PrimerLight";
 
+    private static volatile String current = DEFAULT;
+
     private Themes() {
+    }
+
+    /** The simple class name of the most recently applied theme (e.g. {@code PrimerDark}). */
+    public static String current() {
+        return current;
+    }
+
+    /** True when the active theme is a dark one — used to pick contrasting hand-drawn (Canvas) colors. */
+    public static boolean isDark() {
+        String n = current;
+        return n.endsWith("Dark") || n.equalsIgnoreCase("Dracula");
     }
 
     /** True if AtlantaFX is available on the classpath. */
@@ -50,6 +63,7 @@ public final class Themes {
             Object theme = cls.getDeclaredConstructor().newInstance();
             Object css = cls.getMethod("getUserAgentStylesheet").invoke(theme);
             Application.setUserAgentStylesheet(String.valueOf(css));
+            current = themeName;
             return true;
         } catch (Throwable t) {
             return false;

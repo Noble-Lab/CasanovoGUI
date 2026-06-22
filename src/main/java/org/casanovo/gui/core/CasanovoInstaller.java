@@ -178,6 +178,9 @@ public final class CasanovoInstaller {
                     + " also launches Casanovo with KMP_DUPLICATE_LIB_OK=TRUE as a safeguard.");
         }
 
+        // ---- 8b. Best-effort MPS (Apple Silicon GPU) check (non-fatal) ----
+        verifyMpsIfAppleSilicon(installRoot, cmd, log);
+
         log.info("=== Done. Casanovo executable: " + result + " ===");
         return result;
     }
@@ -345,7 +348,12 @@ public final class CasanovoInstaller {
             log.info("NVIDIA driver " + driverVersion + " detected -> installing CUDA 11.8 PyTorch.");
         } else {
             torchIndexUrl = null;
-            log.info("No CUDA-capable NVIDIA driver detected -> using CPU PyTorch.");
+            if (Os.isMac() && Os.isAarch64()) {
+                log.info("Apple Silicon detected -> keeping the default macOS arm64 PyTorch"
+                        + " wheel, which includes MPS (Metal) GPU support.");
+            } else {
+                log.info("No CUDA-capable NVIDIA driver detected -> using CPU PyTorch.");
+            }
         }
         if (torchIndexUrl != null) {
             log.info("Installing CUDA PyTorch wheels (torch, torchvision, torchaudio)...");
@@ -364,6 +372,36 @@ public final class CasanovoInstaller {
         return "torch=" + PyVenv.packageVersion(venvRoot, "torch").orElse("?")
                 + "; torchvision=" + PyVenv.packageVersion(venvRoot, "torchvision").orElse("?")
                 + "; torchaudio=" + PyVenv.packageVersion(venvRoot, "torchaudio").orElse("?");
+    }
+
+    /**
+     * On Apple Silicon, confirm the installed PyTorch actually exposes the MPS
+     * (Metal) GPU backend, which is what the GUI's {@code accelerator="mps"} default
+     * runs on. Best-effort and non-fatal: a healthy install does not depend on this
+     * passing — it only surfaces a clear warning when (e.g. a Rosetta x86 interpreter)
+     * an MPS-less wheel was pulled and Casanovo would silently fall back to CPU.
+     * A no-op on every other platform.
+     */
+    private static void verifyMpsIfAppleSilicon(Path installRoot, Runner cmd, Logger log) {
+        if (!Os.isMac() || !Os.isAarch64()) {
+            return;
+        }
+        Path python = installRoot.resolve(".venv").resolve("bin").resolve("python");
+        log.info("Checking PyTorch MPS (Apple Silicon GPU) availability...");
+        try {
+            String out = cmd.run(List.of(python.toString(), "-c",
+                    "import torch; print('MPS_AVAILABLE=' + str(torch.backends.mps.is_available()))"),
+                    installRoot);
+            if (out.contains("MPS_AVAILABLE=True")) {
+                log.info("MPS is available -> Casanovo will use the Apple Silicon GPU.");
+            } else {
+                log.info("[warn] MPS is NOT available in the installed PyTorch; Casanovo will run on"
+                        + " CPU. This usually means an x86 (Rosetta) Python/torch was installed"
+                        + " instead of the native arm64 build.");
+            }
+        } catch (Exception e) {
+            log.info("[warn] Could not run the MPS availability check: " + e.getMessage());
+        }
     }
 
     // ---------------------------------------------------------------- helpers

@@ -26,6 +26,7 @@ public class Settings {
     private static final String KEY_CONDA_ENV = "condaEnv";
     private static final String KEY_CONDA_EXECUTABLE = "condaExecutable";
     private static final String KEY_PDV_JAR = "pdvJar";
+    private static final String KEY_PEPMAP_JAR = "pepmapJar";
     private static final String KEY_THEME = "theme";
     private static final String KEY_COLORED_CONSOLE = "coloredConsole";
 
@@ -36,6 +37,7 @@ public class Settings {
     private String condaEnv;
     private String condaExecutable;
     private String pdvJar;
+    private String pepmapJar;
     private String theme;
     private boolean coloredConsole;
 
@@ -50,6 +52,7 @@ public class Settings {
         condaEnv = prefs.get(KEY_CONDA_ENV, "casanovo_env");
         condaExecutable = prefs.get(KEY_CONDA_EXECUTABLE, "conda");
         pdvJar = prefs.get(KEY_PDV_JAR, "");
+        pepmapJar = prefs.get(KEY_PEPMAP_JAR, "");
         theme = prefs.get(KEY_THEME, "PrimerLight");
         coloredConsole = prefs.getBoolean(KEY_COLORED_CONSOLE, true);
     }
@@ -61,6 +64,7 @@ public class Settings {
         prefs.put(KEY_CONDA_ENV, nullToEmpty(condaEnv));
         prefs.put(KEY_CONDA_EXECUTABLE, nullToEmpty(condaExecutable));
         prefs.put(KEY_PDV_JAR, nullToEmpty(pdvJar));
+        prefs.put(KEY_PEPMAP_JAR, nullToEmpty(pepmapJar));
         prefs.put(KEY_THEME, nullToEmpty(theme));
         prefs.putBoolean(KEY_COLORED_CONSOLE, coloredConsole);
     }
@@ -105,6 +109,14 @@ public class Settings {
 
     public void setPdvJar(String pdvJar) {
         this.pdvJar = pdvJar;
+    }
+
+    public String getPepmapJar() {
+        return pepmapJar == null ? "" : pepmapJar.trim();
+    }
+
+    public void setPepmapJar(String pepmapJar) {
+        this.pepmapJar = pepmapJar;
     }
 
     public String getTheme() {

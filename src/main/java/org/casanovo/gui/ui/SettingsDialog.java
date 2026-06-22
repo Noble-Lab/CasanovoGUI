@@ -15,6 +15,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.stage.Window;
 import org.casanovo.gui.core.PdvLauncher;
+import org.casanovo.gui.core.PepMapLauncher;
 import org.casanovo.gui.core.Settings;
 import org.casanovo.gui.core.UpdateChecker;
 
@@ -36,11 +37,17 @@ public class SettingsDialog {
     private final TextField condaExecField = FxUtils.wideField();
     private final TextField condaEnvField = FxUtils.wideField();
     private final TextField pdvField = FxUtils.wideField();
+    private final TextField pepmapField = FxUtils.wideField();
 
     private final Label pdvStatusLabel = new Label();
     private final Button pdvUpgradeButton = new Button();
     private final ProgressBar pdvProgressBar = new ProgressBar();
     private String pdvTargetVersion;
+
+    private final Label pepmapStatusLabel = new Label();
+    private final Button pepmapUpgradeButton = new Button();
+    private final ProgressBar pepmapProgressBar = new ProgressBar();
+    private String pepmapTargetVersion;
 
     public SettingsDialog(Window owner, Settings settings) {
         this.owner = owner;
@@ -54,6 +61,7 @@ public class SettingsDialog {
         condaExecField.setText(settings.getCondaExecutable());
         condaEnvField.setText(settings.getCondaEnv());
         pdvField.setText(settings.getPdvJar());
+        pepmapField.setText(settings.getPepmapJar());
         updateEnabled();
         useCondaCheck.setOnAction(e -> updateEnabled());
 
@@ -71,6 +79,10 @@ public class SettingsDialog {
                         FxUtils.fileButton(owner, pdvField, false, "PDV jar (*.jar)", "*.jar"))
                 .addNote("Path to a PDV jar for \"Open in PDV\". Leave blank to auto-download the latest PDV.")
                 .addFullWidth(buildPdvStatusRow());
+        form.addRow("pepmap jar (optional):", pepmapField,
+                        FxUtils.fileButton(owner, pepmapField, false, "pepmap jar (*.jar)", "*.jar"))
+                .addNote("Path to a pepmap jar for the Mapping tab. Leave blank to auto-download the latest pepmap.")
+                .addFullWidth(buildPepmapStatusRow());
 
         Dialog<ButtonType> dialog = new Dialog<>();
         if (owner != null) {
@@ -92,6 +104,7 @@ public class SettingsDialog {
                 });
 
         checkPdvVersionAsync();
+        checkPepmapVersionAsync();
         ButtonType result = dialog.showAndWait().orElse(ButtonType.CANCEL);
         if (result == saveType) {
             settings.setCasanovoExecutable(executableField.getText().trim());
@@ -99,6 +112,7 @@ public class SettingsDialog {
             settings.setCondaExecutable(condaExecField.getText().trim());
             settings.setCondaEnv(condaEnvField.getText().trim());
             settings.setPdvJar(pdvField.getText().trim());
+            settings.setPepmapJar(pepmapField.getText().trim());
             settings.save();
             return true;
         }
@@ -219,6 +233,117 @@ public class SettingsDialog {
     private void hideUpgrade() {
         pdvUpgradeButton.setVisible(false);
         pdvUpgradeButton.setManaged(false);
+    }
+
+    // ---- pepmap version status + one-click download ------------------------
+
+    private HBox buildPepmapStatusRow() {
+        pepmapStatusLabel.getStyleClass().add("text-muted");
+        pepmapStatusLabel.setStyle("-fx-font-style: italic;");
+        pepmapStatusLabel.setWrapText(true);
+        pepmapStatusLabel.setMaxWidth(Double.MAX_VALUE);
+        pepmapProgressBar.setPrefWidth(140);
+        pepmapProgressBar.setVisible(false);
+        pepmapProgressBar.setManaged(false);
+        pepmapUpgradeButton.setOnAction(e -> upgradePepmap());
+        hidePepmapUpgrade();
+        HBox row = new HBox(8, pepmapStatusLabel, pepmapProgressBar, pepmapUpgradeButton);
+        row.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(pepmapStatusLabel, Priority.ALWAYS);
+        return row;
+    }
+
+    /** Look up the latest pepmap (off the FX thread) and reflect it in the status row. */
+    private void checkPepmapVersionAsync() {
+        // The auto-download only applies when no explicit jar is configured.
+        if (!pepmapField.getText().trim().isEmpty()) {
+            pepmapStatusLabel.setText("Using the configured jar above (auto-download disabled).");
+            hidePepmapUpgrade();
+            return;
+        }
+        pepmapStatusLabel.setText("Checking for the latest pepmap…");
+        Thread t = new Thread(() -> {
+            Optional<String> latest = PepMapLauncher.latestUsableVersion();
+            Optional<String> installed = PepMapLauncher.installedVersion();
+            Platform.runLater(() -> applyPepmapStatus(latest, installed));
+        }, "pepmap-version-check");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void applyPepmapStatus(Optional<String> latest, Optional<String> installed) {
+        if (latest.isEmpty()) {
+            // No pepmap release published yet (404) or offline: auto-download can't work, so point
+            // the user at the jar field above instead of offering a download that would fail.
+            if (installed.isPresent()) {
+                pepmapStatusLabel.setText("Using cached pepmap v" + installed.get()
+                        + " (could not check for a newer release).");
+            } else {
+                pepmapStatusLabel.setText("No pepmap release available to download yet — "
+                        + "set a local pepmap jar above for the Mapping tab.");
+            }
+            hidePepmapUpgrade();
+            return;
+        }
+        String latestV = latest.get();
+        pepmapTargetVersion = latestV;
+        if (installed.isEmpty()) {
+            pepmapStatusLabel.setText("Latest pepmap: v" + latestV + " — downloaded on first mapping run.");
+            showPepmapUpgrade("Download v" + latestV);
+        } else if (UpdateChecker.isNewer(latestV, installed.get())) {
+            pepmapStatusLabel.setText("New pepmap available: v" + latestV + " (you have v" + installed.get() + ").");
+            showPepmapUpgrade("Upgrade to v" + latestV);
+        } else {
+            pepmapStatusLabel.setText("pepmap v" + installed.get() + " is up to date.");
+            hidePepmapUpgrade();
+        }
+    }
+
+    private void upgradePepmap() {
+        hidePepmapUpgrade();
+        pepmapProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        pepmapProgressBar.setVisible(true);
+        pepmapProgressBar.setManaged(true);
+        pepmapStatusLabel.setText("Downloading pepmap"
+                + (pepmapTargetVersion == null ? "" : " v" + pepmapTargetVersion) + "…");
+        Thread t = new Thread(() -> {
+            try {
+                java.nio.file.Path jar = PepMapLauncher.downloadPepmap(
+                        msg -> { /* status is driven by the progress bar below */ },
+                        frac -> Platform.runLater(() -> pepmapProgressBar.setProgress(
+                                frac < 0 ? ProgressBar.INDETERMINATE_PROGRESS : frac)));
+                Optional<String> now = PepMapLauncher.installedVersion();
+                Platform.runLater(() -> {
+                    pepmapProgressBar.setVisible(false);
+                    pepmapProgressBar.setManaged(false);
+                    // Show where it landed WITHOUT pinning the field, so auto-download stays on.
+                    pepmapStatusLabel.setText("pepmap v" + now.orElse(pepmapTargetVersion) + " installed: " + jar);
+                    hidePepmapUpgrade();
+                });
+            } catch (Exception ex) {
+                String m = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> {
+                    pepmapProgressBar.setVisible(false);
+                    pepmapProgressBar.setManaged(false);
+                    pepmapStatusLabel.setText("Download failed: " + m);
+                    showPepmapUpgrade(pepmapTargetVersion == null ? "Retry download" : "Retry v" + pepmapTargetVersion);
+                });
+            }
+        }, "pepmap-upgrade");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void showPepmapUpgrade(String text) {
+        pepmapUpgradeButton.setText(text);
+        pepmapUpgradeButton.setDisable(false);
+        pepmapUpgradeButton.setVisible(true);
+        pepmapUpgradeButton.setManaged(true);
+    }
+
+    private void hidePepmapUpgrade() {
+        pepmapUpgradeButton.setVisible(false);
+        pepmapUpgradeButton.setManaged(false);
     }
 
     private String validate() {
