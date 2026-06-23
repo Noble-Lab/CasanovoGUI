@@ -393,7 +393,8 @@ public final class CasanovoInstaller {
                     "import torch; print('MPS_AVAILABLE=' + str(torch.backends.mps.is_available()))"),
                     installRoot);
             if (out.contains("MPS_AVAILABLE=True")) {
-                log.info("MPS is available -> Casanovo will use the Apple Silicon GPU.");
+                log.info("PyTorch MPS is available, but Casanovo runs on CPU on Apple Silicon "
+                        + "(MPS lacks ops Casanovo needs, e.g. _nested_tensor_from_mask_left_aligned).");
             } else {
                 log.info("[warn] MPS is NOT available in the installed PyTorch; Casanovo will run on"
                         + " CPU. This usually means an x86 (Rosetta) Python/torch was installed"

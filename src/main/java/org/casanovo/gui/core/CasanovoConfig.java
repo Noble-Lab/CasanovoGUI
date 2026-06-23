@@ -358,14 +358,9 @@ public class CasanovoConfig {
                 if (v.isEmpty()) {
                     sb.append(key).append(":\n");
                 } else {
-                    // On Apple Silicon, translate accelerator "auto" -> "mps". Casanovo
-                    // overrides "auto" to "cpu" on arm64 macs, so "auto" would skip the GPU;
-                    // naming "mps" explicitly bypasses that and runs ~2.3x faster with
-                    // identical output. Honours an explicit non-"auto" choice unchanged.
-                    if (key.equals("accelerator") && v.equalsIgnoreCase("auto")
-                            && Os.isMac() && Os.isAarch64()) {
-                        v = "mps";
-                    }
+                    // Leave "accelerator: auto" untouched: Casanovo maps it to CPU on arm64 Macs, which is
+                    // what we want. We used to force "mps" here for speed, but MPS lacks ops Casanovo needs
+                    // (e.g. aten::_nested_tensor_from_mask_left_aligned) and crashes the run.
                     sb.append(key).append(": \"").append(v).append("\"\n");
                 }
                 break;
