@@ -11,8 +11,6 @@ import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.CheckMenuItem;
-import javafx.scene.control.ComboBox;
-import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
@@ -29,12 +27,10 @@ import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.BorderPane;
-import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
-import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import org.casanovo.gui.core.CasanovoCommand;
 import org.casanovo.gui.core.CasanovoConfig;
@@ -43,7 +39,6 @@ import org.casanovo.gui.core.CasanovoRunner;
 import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
 import org.casanovo.gui.core.Os;
-import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.PyVenv;
 import org.casanovo.gui.core.Settings;
 import org.casanovo.gui.core.UpdateChecker;
@@ -76,16 +71,13 @@ public class MainApp extends Application {
     private Region runBar;
     private Region consoleView;
     private final List<CommandPane> panes = new ArrayList<>();
-    /** The View (score-plot) tab; auto-populated with the result mzTab after a successful run. */
+    /** The View tab (peptide-to-protein mapping); auto-populated with the result mzTab after a successful run. */
     private ViewPane viewPane;
-    /** The peptide-mapping tab; auto-populated with the result mzTab after a successful run. */
-    private MappingPane mappingPane;
 
     private final Label settingsLabel = new Label();
     private final TextField commandPreview = new TextField();
     private final Button paramsButton = new Button("Parameters");
     private final CheckBox useGuiParams = new CheckBox("Use GUI parameters (generate --config)");
-    private final Button pdvButton = new Button("Open in PDV");
     private final Button runButton = new Button("Run Casanovo");
     private final Button stopButton = new Button("Stop");
     private final Label statusLabel = new Label("Ready.");
@@ -122,16 +114,13 @@ public class MainApp extends Application {
     private volatile boolean installing = false;
     private volatile boolean checkpointErrorSeen = false;
 
-    // Most recent successful result (sequence / db-search / evaluate), so "Open in PDV"
-    // can load it directly. Captured at run start, resolved when the run finishes.
-    private List<File> lastResultSpectra;
-    private File lastResultMzTab;
+    // Inputs + output dir captured at run start, resolved when the run finishes so the
+    // produced mzTab can auto-fill the View tab.
     private List<File> pendingSpectra;
     private File pendingOutputDir;
     private long pendingRunStartMs;
-    // Most recently launched PDV process + the result it shows, to avoid duplicate windows.
-    private Process lastPdvProcess;
-    private File lastPdvMzTab;
+    /** Drives open PDV windows (e.g. peptide-click -> select PSM) over their control port. */
+    private final org.casanovo.gui.core.PdvController pdvController = new org.casanovo.gui.core.PdvController();
     private Stage stage;
 
     @Override
@@ -152,7 +141,6 @@ public class MainApp extends Application {
         panes.add(new DbSearchPane(primaryStage));
         panes.add(new EvalPane(primaryStage));
         panes.add(new TrainPane(primaryStage));
-        panes.add(new ConfigurePane(primaryStage));
 
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         for (CommandPane p : panes) {
@@ -160,20 +148,12 @@ public class MainApp extends Application {
             tab.setTooltip(tabTip(tabTooltip(p.getTitle())));
             tabs.getTabs().add(tab);
         }
-        // Analysis tab (not a Casanovo command): plots PSM / unique-peptide counts vs
-        // peptide score from an mzTab result. It lives past the command panes, so
-        // currentPane() returns null while it is selected and the run bar is disabled.
-        viewPane = new ViewPane(primaryStage);
+        viewPane = new ViewPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s), pdvController);
+        viewPane.runningProperty().addListener((o, a, b) -> updateChromeForTab());
         Tab viewTab = new Tab("View", viewPane);
-        viewTab.setTooltip(tabTip("Plot and inspect an existing Casanovo mzTab result, e.g. PSM and "
-                + "unique-peptide counts versus the peptide-score threshold."));
-        tabs.getTabs().add(viewTab);
-        mappingPane = new MappingPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s));
-        mappingPane.runningProperty().addListener((o, a, b) -> updateChromeForTab());
-        Tab mappingTab = new Tab("Mapping", mappingPane);
-        mappingTab.setTooltip(tabTip("Map the de novo peptides in an mzTab back to proteins in a reference "
+        viewTab.setTooltip(tabTip("Map the de novo peptides in an mzTab back to proteins in a reference "
                 + "FASTA, with coverage and per-protein views."));
-        tabs.getTabs().add(mappingTab);
+        tabs.getTabs().add(viewTab);
         tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
             refreshPreview();
             updateChromeForTab();
@@ -218,6 +198,10 @@ public class MainApp extends Application {
         scene.getAccelerators().put(
                 new KeyCodeCombination(KeyCode.ESCAPE),
                 () -> { if (!stopButton.isDisabled()) stopButton.fire(); });
+        // Parameters editor shortcut (the File-menu item was removed; the run-bar button remains).
+        scene.getAccelerators().put(
+                new KeyCodeCombination(KeyCode.P, KeyCombination.SHORTCUT_DOWN),
+                this::openParameters);
         primaryStage.setTitle("Casanovo GUI");
         primaryStage.setScene(scene);
         primaryStage.setMinWidth(Math.min(780, screen.getWidth()));
@@ -268,18 +252,10 @@ public class MainApp extends Application {
         MenuItem settingsItem = new MenuItem("Settings");
         settingsItem.setAccelerator(new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN));
         settingsItem.setOnAction(e -> openSettings());
-        MenuItem paramsItem = new MenuItem("Parameters");
-        paramsItem.setAccelerator(new KeyCodeCombination(KeyCode.P, KeyCombination.SHORTCUT_DOWN));
-        paramsItem.setOnAction(e -> openParameters());
-        MenuItem installItem = new MenuItem("Install Casanovo");
-        installItem.setOnAction(e -> onInstall());
-        MenuItem pdvItem = new MenuItem("Open in PDV");
-        pdvItem.setAccelerator(new KeyCodeCombination(KeyCode.D, KeyCombination.SHORTCUT_DOWN));
-        pdvItem.setOnAction(e -> openPdv());
         MenuItem exitItem = new MenuItem("Exit");
         exitItem.setAccelerator(new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN));
         exitItem.setOnAction(e -> stage.close());
-        fileMenu.getItems().addAll(settingsItem, paramsItem, installItem, pdvItem,
+        fileMenu.getItems().addAll(settingsItem,
                 new javafx.scene.control.SeparatorMenuItem(), exitItem);
 
         Menu helpMenu = new Menu("Help");
@@ -340,11 +316,16 @@ public class MainApp extends Application {
         ConsoleOutput previous = console;
         console = makeConsole(colored);
         console.setLeftStatus(buildExecutionReadout());
-        int idx = split.getItems().indexOf(previous.getView());
+        Region old = consoleView;
+        consoleView = console.getView();
+        int idx = split.getItems().indexOf(old);
         if (idx >= 0) {
             double[] dividers = split.getDividerPositions();
-            split.getItems().set(idx, console.getView());
+            split.getItems().set(idx, consoleView);
             split.setDividerPositions(dividers);
+        } else {
+            // The old view may be hosted in the View pane; re-place the new one there.
+            updateChromeForTab();
         }
     }
 
@@ -357,15 +338,13 @@ public class MainApp extends Application {
         runButton.setTooltip(new javafx.scene.control.Tooltip("Run the current Casanovo command (Ctrl+R)"));
         stopButton.getStyleClass().add("danger");
         stopButton.setTooltip(new javafx.scene.control.Tooltip("Stop the running Casanovo process (Esc)"));
-        pdvButton.setTooltip(new javafx.scene.control.Tooltip(
-                "Open the spectra + Casanovo mzTab in PDV (downloads PDV on first use)"));
         commandPreview.setEditable(false);
         // The command preview is read-only; skip it in tab order.
         commandPreview.setFocusTraversable(false);
         // Match the console output: the app's sans-serif base font (not monospace).
         commandPreview.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif; -fx-font-size: 13px;");
         HBox.setHgrow(commandPreview, Priority.ALWAYS);
-        HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton, pdvButton);
+        HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton);
         cmdRow.setAlignment(Pos.CENTER_LEFT);
         cmdRow.setPadding(new Insets(8, 10, 8, 10));
 
@@ -395,7 +374,6 @@ public class MainApp extends Application {
         runButton.setOnAction(e -> onRun());
         stopButton.setOnAction(e -> onStop());
         paramsButton.setOnAction(e -> openParameters());
-        pdvButton.setOnAction(e -> openPdv());
         useGuiParams.setOnAction(e -> refreshPreview());
     }
 
@@ -408,7 +386,7 @@ public class MainApp extends Application {
     }
 
     private void openSettings() {
-        boolean saved = new SettingsDialog(stage, settings).showAndApply();
+        boolean saved = new SettingsDialog(stage, settings, this::onInstall).showAndApply();
         if (saved) {
             refreshSettingsLabel();
             refreshPreview();
@@ -442,8 +420,6 @@ public class MainApp extends Application {
             case "Evaluate" -> "Sequence a spectrum file with known/annotated peptides and report "
                     + "accuracy metrics for the predictions.";
             case "Train" -> "Train or fine-tune a Casanovo model from annotated spectra.";
-            case "Configure" -> "Generate or edit the Casanovo YAML config of model and search parameters "
-                    + "(casanovo configure).";
             default -> title;
         };
     }
@@ -472,9 +448,9 @@ public class MainApp extends Application {
      */
     private void updateChromeForTab() {
         boolean commandTab = currentPane() != null;
-        // The Mapping tab streams pepmap output to the shared console; show it only while a mapping
+        // The View tab streams pepmap output to the shared console; show it only while a mapping
         // runs, and size it to sit just below the Run button so the settings panel stays unscrolled.
-        boolean mapping = isMappingTab() && mappingPane.runningProperty().get();
+        boolean mapping = isViewTab() && viewPane.runningProperty().get();
         runBar.setVisible(commandTab);
         runBar.setManaged(commandTab);
         if (commandTab || mapping) {
@@ -486,8 +462,8 @@ public class MainApp extends Application {
             if (mapping) {
                 // Size the console below the Run button synchronously (the metrics are pref-based and
                 // stable), so the settings panel never momentarily crams and flashes a scroll bar.
-                sizeMappingConsole();
-                Platform.runLater(this::sizeMappingConsole); // refine once more after layout settles
+                sizeViewConsole();
+                Platform.runLater(this::sizeViewConsole); // refine once more after layout settles
             } else if (added) {
                 split.setDividerPositions(0.62);
             }
@@ -496,30 +472,29 @@ public class MainApp extends Application {
         }
     }
 
-    /** Set the split divider so the console begins just below the Mapping tab's Run button. */
-    private void sizeMappingConsole() {
+    /** Set the split divider so the console begins just below the View tab's Run button. */
+    private void sizeViewConsole() {
         if (!split.getItems().contains(consoleView)) {
             return;
         }
-        javafx.geometry.Bounds mp = mappingPane.localToScene(mappingPane.getBoundsInLocal());
+        javafx.geometry.Bounds mp = viewPane.localToScene(viewPane.getBoundsInLocal());
         javafx.geometry.Bounds sb = split.localToScene(split.getBoundsInLocal());
         if (sb.getHeight() <= 0 || mp.getHeight() <= 0) {
             split.setDividerPositions(0.85); // safe: leaves the settings plenty of room until the next pulse
             return;
         }
-        double y = (mp.getMinY() - sb.getMinY()) + mappingPane.settingsExtent() + 10;
+        double y = (mp.getMinY() - sb.getMinY()) + viewPane.settingsExtent() + 10;
         split.setDividerPositions(Math.max(0.35, Math.min(0.9, y / sb.getHeight())));
     }
 
-    private boolean isMappingTab() {
+    private boolean isViewTab() {
         Tab t = tabs.getSelectionModel().getSelectedItem();
-        return t != null && t.getContent() == mappingPane;
+        return t != null && t.getContent() == viewPane;
     }
 
     private CasanovoCommand effectiveCommand(CommandPane pane, boolean forRun) {
         CasanovoCommand base = pane.buildCommand();
         if (!useGuiParams.isSelected()
-                || "configure".equals(base.getSubcommand())
                 || base.getArguments().contains("--config")) {
             return base;
         }
@@ -561,6 +536,13 @@ public class MainApp extends Application {
         String error = pane.validateInputs();
         if (error != null) {
             alert(Alert.AlertType.WARNING, "Cannot run", error);
+            return;
+        }
+        // Require an output directory so results don't scatter into the process working directory.
+        if (!pane.buildCommand().getArguments().contains("--output_dir")) {
+            alert(Alert.AlertType.WARNING, "Output directory not set",
+                    "Please set an \"Output directory (--output_dir)\" before running, so the results "
+                            + "are written where you expect.");
             return;
         }
         // Casanovo missing? Offer to install it now and then run the analysis automatically.
@@ -648,7 +630,7 @@ public class MainApp extends Application {
             return null;
         }
         return "The configured Casanovo executable could not be found:\n" + exe
-                + "\n\nFix it in File → Settings, or click \"Install Casanovo\" to "
+                + "\n\nFix it in File → Settings, where \"Install Casanovo\" can "
                 + "download Python + Casanovo into ~/.casanovo-gui.";
     }
 
@@ -889,7 +871,7 @@ public class MainApp extends Application {
         } else if (exitCode == 0) {
             console.appendLine("[done] Casanovo finished successfully (exit 0).");
             statusLabel.setText("Finished successfully.");
-            captureResultForPdv();
+            captureResult();
         } else if (exitCode == 130) {
             console.appendLine("[stopped] Casanovo was cancelled by the user.");
             statusLabel.setText("Stopped.");
@@ -1036,7 +1018,6 @@ public class MainApp extends Application {
 
     /** Disable interactive controls while a long background task (install) runs. */
     private void setBusy(boolean busy) {
-        pdvButton.setDisable(busy);
         runButton.setDisable(busy);
         paramsButton.setDisable(busy);
         useGuiParams.setDisable(busy);
@@ -1049,7 +1030,6 @@ public class MainApp extends Application {
         tabs.setDisable(running);
         paramsButton.setDisable(running);
         useGuiParams.setDisable(running);
-        pdvButton.setDisable(running);
     }
 
     private void alert(Alert.AlertType type, String title, String msg) {
@@ -1063,187 +1043,17 @@ public class MainApp extends Application {
     }
 
     /**
-     * Open the Casanovo result in PDV's DeNovo viewer. When a recent run produced a
-     * result, its spectra + mzTab are loaded directly; otherwise the user picks the
-     * inputs as before. PDV is downloaded on first use.
+     * After a successful run, find the produced mzTab and auto-fill the View tab's
+     * peptides field. No-op when the run had no spectra input or wrote no mzTab.
      */
-    private void openPdv() {
-        if (installing || runner.isRunning()) {
-            return;
-        }
-        // Mark busy at entry (not after the dialogs) so a second click can't slip through
-        // while a chooser / tolerance dialog is open or PDV is still starting up. Reset on
-        // every cancel path; the launch thread resets it once PDV has started.
-        installing = true;
-        setBusy(true);
-        java.util.List<File> spectra;
-        File mzTab;
-        boolean directLoad = lastResultMzTab != null && lastResultMzTab.isFile()
-                && lastResultSpectra != null && !lastResultSpectra.isEmpty();
-        if (directLoad) {
-            // Load the most recent Casanovo result directly — no need to re-pick files.
-            spectra = lastResultSpectra;
-            mzTab = lastResultMzTab;
-        } else {
-            FileChooser specChooser = new FileChooser();
-            specChooser.setTitle("Select spectrum file(s) (mzML / mzXML / MGF)");
-            specChooser.getExtensionFilters().add(
-                    new FileChooser.ExtensionFilter("Spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf"));
-            spectra = specChooser.showOpenMultipleDialog(stage);
-            if (spectra == null || spectra.isEmpty()) {
-                resetPdvBusy();
-                return;
-            }
-            FileChooser mzTabChooser = new FileChooser();
-            mzTabChooser.setTitle("Select Casanovo result (mzTab)");
-            mzTabChooser.getExtensionFilters().add(
-                    new FileChooser.ExtensionFilter("mzTab (*.mztab)", "*.mztab", "*.mzTab"));
-            File parent = spectra.get(0).getParentFile();
-            if (parent != null) {
-                mzTabChooser.setInitialDirectory(parent);
-            }
-            mzTab = mzTabChooser.showOpenDialog(stage);
-            if (mzTab == null) {
-                resetPdvBusy();
-                return;
-            }
-        }
-
-        // Guard against opening a duplicate PDV window for a result that's already open
-        // (e.g. an accidental second click while PDV is still starting up).
-        if (lastPdvProcess != null && lastPdvProcess.isAlive() && mzTab.equals(lastPdvMzTab)) {
-            ButtonType again = new ButtonType("Open another", ButtonBar.ButtonData.OK_DONE);
-            Alert dup = new Alert(Alert.AlertType.CONFIRMATION,
-                    "PDV is already open for this result (" + mzTab.getName() + ").\n\nOpen another window?",
-                    again, ButtonType.CANCEL);
-            dup.setTitle("PDV already open");
-            dup.setHeaderText(null);
-            if (stage != null) {
-                dup.initOwner(stage);
-            }
-            if (dup.showAndWait().orElse(ButtonType.CANCEL) != again) {
-                resetPdvBusy();
-                return;
-            }
-        }
-
-        // Fragment m/z tolerance: value + Da/ppm unit, matching PDV's setting
-        // ("Fragment m/z Tolerance: 0.05 Da (or ppm)").
-        // Sensible defaults: 0.05 for Da, 20 for ppm. When the unit changes,
-        // swap the field value only if it still holds the previous unit's
-        // unedited default — preserves anything the user typed manually.
-        final String DA_DEFAULT = "0.05";
-        final String PPM_DEFAULT = "20";
-        TextField tolValueField = new TextField(DA_DEFAULT);
-        tolValueField.setPrefColumnCount(8);
-        ComboBox<String> tolUnitCombo = new ComboBox<>();
-        tolUnitCombo.getItems().addAll("Da", "ppm");
-        tolUnitCombo.getSelectionModel().select("Da");
-        tolUnitCombo.valueProperty().addListener((obs, oldUnit, newUnit) -> {
-            String cur = tolValueField.getText() == null ? "" : tolValueField.getText().trim();
-            if ("ppm".equals(newUnit) && DA_DEFAULT.equals(cur)) {
-                tolValueField.setText(PPM_DEFAULT);
-            } else if ("Da".equals(newUnit) && PPM_DEFAULT.equals(cur)) {
-                tolValueField.setText(DA_DEFAULT);
-            }
-        });
-
-        HBox tolRow = new HBox(8, tolValueField, tolUnitCombo);
-        tolRow.setAlignment(Pos.CENTER_LEFT);
-        GridPane tolGrid = new GridPane();
-        tolGrid.setHgap(8);
-        tolGrid.setVgap(8);
-        tolGrid.setPadding(new Insets(12));
-        tolGrid.add(new Label("Fragment m/z Tolerance:"), 0, 0);
-        tolGrid.add(tolRow, 1, 0);
-
-        Dialog<ButtonType> tolDialog = new Dialog<>();
-        tolDialog.setTitle("Fragment tolerance");
-        tolDialog.setHeaderText((directLoad
-                ? "Loading result: " + mzTab.getName() + "  ("
-                  + spectra.size() + " spectrum file" + (spectra.size() == 1 ? "" : "s") + ")\n"
-                : "")
-                + "Fragment ion tolerance for spectrum annotation in PDV");
-        if (stage != null) {
-            tolDialog.initOwner(stage);
-        }
-        ButtonType okType = new ButtonType("Open in PDV", ButtonBar.ButtonData.OK_DONE);
-        tolDialog.getDialogPane().getButtonTypes().addAll(okType, ButtonType.CANCEL);
-        tolDialog.getDialogPane().setContent(tolGrid);
-
-        java.util.Optional<ButtonType> tolResult = tolDialog.showAndWait();
-        if (!tolResult.isPresent() || tolResult.get() != okType) {
-            resetPdvBusy();
-            return;
-        }
-        final String fTolUnit = tolUnitCombo.getValue() == null ? "Da" : tolUnitCombo.getValue();
-        double tolVal;
-        try {
-            tolVal = Double.parseDouble(tolValueField.getText().trim());
-        } catch (NumberFormatException ignored) {
-            tolVal = "ppm".equals(fTolUnit) ? 20.0 : 0.05;
-        }
-        final double fTol = tolVal;
-
-        statusLabel.setText("Preparing PDV…");
-        console.append(System.lineSeparator() + "[pdv] Opening "
-                + (directLoad ? "last result (" + mzTab.getName() + ")" : "results")
-                + " in PDV…" + System.lineSeparator());
-
-        final java.util.List<File> fSpectra = spectra;
-        final File fMzTab = mzTab;
-        Thread t = new Thread(() -> {
-            try {
-                Path jar = PdvLauncher.ensurePdv(settings.getPdvJar(), console::appendLine);
-                Process proc = PdvLauncher.launchDenovo(jar, fSpectra, fMzTab, fTol, fTolUnit, console::appendLine);
-                Platform.runLater(() -> {
-                    lastPdvProcess = proc;
-                    lastPdvMzTab = fMzTab;
-                    installing = false;
-                    setBusy(false);
-                    statusLabel.setText("PDV launched.");
-                });
-            } catch (Exception ex) {
-                String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
-                Platform.runLater(() -> {
-                    console.appendLine("[pdv] FAILED: " + msg);
-                    installing = false;
-                    setBusy(false);
-                    statusLabel.setText("PDV launch failed.");
-                    alert(Alert.AlertType.ERROR, "PDV error", msg);
-                });
-            }
-        }, "pdv-launcher");
-        t.setDaemon(true);
-        t.start();
-    }
-
-    /** Release the busy state set at the start of {@link #openPdv()} on a cancel path. */
-    private void resetPdvBusy() {
-        installing = false;
-        setBusy(false);
-    }
-
-    /**
-     * After a successful run, remember the produced mzTab and its input spectra so the
-     * next "Open in PDV" loads them directly. No-op (so "Open in PDV" keeps prompting for
-     * files) when the run had no spectra input or wrote no mzTab.
-     */
-    private void captureResultForPdv() {
+    private void captureResult() {
         if (pendingSpectra == null || pendingSpectra.isEmpty() || pendingOutputDir == null) {
             return;
         }
         File mztab = findNewestMzTab(pendingOutputDir, pendingRunStartMs);
         if (mztab != null) {
-            lastResultSpectra = pendingSpectra;
-            lastResultMzTab = mztab;
-            console.appendLine("[pdv] Result ready: " + mztab.getName()
-                    + " — click \"Open in PDV\" to view it (inputs loaded automatically).");
-            // Auto-populate the Plot tab with the new result and render its score plot.
-            viewPane.showResult(mztab);
-            console.appendLine("[plot] Score plot generated in the View tab.");
-            // Also auto-fill the Mapping tab's peptides field (mapping is run on demand).
-            mappingPane.setPeptides(mztab);
+            // Auto-fill the View tab's peptides field (mapping is run on demand).
+            viewPane.setPeptides(mztab);
         }
     }
 

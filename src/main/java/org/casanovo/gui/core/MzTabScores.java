@@ -240,6 +240,54 @@ public final class MzTabScores {
     }
 
     /**
+     * Names of PSM columns that are empty ({@code null}, blank, or the literal {@code "null"} mzTab
+     * missing-value marker) for <em>every</em> PSM in {@code mzTab}. Used to hide always-empty columns
+     * from the per-residue PSM table.
+     */
+    public static List<String> detectEmptyPsmColumns(File mzTab) throws IOException {
+        List<String> columns = new ArrayList<>();
+        boolean[] hasValue = null;
+        boolean sawHeader = false;
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(Files.newInputStream(mzTab.toPath()), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.startsWith("PSH\t")) {
+                    String[] h = line.split("\t", -1);
+                    columns.clear();
+                    for (int i = 1; i < h.length; i++) { // drop the leading "PSH" row-type cell
+                        columns.add(h[i].trim());
+                    }
+                    hasValue = new boolean[columns.size()];
+                    sawHeader = true;
+                } else if (sawHeader && hasValue != null && line.startsWith("PSM\t")) {
+                    String[] c = line.split("\t", -1);
+                    for (int i = 0; i < hasValue.length; i++) {
+                        int ci = i + 1; // +1 for the leading "PSM" row-type cell
+                        if (ci < c.length && !isEmptyCell(c[ci])) {
+                            hasValue[i] = true;
+                        }
+                    }
+                }
+            }
+        }
+        List<String> empty = new ArrayList<>();
+        if (hasValue != null) {
+            for (int i = 0; i < hasValue.length; i++) {
+                if (!hasValue[i]) {
+                    empty.add(columns.get(i));
+                }
+            }
+        }
+        return empty;
+    }
+
+    /** An mzTab missing-value cell: actual null, blank, or the literal {@code "null"} marker. */
+    private static boolean isEmptyCell(String s) {
+        return s == null || s.isBlank() || s.equalsIgnoreCase("null");
+    }
+
+    /**
      * For thresholds from {@code min} to {@code max} (inclusive) in steps of
      * {@code step}, count the PSMs and the distinct peptide sequences whose score
      * is {@code >=} the threshold.
@@ -275,6 +323,54 @@ public final class MzTabScores {
             peptideCounts[i] = sequences.size();
         }
         return new Curve(thresholds, psmCounts, peptideCounts);
+    }
+
+    /**
+     * Read the spectrum-file locations from the mzTab metadata ({@code MTD ms_run[k]-location
+     * file:///...}), resolved to local {@link File}s — used to auto-detect the spectra for PDV. Only
+     * the metadata section is scanned (parsing stops at the PSM/PRT/PEP section). {@code file:} URIs
+     * are decoded (handling spaces / percent-encoding); a non-URI value is treated as a plain path.
+     *
+     * @throws IOException if the file cannot be read
+     */
+    public static List<File> readMsRunLocations(File mzTab) throws IOException {
+        List<File> files = new ArrayList<>();
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(Files.newInputStream(mzTab.toPath()), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.startsWith("PSH") || line.startsWith("PSM")
+                        || line.startsWith("PRT") || line.startsWith("PEP")) {
+                    break; // past the metadata section
+                }
+                if (line.startsWith("MTD\t")) {
+                    String[] c = line.split("\t", -1);
+                    if (c.length >= 3 && c[1].matches("ms_run\\[\\d+\\]-location")) {
+                        File f = locationToFile(c[2].trim());
+                        if (f != null) {
+                            files.add(f);
+                        }
+                    }
+                }
+            }
+        }
+        return files;
+    }
+
+    /** Convert an mzTab {@code ms_run-location} value (a {@code file:} URI or a plain path) to a File. */
+    private static File locationToFile(String location) {
+        if (location.isEmpty()) {
+            return null;
+        }
+        if (location.startsWith("file:")) {
+            try {
+                // Encode spaces so URI parsing doesn't choke on raw (unencoded) paths.
+                return java.nio.file.Paths.get(java.net.URI.create(location.replace(" ", "%20"))).toFile();
+            } catch (RuntimeException e) {
+                return new File(location.replaceFirst("^file:/{0,3}", ""));
+            }
+        }
+        return new File(location);
     }
 
     private static double parse(String s) {

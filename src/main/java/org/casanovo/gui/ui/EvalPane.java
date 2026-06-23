@@ -2,7 +2,6 @@ package org.casanovo.gui.ui;
 
 import javafx.scene.Node;
 import javafx.scene.control.ScrollPane;
-import javafx.scene.control.TextField;
 import javafx.stage.Window;
 import org.casanovo.gui.core.CasanovoCommand;
 
@@ -19,14 +18,14 @@ import java.util.List;
  */
 public class EvalPane extends CommandPane {
 
-    private final TextField peakField = FxUtils.wideField();
+    private final MultiFileField peakField;
     private final CommonOptions options = new CommonOptions();
     private final ScrollPane content;
 
     public EvalPane(Window owner) {
+        peakField = new MultiFileField(owner, "annotated MGF files", "Annotated MGF (*.mgf)", "*.mgf");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
-        form.addRow("Annotated spectra:", peakField,
-                        FxUtils.fileButton(owner, peakField, true, "Annotated MGF (*.mgf)", "*.mgf"))
+        form.addRow("Annotated spectra:", peakField.node(), peakField.browseButton())
                 .addNote("Required. Annotated MGF file(s) with peptide sequences in the SEQ field. "
                         + "Requires top_match: 1 in the parameters.");
         options.addToForm(owner, form);
@@ -46,10 +45,10 @@ public class EvalPane extends CommandPane {
 
     @Override
     public String validateInputs() {
-        if (PathFields.isEmpty(peakField)) {
+        if (PathFields.isEmpty(peakField.field())) {
             return "Please choose at least one annotated MGF file to evaluate against.";
         }
-        return PathFields.firstMissing(peakField);
+        return PathFields.firstMissing(peakField.field());
     }
 
     @Override
@@ -57,14 +56,14 @@ public class EvalPane extends CommandPane {
         List<String> args = new ArrayList<>();
         options.appendArgs(args, true);
         args.add("--evaluate");
-        args.addAll(PathFields.split(peakField));
+        args.addAll(PathFields.split(peakField.field()));
         return new CasanovoCommand("sequence", args);
     }
 
     @Override
     public List<File> resultSpectra() {
         List<File> out = new ArrayList<>();
-        for (String p : PathFields.split(peakField)) {
+        for (String p : PathFields.split(peakField.field())) {
             out.add(new File(p));
         }
         return out;

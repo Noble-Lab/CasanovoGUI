@@ -11,8 +11,10 @@ import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.stage.Window;
 import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.PepMapLauncher;
@@ -31,6 +33,7 @@ public class SettingsDialog {
 
     private final Settings settings;
     private final Window owner;
+    private final Runnable onInstall; // download + install Python/Casanovo (was the File → Install menu item)
 
     private final TextField executableField = FxUtils.wideField();
     private final CheckBox useCondaCheck = new CheckBox("Run inside a Conda environment");
@@ -38,6 +41,7 @@ public class SettingsDialog {
     private final TextField condaEnvField = FxUtils.wideField();
     private final TextField pdvField = FxUtils.wideField();
     private final TextField pepmapField = FxUtils.wideField();
+    private HBox execRow; // Casanovo executable + Browse + Install; grayed out under Conda
 
     private final Label pdvStatusLabel = new Label();
     private final Button pdvUpgradeButton = new Button();
@@ -49,9 +53,10 @@ public class SettingsDialog {
     private final ProgressBar pepmapProgressBar = new ProgressBar();
     private String pepmapTargetVersion;
 
-    public SettingsDialog(Window owner, Settings settings) {
+    public SettingsDialog(Window owner, Settings settings, Runnable onInstall) {
         this.owner = owner;
         this.settings = settings;
+        this.onInstall = onInstall;
     }
 
     /** Show modally; if the user clicks Save, write into the Settings and return true. */
@@ -62,27 +67,37 @@ public class SettingsDialog {
         condaEnvField.setText(settings.getCondaEnv());
         pdvField.setText(settings.getPdvJar());
         pepmapField.setText(settings.getPepmapJar());
-        updateEnabled();
         useCondaCheck.setOnAction(e -> updateEnabled());
+        useCondaCheck.setMinWidth(Region.USE_PREF_SIZE); // never truncate the checkbox label
+
+        Button installButton = new Button("Install Casanovo");
+        installButton.setTooltip(new Tooltip(
+                "Download a private Python runtime and install Casanovo into ~/.casanovo-gui "
+                        + "(needs internet; takes a few minutes)."));
+        // Each path field shares its row with a right-aligned Browse button (the executable row also
+        // carries Install). The executable row is grayed out under Conda, where the configured path is
+        // bypassed (conda run resolves "casanovo" inside the env).
+        execRow = browseRow(executableField, FxUtils.fileButton(owner, executableField, false, null), installButton);
 
         FxUtils.FormGrid form = new FxUtils.FormGrid();
-        form.addRow("Casanovo executable:", executableField,
-                        FxUtils.fileButton(owner, executableField, false, null))
-                .addNote("Path to the 'casanovo' program, or just 'casanovo' if it is on your PATH.");
+        form.addRow("Casanovo executable:", execRow)
+                .addNote("Path to the 'casanovo' program, or just 'casanovo' if it is on your PATH. "
+                        + "No Casanovo yet? Click \"Install Casanovo\".");
         form.addRow("", useCondaCheck)
                 .addNote("When enabled, runs: conda run --no-capture-output -n <env> casanovo …");
-        form.addRow("Conda executable:", condaExecField,
-                        FxUtils.fileButton(owner, condaExecField, false, null))
+        form.addRow("Conda executable:",
+                        browseRow(condaExecField, FxUtils.fileButton(owner, condaExecField, false, null)))
                 .addNote("Path to 'conda' (or 'mamba'), or just 'conda' if on your PATH.");
         form.addRow("Conda environment name:", condaEnvField);
-        form.addRow("PDV jar (optional):", pdvField,
-                        FxUtils.fileButton(owner, pdvField, false, "PDV jar (*.jar)", "*.jar"))
+        form.addRow("PDV jar (optional):",
+                        browseRow(pdvField, FxUtils.fileButton(owner, pdvField, false, "PDV jar (*.jar)", "*.jar")))
                 .addNote("Path to a PDV jar for \"Open in PDV\". Leave blank to auto-download the latest PDV.")
                 .addFullWidth(buildPdvStatusRow());
-        form.addRow("pepmap jar (optional):", pepmapField,
-                        FxUtils.fileButton(owner, pepmapField, false, "pepmap jar (*.jar)", "*.jar"))
-                .addNote("Path to a pepmap jar for the Mapping tab. Leave blank to auto-download the latest pepmap.")
+        form.addRow("pepmap jar (optional):",
+                        browseRow(pepmapField, FxUtils.fileButton(owner, pepmapField, false, "pepmap jar (*.jar)", "*.jar")))
+                .addNote("Path to a pepmap jar for the View tab. Leave blank to auto-download the latest pepmap.")
                 .addFullWidth(buildPepmapStatusRow());
+        updateEnabled();
 
         Dialog<ButtonType> dialog = new Dialog<>();
         if (owner != null) {
@@ -93,6 +108,7 @@ public class SettingsDialog {
         ButtonType saveType = new ButtonType("Save", ButtonBar.ButtonData.OK_DONE);
         dialog.getDialogPane().getButtonTypes().addAll(saveType, ButtonType.CANCEL);
         dialog.getDialogPane().setContent(form.getGrid());
+        dialog.getDialogPane().setMinWidth(700); // a bit wider, with room for the executable + Install row
 
         dialog.getDialogPane().lookupButton(saveType).addEventFilter(
                 javafx.event.ActionEvent.ACTION, evt -> {
@@ -102,6 +118,16 @@ public class SettingsDialog {
                         evt.consume();
                     }
                 });
+
+        // Install Casanovo: close this dialog, then run the install so its progress shows in the main
+        // window's console/status (the dialog is modal, so it would otherwise hide that progress).
+        installButton.setDisable(onInstall == null);
+        installButton.setOnAction(e -> {
+            dialog.close();
+            if (onInstall != null) {
+                Platform.runLater(onInstall);
+            }
+        });
 
         checkPdvVersionAsync();
         checkPepmapVersionAsync();
@@ -123,6 +149,21 @@ public class SettingsDialog {
         boolean on = useCondaCheck.isSelected();
         condaExecField.setDisable(!on);
         condaEnvField.setDisable(!on);
+        if (execRow != null) {
+            execRow.setDisable(on); // executable/Browse/Install are unused when running inside a Conda env
+        }
+    }
+
+    /** A field that fills the row, with its trailing button(s) right-aligned at the row's end. */
+    private static HBox browseRow(TextField field, Button... trailing) {
+        HBox.setHgrow(field, Priority.ALWAYS);
+        for (Button b : trailing) {
+            b.setMinWidth(Region.USE_PREF_SIZE); // the growing field must not squeeze the button text
+        }
+        HBox box = new HBox(6, field);
+        box.getChildren().addAll(trailing);
+        box.setAlignment(Pos.CENTER_LEFT);
+        return box;
     }
 
     // ---- PDV version status + one-click upgrade ----------------------------
@@ -145,38 +186,54 @@ public class SettingsDialog {
 
     /** Look up the latest PDV (off the FX thread) and reflect it in the status row. */
     private void checkPdvVersionAsync() {
-        // The auto-download only applies when no explicit jar is configured.
-        if (!pdvField.getText().trim().isEmpty()) {
-            pdvStatusLabel.setText("Using the configured jar above (auto-download disabled).");
-            hideUpgrade();
-            return;
-        }
+        String configuredJar = pdvField.getText().trim();
+        boolean configured = !configuredJar.isEmpty();
         pdvStatusLabel.setText("Checking for the latest PDV…");
         Thread t = new Thread(() -> {
             Optional<String> latest = PdvLauncher.latestUsableVersion();
-            Optional<String> installed = PdvLauncher.installedVersion();
-            Platform.runLater(() -> applyPdvStatus(latest, installed));
+            // "Current" PDV = the configured jar's version when one is set, else the cached download.
+            Optional<String> current = configured
+                    ? PdvLauncher.versionOfJarPath(configuredJar)
+                    : PdvLauncher.installedVersion();
+            Platform.runLater(() -> applyPdvStatus(latest, current, configured));
         }, "pdv-version-check");
         t.setDaemon(true);
         t.start();
     }
 
-    private void applyPdvStatus(Optional<String> latest, Optional<String> installed) {
+    private void applyPdvStatus(Optional<String> latest, Optional<String> current, boolean configured) {
         if (latest.isEmpty()) {
-            pdvStatusLabel.setText("Could not check for the latest PDV (offline?).");
+            pdvStatusLabel.setText(configured
+                    ? "Using the configured jar above (couldn't check for a newer PDV — offline?)."
+                    : "Could not check for the latest PDV (offline?).");
             hideUpgrade();
             return;
         }
         String latestV = latest.get();
         pdvTargetVersion = latestV;
-        if (installed.isEmpty()) {
+        if (configured) {
+            // A configured jar overrides any download, so report status but never offer an auto-download.
+            hideUpgrade();
+            if (current.isPresent() && UpdateChecker.isNewer(latestV, current.get())) {
+                pdvStatusLabel.setText("A newer PDV is available: v" + latestV + " (configured jar is v"
+                        + current.get() + "). Clear the jar field above to auto-download it.");
+            } else if (current.isPresent()) {
+                pdvStatusLabel.setText("Configured jar (v" + current.get()
+                        + ") is up to date with the latest public PDV (v" + latestV + ").");
+            } else {
+                pdvStatusLabel.setText("Using the configured jar above (auto-download disabled). "
+                        + "Latest public PDV: v" + latestV + ".");
+            }
+            return;
+        }
+        if (current.isEmpty()) {
             pdvStatusLabel.setText("Latest PDV: v" + latestV + " — downloaded on first \"Open in PDV\".");
             showUpgrade("Download v" + latestV);
-        } else if (UpdateChecker.isNewer(latestV, installed.get())) {
-            pdvStatusLabel.setText("New PDV available: v" + latestV + " (you have v" + installed.get() + ").");
+        } else if (UpdateChecker.isNewer(latestV, current.get())) {
+            pdvStatusLabel.setText("New PDV available: v" + latestV + " (you have v" + current.get() + ").");
             showUpgrade("Upgrade to v" + latestV);
         } else {
-            pdvStatusLabel.setText("PDV v" + installed.get() + " is up to date.");
+            pdvStatusLabel.setText("PDV v" + current.get() + " is up to date.");
             hideUpgrade();
         }
     }
@@ -255,46 +312,62 @@ public class SettingsDialog {
 
     /** Look up the latest pepmap (off the FX thread) and reflect it in the status row. */
     private void checkPepmapVersionAsync() {
-        // The auto-download only applies when no explicit jar is configured.
-        if (!pepmapField.getText().trim().isEmpty()) {
-            pepmapStatusLabel.setText("Using the configured jar above (auto-download disabled).");
-            hidePepmapUpgrade();
-            return;
-        }
+        String configuredJar = pepmapField.getText().trim();
+        boolean configured = !configuredJar.isEmpty();
         pepmapStatusLabel.setText("Checking for the latest pepmap…");
         Thread t = new Thread(() -> {
             Optional<String> latest = PepMapLauncher.latestUsableVersion();
-            Optional<String> installed = PepMapLauncher.installedVersion();
-            Platform.runLater(() -> applyPepmapStatus(latest, installed));
+            // "Current" pepmap = the configured jar's version when one is set, else the cached download.
+            Optional<String> current = configured
+                    ? PepMapLauncher.versionOfJarPath(configuredJar)
+                    : PepMapLauncher.installedVersion();
+            Platform.runLater(() -> applyPepmapStatus(latest, current, configured));
         }, "pepmap-version-check");
         t.setDaemon(true);
         t.start();
     }
 
-    private void applyPepmapStatus(Optional<String> latest, Optional<String> installed) {
+    private void applyPepmapStatus(Optional<String> latest, Optional<String> current, boolean configured) {
         if (latest.isEmpty()) {
-            // No pepmap release published yet (404) or offline: auto-download can't work, so point
-            // the user at the jar field above instead of offering a download that would fail.
-            if (installed.isPresent()) {
-                pepmapStatusLabel.setText("Using cached pepmap v" + installed.get()
+            // No pepmap release published yet (404) or offline: auto-download can't work.
+            if (configured) {
+                pepmapStatusLabel.setText("Using the configured jar above "
+                        + "(couldn't check for a newer pepmap — offline or no release yet).");
+            } else if (current.isPresent()) {
+                pepmapStatusLabel.setText("Using cached pepmap v" + current.get()
                         + " (could not check for a newer release).");
             } else {
                 pepmapStatusLabel.setText("No pepmap release available to download yet — "
-                        + "set a local pepmap jar above for the Mapping tab.");
+                        + "set a local pepmap jar above for the View tab.");
             }
             hidePepmapUpgrade();
             return;
         }
         String latestV = latest.get();
         pepmapTargetVersion = latestV;
-        if (installed.isEmpty()) {
+        if (configured) {
+            // A configured jar overrides any download, so report status but never offer an auto-download.
+            hidePepmapUpgrade();
+            if (current.isPresent() && UpdateChecker.isNewer(latestV, current.get())) {
+                pepmapStatusLabel.setText("A newer pepmap is available: v" + latestV + " (configured jar is v"
+                        + current.get() + "). Clear the jar field above to auto-download it.");
+            } else if (current.isPresent()) {
+                pepmapStatusLabel.setText("Configured jar (v" + current.get()
+                        + ") is up to date with the latest public pepmap (v" + latestV + ").");
+            } else {
+                pepmapStatusLabel.setText("Using the configured jar above (auto-download disabled). "
+                        + "Latest public pepmap: v" + latestV + ".");
+            }
+            return;
+        }
+        if (current.isEmpty()) {
             pepmapStatusLabel.setText("Latest pepmap: v" + latestV + " — downloaded on first mapping run.");
             showPepmapUpgrade("Download v" + latestV);
-        } else if (UpdateChecker.isNewer(latestV, installed.get())) {
-            pepmapStatusLabel.setText("New pepmap available: v" + latestV + " (you have v" + installed.get() + ").");
+        } else if (UpdateChecker.isNewer(latestV, current.get())) {
+            pepmapStatusLabel.setText("New pepmap available: v" + latestV + " (you have v" + current.get() + ").");
             showPepmapUpgrade("Upgrade to v" + latestV);
         } else {
-            pepmapStatusLabel.setText("pepmap v" + installed.get() + " is up to date.");
+            pepmapStatusLabel.setText("pepmap v" + current.get() + " is up to date.");
             hidePepmapUpgrade();
         }
     }

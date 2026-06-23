@@ -17,18 +17,18 @@ import java.util.List;
  */
 public class DbSearchPane extends CommandPane {
 
-    private final TextField peakField = FxUtils.wideField();
+    private final MultiFileField peakField;
     private final TextField fastaField = FxUtils.wideField();
     private final CommonOptions options = new CommonOptions();
     private final ScrollPane content;
 
     public DbSearchPane(Window owner) {
+        peakField = new MultiFileField(owner, "MS/MS files",
+                "MS/MS spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
-        form.addRow("Spectrum file(s):", peakField,
-                        FxUtils.fileButton(owner, peakField, true,
-                                "MS/MS spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf"))
-                .addNote("Required. mzML / mzXML / MGF (separate multiple with '"
-                        + File.pathSeparator + "').");
+        form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
+                .addNote("Required. mzML / mzXML / MGF. Select multiple in the browser, or separate "
+                        + "paths with '" + File.pathSeparator + "'.");
         form.addRow("Protein database (FASTA):", fastaField,
                         FxUtils.fileButton(owner, fastaField, false,
                                 "FASTA (*.fasta, *.fa)", "*.fasta", "*.fa", "*.gz"))
@@ -52,10 +52,10 @@ public class DbSearchPane extends CommandPane {
 
     @Override
     public String validateInputs() {
-        if (PathFields.isEmpty(peakField)) {
+        if (PathFields.isEmpty(peakField.field())) {
             return "Please choose at least one spectrum file (mzML/mzXML/MGF).";
         }
-        String missing = PathFields.firstMissing(peakField);
+        String missing = PathFields.firstMissing(peakField.field());
         if (missing != null) {
             return missing;
         }
@@ -66,7 +66,7 @@ public class DbSearchPane extends CommandPane {
     public CasanovoCommand buildCommand() {
         List<String> args = new ArrayList<>();
         options.appendArgs(args, true);
-        args.addAll(PathFields.split(peakField));
+        args.addAll(PathFields.split(peakField.field()));
         args.add(fastaField.getText().trim());
         return new CasanovoCommand("db-search", args);
     }
@@ -74,7 +74,7 @@ public class DbSearchPane extends CommandPane {
     @Override
     public List<File> resultSpectra() {
         List<File> out = new ArrayList<>();
-        for (String p : PathFields.split(peakField)) {
+        for (String p : PathFields.split(peakField.field())) {
             out.add(new File(p));
         }
         return out;

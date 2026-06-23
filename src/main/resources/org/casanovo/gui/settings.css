@@ -13,7 +13,7 @@
     -fx-padding: 3px 4px 3px 4px;
 }
 
-/* Mapping panel: a uniform top gap between the inner result-tab bar and each tab's content,
+/* View panel: a uniform top gap between the inner result-tab bar and each tab's content,
    so every tab (including the table-only ones) has the same breathing room at the top. */
 .result-tabs > .tab-content-area {
     -fx-padding: 10px 0 0 0;

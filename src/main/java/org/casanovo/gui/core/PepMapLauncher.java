@@ -76,6 +76,15 @@ public final class PepMapLauncher {
         return m.matches() ? m.group(1) : "0";
     }
 
+    /** Version of a configured pepmap jar path's filename (e.g. {@code .../pepmap-2.0.0.jar} -> {@code "2.0.0"}), or empty. */
+    public static Optional<String> versionOfJarPath(String path) {
+        if (path == null || path.trim().isEmpty()) {
+            return Optional.empty();
+        }
+        Matcher m = PEPMAP_JAR.matcher(Paths.get(path.trim()).getFileName().toString());
+        return m.matches() ? Optional.of(m.group(1)) : Optional.empty();
+    }
+
     private static int compareVersions(String a, String b) {
         if (UpdateChecker.isNewer(a, b)) {
             return 1;

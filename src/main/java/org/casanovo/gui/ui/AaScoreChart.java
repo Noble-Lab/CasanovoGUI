@@ -53,7 +53,7 @@ public class AaScoreChart extends BorderPane {
         subtitle.setManaged(false);
         VBox head = new VBox(2, title, subtitle);
         head.setAlignment(Pos.CENTER);
-        head.setPadding(new Insets(0, 0, 6, 0));
+        head.setPadding(new Insets(0, 0, 2, 0));
         setTop(head);
 
         // Hold the canvas in a region kept at least as wide as the viewport, so a short peptide's
@@ -79,12 +79,12 @@ public class AaScoreChart extends BorderPane {
         legend.setAlignment(Pos.CENTER);
 
         hover.setStyle("-fx-font-family: 'Arial';");
-        VBox bottom = new VBox(4, legend, hover);
+        VBox bottom = new VBox(2, legend, hover);
         bottom.setAlignment(Pos.CENTER);
-        bottom.setPadding(new Insets(6, 0, 0, 0));
+        bottom.setPadding(new Insets(2, 0, 0, 0));
         setBottom(bottom);
 
-        setPadding(new Insets(10));
+        setPadding(new Insets(4));
         canvas.setOnMouseMoved(e -> updateHover(e.getX()));
         canvas.setOnMouseExited(e -> hover.setText(" "));
     }
@@ -97,9 +97,8 @@ public class AaScoreChart extends BorderPane {
     /** As {@link #setData(String, double[])} but with an optional context line under the title. */
     public void setData(String sequence, double[] scores, String subtitleText) {
         boolean hasSub = subtitleText != null && !subtitleText.isEmpty();
-        subtitle.setText(hasSub ? subtitleText : "");
-        subtitle.setVisible(hasSub);
-        subtitle.setManaged(hasSub);
+        subtitle.setVisible(false); // the peptide score is folded into the title, after the mean
+        subtitle.setManaged(false);
         this.sequence = sequence == null ? "" : sequence;
         this.scores = scores == null ? new double[0] : scores;
         int n = residues();
@@ -111,8 +110,12 @@ public class AaScoreChart extends BorderPane {
                 m++;
             }
         }
-        title.setText(this.sequence + "   (" + n + " aa"
-                + (m > 0 ? String.format(Locale.US, ", mean %.3f", sum / m) : "") + ")");
+        // First row shows only the mean and peptide score; the sequence is shown by the residue
+        // circles below (and in the window title bar).
+        String mean = (m > 0) ? String.format(Locale.US, "mean %.3f", sum / m) : "";
+        String score = hasSub ? subtitleText.replaceFirst("(?i)peptide score:?\\s*", "peptide score ") : "";
+        String headline = mean.isEmpty() ? score : (score.isEmpty() ? mean : mean + ", " + score);
+        title.setText(headline);
         canvas.setWidth(AXIS_W + 2 * PAD + n * CELL_W);
         canvas.setHeight(2 * PAD + LETTER_H + 8 + BAR_H + 16);
         draw();

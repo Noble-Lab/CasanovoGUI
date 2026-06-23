@@ -17,16 +17,16 @@ import java.util.List;
  */
 public class TrainPane extends CommandPane {
 
-    private final TextField trainField = FxUtils.wideField();
+    private final MultiFileField trainField;
     private final TextField validationField = FxUtils.wideField();
     private final CommonOptions options = new CommonOptions();
     private final ScrollPane content;
 
     public TrainPane(Window owner) {
+        trainField = new MultiFileField(owner, "training spectra files",
+                "Annotated MGF / Lance (*.mgf, *.lance)", "*.mgf", "*.lance");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
-        form.addRow("Training spectra:", trainField,
-                        FxUtils.fileButton(owner, trainField, true,
-                                "Annotated MGF / Lance (*.mgf, *.lance)", "*.mgf", "*.lance"))
+        form.addRow("Training spectra:", trainField.node(), trainField.browseButton())
                 .addNote("Required. Annotated MGF (peptide in SEQ field) or a prebuilt .lance file.");
         form.addRow("Validation spectra (--validation_peak_path):", validationField,
                         FxUtils.fileButton(owner, validationField, false,
@@ -51,10 +51,10 @@ public class TrainPane extends CommandPane {
 
     @Override
     public String validateInputs() {
-        if (PathFields.isEmpty(trainField)) {
+        if (PathFields.isEmpty(trainField.field())) {
             return "Please choose at least one training spectra file.";
         }
-        String missing = PathFields.firstMissing(trainField);
+        String missing = PathFields.firstMissing(trainField.field());
         if (missing != null) {
             return missing;
         }
@@ -68,7 +68,7 @@ public class TrainPane extends CommandPane {
         args.add(validationField.getText().trim());
         // false: a blank model here means "train from scratch" — do not pin to orbitrap.
         options.appendArgs(args, false);
-        args.addAll(PathFields.split(trainField));
+        args.addAll(PathFields.split(trainField.field()));
         return new CasanovoCommand("train", args);
     }
 }

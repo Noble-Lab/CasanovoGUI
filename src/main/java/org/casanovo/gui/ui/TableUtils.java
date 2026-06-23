@@ -2,6 +2,7 @@ package org.casanovo.gui.ui;
 
 import javafx.scene.Node;
 import javafx.scene.control.ContextMenu;
+import javafx.scene.control.Labeled;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SelectionMode;
 import javafx.scene.control.TableCell;
@@ -14,10 +15,13 @@ import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.text.Font;
+import javafx.scene.text.Text;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Function;
 
 /**
  * Enables spreadsheet-style copy on a {@link TableView}: per-cell selection, Ctrl/Cmd+C, and a
@@ -30,7 +34,75 @@ public final class TableUtils {
     private static final KeyCodeCombination COPY =
             new KeyCodeCombination(KeyCode.C, KeyCombination.SHORTCUT_DOWN);
 
+    /** Column property key (a {@code Function<S,String>}) giving a cell's displayed text for sizing. */
+    public static final String DISPLAY_TEXT = "tableutils.displayText";
+
+    /** Column property key (a {@code Boolean}) exempting a column from the character cap when sizing. */
+    public static final String NO_CAP = "tableutils.noCap";
+
+    private static final double FUDGE = 1.15;     // Font.font(13) probe underestimates the cell render font
+    private static final double HEADER_PAD = 30;  // header text + sort arrow + cell insets
+    private static final double CELL_PAD = 16;    // cell insets
+    private static final double MIN_W = 40;       // never narrower than this
+
     private TableUtils() {
+    }
+
+    /**
+     * Size every column to fit the wider of its header and its content (measured over the table's
+     * current rows), but never wider than {@code capChars} characters. A formatted column may register
+     * a {@code Function<S,String>} under {@link #DISPLAY_TEXT} so the displayed (not raw) text is
+     * measured; otherwise the cell value's {@code toString()} is used. Call after the rows are set
+     * (e.g. after a page changes) — the table must use {@code UNCONSTRAINED_RESIZE_POLICY} for the
+     * preferred widths to take effect.
+     */
+    public static <S> void autoSizeColumns(TableView<S> table, int capChars) {
+        Text probe = new Text();
+        probe.setFont(Font.font(13)); // ~the table cell font, for a quick width estimate
+        for (TableColumn<S, ?> col : table.getColumns()) {
+            autoSizeLeaf(table, col, probe, capChars);
+        }
+    }
+
+    private static <S> void autoSizeLeaf(TableView<S> table, TableColumn<S, ?> col, Text probe, int cap) {
+        if (!col.getColumns().isEmpty()) { // grouped column: size its leaves (its own width is their sum)
+            for (TableColumn<S, ?> sub : col.getColumns()) {
+                autoSizeLeaf(table, sub, probe, cap);
+            }
+            return;
+        }
+        int colCap = Boolean.TRUE.equals(col.getProperties().get(NO_CAP)) ? Integer.MAX_VALUE : cap;
+        String header = col.getText();
+        if ((header == null || header.isEmpty()) && col.getGraphic() instanceof Labeled lbl) {
+            header = lbl.getText(); // headerTip moves the title into a header-graphic Label
+        }
+        double w = textWidth(probe, clip(header, colCap)) + HEADER_PAD;
+        Object fn = col.getProperties().get(DISPLAY_TEXT);
+        for (S item : table.getItems()) {
+            String s;
+            if (fn instanceof Function<?, ?>) {
+                @SuppressWarnings("unchecked")
+                Function<S, String> f = (Function<S, String>) fn;
+                s = f.apply(item);
+            } else {
+                Object v = col.getCellData(item);
+                s = v == null ? "" : v.toString();
+            }
+            w = Math.max(w, textWidth(probe, clip(s, colCap)) + CELL_PAD);
+        }
+        col.setPrefWidth(Math.max(MIN_W, w));
+    }
+
+    private static double textWidth(Text probe, String s) {
+        probe.setText(s);
+        return probe.getLayoutBounds().getWidth() * FUDGE;
+    }
+
+    private static String clip(String s, int cap) {
+        if (s == null) {
+            return "";
+        }
+        return s.length() > cap ? s.substring(0, cap) : s;
     }
 
     public static void enableCellCopy(TableView<?> table) {

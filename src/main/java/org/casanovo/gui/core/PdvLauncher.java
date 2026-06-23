@@ -97,6 +97,15 @@ public final class PdvLauncher {
         return m.matches() ? m.group(1) : "0";
     }
 
+    /** Version of a configured PDV jar path's filename (e.g. {@code .../PDV-2.4.0.jar} -> {@code "2.4.0"}), or empty. */
+    public static Optional<String> versionOfJarPath(String path) {
+        if (path == null || path.trim().isEmpty()) {
+            return Optional.empty();
+        }
+        Matcher m = PDV_JAR.matcher(Paths.get(path.trim()).getFileName().toString());
+        return m.matches() ? Optional.of(m.group(1)) : Optional.empty();
+    }
+
     /** Semver-ish comparison reusing {@link UpdateChecker}; negative/zero/positive like {@link Comparator}. */
     private static int compareVersions(String a, String b) {
         if (UpdateChecker.isNewer(a, b)) {
@@ -251,6 +260,28 @@ public final class PdvLauncher {
      */
     public static Process launchDenovo(Path pdvJar, List<java.io.File> spectra, java.io.File mzTab,
                                         double fragTol, String tolUnit, Consumer<String> log) throws IOException {
+        return launchDenovo(pdvJar, spectra, mzTab, fragTol, tolUnit, -1, false, log);
+    }
+
+    /**
+     * Like {@link #launchDenovo(Path, List, java.io.File, double, String, Consumer)} but, when
+     * {@code controlPort > 0}, also passes {@code --port <controlPort>} so PDV starts its loopback
+     * HTTP control server. A non-positive port launches PDV exactly as before (no server).
+     */
+    public static Process launchDenovo(Path pdvJar, List<java.io.File> spectra, java.io.File mzTab,
+                                        double fragTol, String tolUnit, int controlPort,
+                                        Consumer<String> log) throws IOException {
+        return launchDenovo(pdvJar, spectra, mzTab, fragTol, tolUnit, controlPort, false, log);
+    }
+
+    /**
+     * Like {@link #launchDenovo(Path, List, java.io.File, double, String, int, Consumer)} but, when
+     * {@code hidePsmTable} is true, also passes {@code --hide-psm-table} so PDV opens directly into a
+     * spectrum-only view (no PSM table) — used when CasanovoGUI drives the window by clicking peptides.
+     */
+    public static Process launchDenovo(Path pdvJar, List<java.io.File> spectra, java.io.File mzTab,
+                                        double fragTol, String tolUnit, int controlPort, boolean hidePsmTable,
+                                        Consumer<String> log) throws IOException {
         String javaExe = JavaLauncher.find(log);
         String unit = (tolUnit == null || tolUnit.trim().isEmpty()) ? "Da" : tolUnit.trim();
         List<String> spectraPaths = new ArrayList<>();
@@ -270,6 +301,13 @@ public final class PdvLauncher {
         cmd.add(String.valueOf(fragTol));
         cmd.add("--tol-unit");
         cmd.add(unit);
+        if (controlPort > 0) {
+            cmd.add("--port");
+            cmd.add(String.valueOf(controlPort));
+        }
+        if (hidePsmTable) {
+            cmd.add("--hide-psm-table");
+        }
 
         log.accept("Launching PDV: " + String.join(" ", cmd));
         ProcessBuilder pb = new ProcessBuilder(cmd);

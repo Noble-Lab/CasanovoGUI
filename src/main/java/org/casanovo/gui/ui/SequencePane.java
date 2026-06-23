@@ -2,7 +2,6 @@ package org.casanovo.gui.ui;
 
 import javafx.scene.Node;
 import javafx.scene.control.ScrollPane;
-import javafx.scene.control.TextField;
 import javafx.stage.Window;
 import org.casanovo.gui.core.CasanovoCommand;
 
@@ -16,17 +15,17 @@ import java.util.List;
  */
 public class SequencePane extends CommandPane {
 
-    private final TextField peakField = FxUtils.wideField();
+    private final MultiFileField peakField;
     private final CommonOptions options = new CommonOptions();
     private final ScrollPane content;
 
     public SequencePane(Window owner) {
+        peakField = new MultiFileField(owner, "MS/MS files",
+                "MS/MS spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
-        form.addRow("Spectrum file(s):", peakField,
-                        FxUtils.fileButton(owner, peakField, true,
-                                "MS/MS spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf"))
-                .addNote("Required. One or more mzML / mzXML / MGF files (separate multiple with '"
-                        + File.pathSeparator + "').");
+        form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
+                .addNote("Required. One or more mzML / mzXML / MGF files. Select multiple in the "
+                        + "browser, or separate paths with '" + File.pathSeparator + "'.");
         options.addToForm(owner, form);
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);
@@ -44,24 +43,24 @@ public class SequencePane extends CommandPane {
 
     @Override
     public String validateInputs() {
-        if (PathFields.isEmpty(peakField)) {
+        if (PathFields.isEmpty(peakField.field())) {
             return "Please choose at least one spectrum file (mzML/mzXML/MGF) to sequence.";
         }
-        return PathFields.firstMissing(peakField);
+        return PathFields.firstMissing(peakField.field());
     }
 
     @Override
     public CasanovoCommand buildCommand() {
         List<String> args = new ArrayList<>();
         options.appendArgs(args, true);
-        args.addAll(PathFields.split(peakField));
+        args.addAll(PathFields.split(peakField.field()));
         return new CasanovoCommand("sequence", args);
     }
 
     @Override
     public List<File> resultSpectra() {
         List<File> out = new ArrayList<>();
-        for (String p : PathFields.split(peakField)) {
+        for (String p : PathFields.split(peakField.field())) {
             out.add(new File(p));
         }
         return out;

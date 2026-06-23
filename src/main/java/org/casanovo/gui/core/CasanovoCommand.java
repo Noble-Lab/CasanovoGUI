@@ -47,8 +47,10 @@ public class CasanovoCommand {
             cmd.add("--no-capture-output");
             cmd.add("-n");
             cmd.add(settings.getCondaEnv());
+            cmd.add("casanovo"); // resolve casanovo inside the env; the configured executable path is bypassed
+        } else {
+            cmd.add(settings.getCasanovoExecutable());
         }
-        cmd.add(settings.getCasanovoExecutable());
         if (subcommand != null && !subcommand.isEmpty()) {
             cmd.add(subcommand);
         }

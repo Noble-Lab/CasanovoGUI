@@ -9,6 +9,7 @@ import javafx.scene.control.TextField;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
@@ -37,10 +38,12 @@ final class FxUtils {
             grid.setPadding(new Insets(12));
             ColumnConstraints c0 = new ColumnConstraints();
             c0.setHalignment(HPos.RIGHT);
+            c0.setMinWidth(Region.USE_PREF_SIZE); // keep the label column at its content width — no "…" truncation
             ColumnConstraints c1 = new ColumnConstraints();
             c1.setHgrow(Priority.ALWAYS);
             c1.setFillWidth(true);
             ColumnConstraints c2 = new ColumnConstraints();
+            c2.setMinWidth(Region.USE_PREF_SIZE); // keep the "Browse" button column at its content width — no "…"
             grid.getColumnConstraints().addAll(c0, c1, c2);
         }
 
@@ -164,7 +167,7 @@ final class FxUtils {
         return b;
     }
 
-    private static void applyExtFilter(FileChooser chooser, String filterDesc, String... extensions) {
+    static void applyExtFilter(FileChooser chooser, String filterDesc, String... extensions) {
         if (filterDesc != null && extensions != null && extensions.length > 0) {
             chooser.getExtensionFilters().add(
                     new FileChooser.ExtensionFilter(filterDesc, extensions));
@@ -190,7 +193,7 @@ final class FxUtils {
         return b;
     }
 
-    private static File initialDir(String current) {
+    static File initialDir(String current) {
         if (current == null || current.trim().isEmpty()) {
             return null;
         }
