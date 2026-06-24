@@ -1,6 +1,5 @@
 package org.casanovo.gui.ui;
 
-import javafx.application.HostServices;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -25,11 +24,13 @@ import java.util.function.Predicate;
  * Slim notification bar parked at the top of the window. Hidden (and taking no
  * layout space) by default; {@link #show} reveals one row per available update.
  *
- * <p>Each row offers <b>View</b> (open the release/PyPI page in the browser),
- * <b>Skip this version</b> (persist the version so the auto-check stops
- * advertising it) and <b>Dismiss</b> (hide the row for this session). The
- * Casanovo row additionally offers <b>Update Casanovo</b> when the GUI manages
- * the install and can upgrade it in place.</p>
+ * <p>Each row offers <b>View</b> (what this does is decided by the caller — the
+ * GUI/Casanovo rows open the release page in the browser, while the PDV/pepmap
+ * rows open the Settings dialog where the upgrade lives), <b>Skip this version</b>
+ * (persist the version so the auto-check stops advertising it) and <b>Dismiss</b>
+ * (hide the row for this session). The Casanovo row additionally offers
+ * <b>Update Casanovo</b> when the GUI manages the install and can upgrade it in
+ * place.</p>
  */
 public class UpdateBanner extends VBox {
 
@@ -56,13 +57,13 @@ public class UpdateBanner extends VBox {
      *
      * @param updates        candidate updates (both targets may be present)
      * @param includeSkipped show versions the user previously chose to skip
-     * @param hostServices   used to open links in the system browser
+     * @param onView         invoked when the user clicks "View" for a row
      * @param onSelfUpdate   invoked when the user clicks "Update Casanovo"
      * @param canSelfUpdate  whether a given update can be applied in-app
      */
     public void show(List<UpdateInfo> updates,
                      boolean includeSkipped,
-                     HostServices hostServices,
+                     Consumer<UpdateInfo> onView,
                      Consumer<UpdateInfo> onSelfUpdate,
                      Predicate<UpdateInfo> canSelfUpdate) {
         getChildren().clear();
@@ -74,7 +75,7 @@ public class UpdateBanner extends VBox {
             if (!includeSkipped && UpdateChecker.isSkipped(info.target, info.latestVersion)) {
                 continue;
             }
-            Node row = buildRow(info, hostServices, onSelfUpdate, canSelfUpdate);
+            Node row = buildRow(info, onView, onSelfUpdate, canSelfUpdate);
             rows.put(info.target, row);
             getChildren().add(row);
         }
@@ -82,10 +83,11 @@ public class UpdateBanner extends VBox {
     }
 
     private Node buildRow(UpdateInfo info,
-                          HostServices hostServices,
+                          Consumer<UpdateInfo> onView,
                           Consumer<UpdateInfo> onSelfUpdate,
                           Predicate<UpdateInfo> canSelfUpdate) {
-        Label message = new Label(info.displayName + " " + info.latestVersion
+        String released = info.releaseDate == null ? "" : " (released " + info.releaseDate + ")";
+        Label message = new Label(info.displayName + " " + info.latestVersion + released
                 + " is available — you have " + info.currentVersion + ".");
         message.setStyle(TEXT_STYLE);
         message.setWrapText(true);
@@ -107,8 +109,8 @@ public class UpdateBanner extends VBox {
 
         Hyperlink view = new Hyperlink("View");
         view.setOnAction(e -> {
-            if (hostServices != null && info.pageUrl != null) {
-                hostServices.showDocument(info.pageUrl);
+            if (onView != null) {
+                onView.accept(info);
             }
         });
 

@@ -15,14 +15,16 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.prefs.Preferences;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Checks for newer versions of two independent things and remembers the user's
- * update preferences (auto-check on/off, last-check timestamp, per-target
- * skipped version):
+ * Checks for newer versions of the GUI and the tools it drives, and remembers
+ * the user's update preferences (auto-check on/off, last-check timestamp,
+ * per-target skipped version):
  *
  * <ul>
  *   <li><b>Casanovo GUI</b> — this application. Its own version comes from the
@@ -36,6 +38,12 @@ import java.util.regex.Pattern;
  *       PATH install), it falls back to running {@code casanovo version}. The
  *       <em>latest</em> version comes from PyPI, with GitHub releases as a
  *       fallback.</li>
+ *   <li><b>PDV</b> and <b>pepmap</b> — the optional jars used by "Open in PDV"
+ *       and the View tab's mapping. The current version is the configured jar's
+ *       (or the cached auto-download's); the latest comes from each tool's GitHub
+ *       releases. These are reported for information only — the actual upgrade is
+ *       applied from the Settings dialog. Skipped entirely when the tool isn't
+ *       installed or configured.</li>
  * </ul>
  *
  * <p>Uses only the JDK 11+ {@link HttpClient} and a small regex parser so we
@@ -57,6 +65,15 @@ public final class UpdateChecker {
     private static final String CASANOVO_RELEASES_PAGE =
             "https://github.com/Noble-Lab/casanovo/releases";
 
+    private static final String PDV_RELEASES_PAGE =
+            "https://github.com/wenbostar/PDV/releases";
+    private static final String PEPMAP_RELEASES_PAGE =
+            "https://github.com/wenbostar/pepmap/releases";
+    private static final String PDV_GH_RELEASES_API =
+            "https://api.github.com/repos/wenbostar/PDV/releases/latest";
+    private static final String PEPMAP_GH_RELEASES_API =
+            "https://api.github.com/repos/wenbostar/pepmap/releases/latest";
+
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
@@ -70,15 +87,17 @@ public final class UpdateChecker {
     private static final String PREFS_NODE        = "org/casanovo/gui/UpdateChecker";
     private static final String KEY_AUTO_CHECK    = "autoCheck";
     private static final String KEY_LAST_CHECK_MS = "lastCheckMs";
-    private static final String KEY_SKIPPED_GUI   = "skippedGuiTag";
-    private static final String KEY_SKIPPED_CASA  = "skippedCasanovoVersion";
+    private static final String KEY_SKIPPED_GUI    = "skippedGuiTag";
+    private static final String KEY_SKIPPED_CASA   = "skippedCasanovoVersion";
+    private static final String KEY_SKIPPED_PDV    = "skippedPdvVersion";
+    private static final String KEY_SKIPPED_PEPMAP = "skippedPepmapVersion";
 
     private UpdateChecker() {}
 
     // ---- model -------------------------------------------------------------
 
     /** Which product an {@link UpdateInfo} describes. */
-    public enum Target { GUI, CASANOVO }
+    public enum Target { GUI, CASANOVO, PDV, PEPMAP }
 
     /** Outcome for a single product: current vs latest, and whether newer exists. */
     public static final class UpdateInfo {
@@ -86,15 +105,18 @@ public final class UpdateChecker {
         public final String displayName;     // "Casanovo GUI" / "Casanovo"
         public final String currentVersion;
         public final String latestVersion;
+        public final String releaseDate;     // YYYY-MM-DD of the latest release, or null
         public final String pageUrl;         // where "View" should point a browser
         public final boolean updateAvailable;
 
         public UpdateInfo(Target target, String displayName, String currentVersion,
-                          String latestVersion, String pageUrl, boolean updateAvailable) {
+                          String latestVersion, String releaseDate, String pageUrl,
+                          boolean updateAvailable) {
             this.target = target;
             this.displayName = displayName;
             this.currentVersion = currentVersion;
             this.latestVersion = latestVersion;
+            this.releaseDate = releaseDate;
             this.pageUrl = pageUrl;
             this.updateAvailable = updateAvailable;
         }
@@ -208,21 +230,32 @@ public final class UpdateChecker {
         String body = resp.body();
         String tag = extractStringField(body, "tag_name");
         String url = extractStringField(body, "html_url");
+        String date = toDate(extractStringField(body, "published_at"));
         if (tag == null || tag.isEmpty()) return Optional.empty();
-        return Optional.of(new ReleaseInfo(tag, url == null ? GUI_RELEASES_PAGE : url));
+        return Optional.of(new ReleaseInfo(tag, url == null ? GUI_RELEASES_PAGE : url, date));
     }
 
-    /** Latest Casanovo version: PyPI first, GitHub releases as a fallback. */
-    private static Optional<String> fetchLatestCasanovoVersion()
+    /** Latest Casanovo version + release date: PyPI first, GitHub releases as a fallback. */
+    private static Optional<Latest> fetchLatestCasanovo()
             throws IOException, InterruptedException {
         try {
             HttpResponse<String> resp = get(CASANOVO_PYPI_JSON, "application/json");
             if (resp.statusCode() == 200) {
                 // PyPI's JSON leads with the "info" object, whose first "version"
                 // field is the latest release — the release history below uses
-                // version strings as keys, not "version": "..." pairs.
-                String v = extractStringField(resp.body(), "version");
-                if (v != null && !v.isEmpty()) return Optional.of(v);
+                // version strings as keys, not "version": "..." pairs. The first
+                // "upload_time_iso_8601" belongs to that latest release's files.
+                String body = resp.body();
+                String v = extractStringField(body, "version");
+                if (v != null && !v.isEmpty()) {
+                    // The top-level "urls" array holds the latest version's files; scope the
+                    // date search to it, since the "releases" map above lists every version's
+                    // (older) upload times first.
+                    int urlsIdx = body.indexOf("\"urls\"");
+                    String dateScope = urlsIdx >= 0 ? body.substring(urlsIdx) : body;
+                    String date = toDate(extractStringField(dateScope, "upload_time_iso_8601"));
+                    return Optional.of(new Latest(v, date));
+                }
             }
         } catch (IOException | InterruptedException pypiFailure) {
             if (pypiFailure instanceof InterruptedException) {
@@ -237,7 +270,8 @@ public final class UpdateChecker {
                     + gh.statusCode() + ")");
         }
         String tag = extractStringField(gh.body(), "tag_name");
-        return (tag == null || tag.isEmpty()) ? Optional.empty() : Optional.of(tag);
+        if (tag == null || tag.isEmpty()) return Optional.empty();
+        return Optional.of(new Latest(tag, toDate(extractStringField(gh.body(), "published_at"))));
     }
 
     private static HttpResponse<String> get(String url, String accept)
@@ -260,9 +294,38 @@ public final class UpdateChecker {
     private static final class ReleaseInfo {
         final String tagName;
         final String htmlUrl;
-        ReleaseInfo(String tagName, String htmlUrl) {
+        final String publishedDate; // YYYY-MM-DD, or null
+        ReleaseInfo(String tagName, String htmlUrl, String publishedDate) {
             this.tagName = tagName;
             this.htmlUrl = htmlUrl;
+            this.publishedDate = publishedDate;
+        }
+    }
+
+    /** A latest-version lookup result carrying an optional release date. */
+    private static final class Latest {
+        final String version;
+        final String date; // YYYY-MM-DD, or null
+        Latest(String version, String date) {
+            this.version = version;
+            this.date = date;
+        }
+    }
+
+    /** First 10 chars (YYYY-MM-DD) of an ISO-8601 timestamp, or null if unusable. */
+    private static String toDate(String isoTimestamp) {
+        if (isoTimestamp == null || isoTimestamp.length() < 10) return null;
+        return isoTimestamp.substring(0, 10);
+    }
+
+    /** Best-effort {@code published_at} date (YYYY-MM-DD) for a GitHub releases/latest API URL. */
+    private static String fetchGithubReleaseDate(String apiUrl) {
+        try {
+            HttpResponse<String> resp = get(apiUrl, "application/vnd.github+json");
+            if (resp.statusCode() != 200) return null;
+            return toDate(extractStringField(resp.body(), "published_at"));
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -286,7 +349,8 @@ public final class UpdateChecker {
                 String current = guiVersion();
                 boolean newer = isNewer(rel.get().tagName, current);
                 infos.add(new UpdateInfo(Target.GUI, "Casanovo GUI", current,
-                        stripLeadingV(rel.get().tagName), rel.get().htmlUrl, newer));
+                        stripLeadingV(rel.get().tagName), rel.get().publishedDate,
+                        rel.get().htmlUrl, newer));
             }
         } catch (Exception e) {
             networkError = true;
@@ -296,17 +360,59 @@ public final class UpdateChecker {
         Optional<String> installed = installedCasanovoVersion(settings);
         if (installed.isPresent()) {
             try {
-                Optional<String> latest = fetchLatestCasanovoVersion();
+                Optional<Latest> latest = fetchLatestCasanovo();
                 if (latest.isPresent()) {
-                    boolean newer = isNewer(latest.get(), installed.get());
+                    boolean newer = isNewer(latest.get().version, installed.get());
                     infos.add(new UpdateInfo(Target.CASANOVO, "Casanovo", installed.get(),
-                            stripLeadingV(latest.get()), CASANOVO_RELEASES_PAGE, newer));
+                            stripLeadingV(latest.get().version), latest.get().date,
+                            CASANOVO_RELEASES_PAGE, newer));
                 }
             } catch (Exception e) {
                 networkError = true;
             }
         }
+
+        // --- PDV and pepmap (bundled jars; updates are applied from the Settings dialog) ---
+        addJarTarget(infos, Target.PDV, "PDV", settings.getPdvJar(),
+                PdvLauncher::latestUsableVersion, PdvLauncher::installedVersion,
+                PdvLauncher::versionOfJarPath, PDV_RELEASES_PAGE, PDV_GH_RELEASES_API);
+        addJarTarget(infos, Target.PEPMAP, "pepmap", settings.getPepmapJar(),
+                PepMapLauncher::latestUsableVersion, PepMapLauncher::installedVersion,
+                PepMapLauncher::versionOfJarPath, PEPMAP_RELEASES_PAGE, PEPMAP_GH_RELEASES_API);
+
         return new CheckOutcome(infos, networkError);
+    }
+
+    /**
+     * Evaluate a jar-backed tool (PDV / pepmap). The <em>current</em> version is the
+     * configured jar's when one is set, otherwise the cached auto-download; if neither
+     * exists the tool isn't in use and is skipped. The <em>latest</em> comes from the
+     * launcher's public-release lookup. Failures are swallowed (no info added) rather
+     * than flagged as a network error, since these tools are optional.
+     */
+    private static void addJarTarget(List<UpdateInfo> infos, Target target, String name,
+                                     String configuredJar,
+                                     Supplier<Optional<String>> latestFn,
+                                     Supplier<Optional<String>> installedFn,
+                                     Function<String, Optional<String>> jarVersionFn,
+                                     String releasesPage, String releaseApi) {
+        try {
+            String jar = configuredJar == null ? "" : configuredJar.trim();
+            Optional<String> current = jar.isEmpty() ? installedFn.get() : jarVersionFn.apply(jar);
+            if (current.isEmpty()) {
+                return; // not installed or configured — nothing to compare
+            }
+            Optional<String> latest = latestFn.get();
+            if (latest.isEmpty()) {
+                return; // offline or no public release — can't compare
+            }
+            boolean newer = isNewer(latest.get(), current.get());
+            String date = fetchGithubReleaseDate(releaseApi);
+            infos.add(new UpdateInfo(target, name, current.get(),
+                    stripLeadingV(latest.get()), date, releasesPage, newer));
+        } catch (Exception ignored) {
+            // optional tool; leave it out of the report on any failure
+        }
     }
 
     // ---- version comparison ------------------------------------------------
@@ -402,7 +508,13 @@ public final class UpdateChecker {
     }
 
     private static String skipKey(Target target) {
-        return target == Target.GUI ? KEY_SKIPPED_GUI : KEY_SKIPPED_CASA;
+        switch (target) {
+            case GUI:    return KEY_SKIPPED_GUI;
+            case PDV:    return KEY_SKIPPED_PDV;
+            case PEPMAP: return KEY_SKIPPED_PEPMAP;
+            case CASANOVO:
+            default:     return KEY_SKIPPED_CASA;
+        }
     }
 
     public static boolean isSkipped(Target target, String version) {

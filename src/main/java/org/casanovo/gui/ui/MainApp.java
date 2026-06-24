@@ -1187,7 +1187,7 @@ public class MainApp extends Application {
             }
         }
         if (!available.isEmpty()) {
-            updateBanner.show(available, manual, getHostServices(),
+            updateBanner.show(available, manual, this::onViewUpdate,
                     this::onUpdateCasanovo, this::canSelfUpdate);
             if (manual) {
                 statusLabel.setText("Update available.");
@@ -1209,12 +1209,29 @@ public class MainApp extends Application {
         StringBuilder sb = new StringBuilder("You're up to date.\n");
         for (UpdateChecker.UpdateInfo info : outcome.infos) {
             sb.append("\n").append(info.displayName).append(": ").append(info.currentVersion)
-                    .append(" (latest ").append(info.latestVersion).append(")");
+                    .append(" (latest ").append(info.latestVersion);
+            if (info.releaseDate != null) {
+                sb.append(", released ").append(info.releaseDate);
+            }
+            sb.append(")");
         }
         if (outcome.networkError) {
             sb.append("\n\nNote: some version sources could not be reached.");
         }
         return sb.toString();
+    }
+
+    /**
+     * Handle the banner's "View" link. PDV and pepmap upgrade from the Settings
+     * dialog (which has the one-click download), so open that; the GUI/Casanovo
+     * rows open their release page in the browser.
+     */
+    private void onViewUpdate(UpdateChecker.UpdateInfo info) {
+        if (info.target == UpdateChecker.Target.PDV || info.target == UpdateChecker.Target.PEPMAP) {
+            openSettings();
+        } else if (info.pageUrl != null) {
+            getHostServices().showDocument(info.pageUrl);
+        }
     }
 
     /**
