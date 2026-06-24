@@ -534,7 +534,8 @@ public class ViewPane extends BorderPane {
         bp.setTop(top);
         Region hintSpacer = new Region();
         HBox.setHgrow(hintSpacer, Priority.ALWAYS);
-        HBox bottom = new HBox(8, peptideHint(), hintSpacer, mappedPager.bar);
+        VBox hints = new VBox(0, peptideHint(), pdvPeptideHint());
+        HBox bottom = new HBox(8, hints, hintSpacer, mappedPager.bar);
         bottom.setAlignment(Pos.CENTER_LEFT);
         bp.setBottom(bottom);
         BorderPane.setMargin(bottom, new Insets(6, 0, 0, 0));
@@ -566,7 +567,8 @@ public class ViewPane extends BorderPane {
         bp.setTop(top);
         Region hintSpacer = new Region();
         HBox.setHgrow(hintSpacer, Priority.ALWAYS);
-        HBox bottom = new HBox(8, peptideHint(), hintSpacer, unmappedPager.bar);
+        VBox hints = new VBox(0, peptideHint(), pdvPeptideHint());
+        HBox bottom = new HBox(8, hints, hintSpacer, unmappedPager.bar);
         bottom.setAlignment(Pos.CENTER_LEFT);
         bp.setBottom(bottom);
         BorderPane.setMargin(bottom, new Insets(6, 0, 0, 0));
@@ -634,10 +636,22 @@ public class ViewPane extends BorderPane {
         }
     }
 
-    /** A muted one-line hint pointing users to the double-click per-residue plot. */
+    /** A muted one-line hint pointing users to the double-click per-residue/PSMs popup. */
     private static Label peptideHint() {
-        Label l = new Label("ⓘ Double-click a peptide to see its per-residue confidence.");
+        Label l = new Label("ⓘ Double-click a peptide to see its PSMs and per-residue confidence.");
         l.setStyle("-fx-font-size: 11px; -fx-opacity: 0.6;");
+        return l;
+    }
+
+    /**
+     * A muted one-line hint about single-click PDV spectrum annotation. Only visible while the PDV
+     * checkbox is selected.
+     */
+    private Label pdvPeptideHint() {
+        Label l = new Label("ⓘ Single-click a peptide to show the annotated spectrum of its best PSM in PDV.");
+        l.setStyle("-fx-font-size: 11px; -fx-opacity: 0.6;");
+        l.visibleProperty().bind(pdvVizCheck.selectedProperty());
+        l.managedProperty().bind(pdvVizCheck.selectedProperty());
         return l;
     }
 
