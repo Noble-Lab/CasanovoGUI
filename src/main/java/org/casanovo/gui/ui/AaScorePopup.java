@@ -28,6 +28,7 @@ public final class AaScorePopup {
     private static Stage stage;
     private static AaScoreChart chart;
     private static TableView<MzTabScores.PsmRow> table;
+    private static Label pdvHint; // shown only while PDV is active (visibility set per show())
     private static String currentPeptide = "";
     private static java.util.function.Consumer<MzTabScores.PsmRow> onRowActivate; // double-click a row -> drive PDV
 
@@ -38,13 +39,17 @@ public final class AaScorePopup {
      * Show (or re-render) the PSMs of {@code peptide}. {@code columns} are the mzTab PSM column names;
      * {@code rows} are its PSM rows (already sorted best-first). {@code onDoubleClick} (nullable) is
      * invoked with the row the user double-clicks — used to drive an open PDV to that PSM's spectrum.
+     * {@code pdvActive} shows a hint about navigating PSMs into PDV (only meaningful when PDV is on).
      */
     public static void show(Window owner, String peptide, List<String> columns, List<MzTabScores.PsmRow> rows,
-                            Set<String> emptyColumns, java.util.function.Consumer<MzTabScores.PsmRow> onDoubleClick) {
+                            Set<String> emptyColumns, java.util.function.Consumer<MzTabScores.PsmRow> onDoubleClick,
+                            boolean pdvActive) {
         if (stage == null) {
             build(owner);
         }
         onRowActivate = onDoubleClick;
+        pdvHint.setVisible(pdvActive);
+        pdvHint.setManaged(pdvActive);
         currentPeptide = peptide;
         rebuildColumns(columns, emptyColumns);
         table.getItems().setAll(rows);
@@ -108,7 +113,10 @@ public final class AaScorePopup {
 
         Label tableTitle = new Label("PSMs (sorted by peptide score)");
         tableTitle.setStyle("-fx-font-weight: bold;");
-        VBox tableBox = new VBox(4, tableTitle, table);
+        pdvHint = new Label("ⓘ Select a row, single-click it, or use ↑/↓ to navigate PSMs and show the "
+                + "selected PSM's annotated spectrum in PDV.");
+        pdvHint.setStyle("-fx-font-size: 11px; -fx-opacity: 0.6;");
+        VBox tableBox = new VBox(4, tableTitle, pdvHint, table);
         tableBox.setPadding(new Insets(2, 10, 10, 10));
         tableBox.getStyleClass().add("result-tabs"); // compact column headers via settings.css
         VBox.setVgrow(table, Priority.ALWAYS);

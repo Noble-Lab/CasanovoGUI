@@ -802,7 +802,7 @@ public class ViewPane extends BorderPane {
             if (refCol >= 0 && refCol < row.values().length) {
                 drivePdvRef(row.values()[refCol]);
             }
-        });
+        }, pdvVizCheck.isSelected());
     }
 
     private void renderCoverage(String protein) {
