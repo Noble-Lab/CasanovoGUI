@@ -151,6 +151,8 @@ public final class AaScorePopup {
     private static void rebuildColumns(List<String> columns, Set<String> emptyColumns,
                                        List<MzTabScores.PsmRow> rows) {
         table.getColumns().clear();
+        int expIdx = indexOf(columns, "exp_mass_to_charge");
+        int calcIdx = indexOf(columns, "calc_mass_to_charge");
         for (int i = 0; i < columns.size(); i++) {
             String name = columns.get(i);
             if (emptyColumns != null && emptyColumns.contains(name)) {
@@ -171,8 +173,43 @@ public final class AaScorePopup {
                 col.getProperties().put(TableUtils.NO_CAP, true); // show the full peptide sequence, uncapped
             }
             table.getColumns().add(col);
+            // Right after calc_mass_to_charge, insert a computed precursor mass error column when both
+            // the experimental and calculated m/z are available.
+            if (i == calcIdx && expIdx >= 0) {
+                table.getColumns().add(massErrorColumn(expIdx, calcIdx));
+            }
         }
         // Widths are set by TableUtils.autoSizeColumns once the rows are in (see show()).
+    }
+
+    /** First index of {@code name} in {@code columns} (case-insensitive), or -1 if absent. */
+    private static int indexOf(List<String> columns, String name) {
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).equalsIgnoreCase(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** A computed column: experimental minus calculated m/z (precursor mass error), to 4 decimals. */
+    private static TableColumn<MzTabScores.PsmRow, String> massErrorColumn(int expIdx, int calcIdx) {
+        TableColumn<MzTabScores.PsmRow, String> col = new TableColumn<>("Δm/z (exp−calc)");
+        col.setCellValueFactory(d -> {
+            String[] v = d.getValue().values();
+            String exp = expIdx < v.length ? v[expIdx] : "";
+            String calc = calcIdx < v.length ? v[calcIdx] : "";
+            if (exp == null || calc == null || exp.trim().isEmpty() || calc.trim().isEmpty()) {
+                return new ReadOnlyStringWrapper("");
+            }
+            try {
+                double diff = Double.parseDouble(exp.trim()) - Double.parseDouble(calc.trim());
+                return new ReadOnlyStringWrapper(formatDouble(diff));
+            } catch (NumberFormatException e) {
+                return new ReadOnlyStringWrapper("");
+            }
+        });
+        return col;
     }
 
     /**
@@ -207,7 +244,10 @@ public final class AaScorePopup {
         return allInteger ? 1 : 2;
     }
 
-    /** Format a raw cell value by column type: integers as-is, doubles to 4 decimals, text untouched. */
+    /** Decimal places shown for double-valued PSM columns. */
+    private static final int DECIMALS = 4;
+
+    /** Format a raw cell value by column type: integers as-is, doubles via {@link #formatDouble}, text untouched. */
     private static String format(String raw, int type) {
         if (raw == null || raw.isEmpty() || type == 0) {
             return raw == null ? "" : raw;
@@ -216,9 +256,29 @@ public final class AaScorePopup {
             if (type == 1) {
                 return Long.toString(Long.parseLong(raw.trim()));
             }
-            return String.format(Locale.US, "%.4f", Double.parseDouble(raw.trim()));
+            return formatDouble(Double.parseDouble(raw.trim()));
         } catch (NumberFormatException e) {
             return raw;
         }
+    }
+
+    /**
+     * Format a double for the PSM table at {@link #DECIMALS} decimals. Whole numbers show without
+     * decimals; magnitudes that would round to zero at this precision (or grow unwieldy) fall back to
+     * scientific notation so tiny values — e.g. a sub-milli-Th mass error — stay visible instead of
+     * collapsing to {@code 0.0000}. Mirrors PDV's PSM-table number formatter.
+     */
+    private static String formatDouble(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return String.valueOf(value);
+        }
+        if (value == Math.rint(value) && Math.abs(value) < 1e15) {
+            return Long.toString((long) value);
+        }
+        double abs = Math.abs(value);
+        if (abs >= 0.5 * Math.pow(10, -DECIMALS) && abs < 1e7) {
+            return String.format(Locale.US, "%." + DECIMALS + "f", value);
+        }
+        return String.format(Locale.US, "%." + DECIMALS + "e", value);
     }
 }
