@@ -112,7 +112,7 @@ public class AaScoreChart extends BorderPane {
         }
         // First row shows only the mean and peptide score; the sequence is shown by the residue
         // circles below (and in the window title bar).
-        String mean = (m > 0) ? String.format(Locale.US, "mean %.3f", sum / m) : "";
+        String mean = (m > 0) ? String.format(Locale.US, "mean amino acid score %.3f", sum / m) : "";
         String score = hasSub ? subtitleText.replaceFirst("(?i)peptide score:?\\s*", "peptide score ") : "";
         String headline = mean.isEmpty() ? score : (score.isEmpty() ? mean : mean + ", " + score);
         title.setText(headline);
