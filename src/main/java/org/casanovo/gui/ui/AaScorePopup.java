@@ -51,7 +51,7 @@ public final class AaScorePopup {
         pdvHint.setVisible(pdvActive);
         pdvHint.setManaged(pdvActive);
         currentPeptide = peptide;
-        rebuildColumns(columns, emptyColumns);
+        rebuildColumns(columns, emptyColumns, rows);
         table.getItems().setAll(rows);
         TableUtils.autoSizeColumns(table, 60); // fit columns to header + content, capped at 60 chars
         stage.setTitle("Per-residue confidence — " + peptide
@@ -148,23 +148,77 @@ public final class AaScorePopup {
         stage.setScene(scene);
     }
 
-    private static void rebuildColumns(List<String> columns, Set<String> emptyColumns) {
+    private static void rebuildColumns(List<String> columns, Set<String> emptyColumns,
+                                       List<MzTabScores.PsmRow> rows) {
         table.getColumns().clear();
         for (int i = 0; i < columns.size(); i++) {
-            if (emptyColumns != null && emptyColumns.contains(columns.get(i))) {
+            String name = columns.get(i);
+            if (emptyColumns != null && emptyColumns.contains(name)) {
                 continue; // column is null for every PSM in the mzTab — don't show it
             }
+            if (name.equalsIgnoreCase("search_engine")) {
+                continue; // not informative in this view — Casanovo is always the engine
+            }
             final int idx = i;
-            TableColumn<MzTabScores.PsmRow, String> col = new TableColumn<>(columns.get(i));
+            final int type = numericType(rows, idx); // 0 = text, 1 = integer, 2 = double
+            TableColumn<MzTabScores.PsmRow, String> col = new TableColumn<>(name);
             col.setCellValueFactory(d -> {
                 String[] v = d.getValue().values();
-                return new ReadOnlyStringWrapper(idx < v.length ? v[idx] : "");
+                String raw = idx < v.length ? v[idx] : "";
+                return new ReadOnlyStringWrapper(format(raw, type));
             });
-            if (columns.get(i).equalsIgnoreCase("sequence")) {
+            if (name.equalsIgnoreCase("sequence")) {
                 col.getProperties().put(TableUtils.NO_CAP, true); // show the full peptide sequence, uncapped
             }
             table.getColumns().add(col);
         }
         // Widths are set by TableUtils.autoSizeColumns once the rows are in (see show()).
+    }
+
+    /**
+     * Classify column {@code idx} from its (non-empty) values: 2 if all numeric with at least one
+     * non-integer (a double column), 1 if every value is an integer, 0 if any value is non-numeric or
+     * the column is empty (a text column).
+     */
+    private static int numericType(List<MzTabScores.PsmRow> rows, int idx) {
+        boolean anyNumeric = false;
+        boolean allInteger = true;
+        for (MzTabScores.PsmRow r : rows) {
+            String[] v = r.values();
+            String s = (idx < v.length && v[idx] != null) ? v[idx].trim() : "";
+            if (s.isEmpty()) {
+                continue;
+            }
+            try {
+                Double.parseDouble(s);
+            } catch (NumberFormatException e) {
+                return 0; // a non-numeric value -> text column
+            }
+            anyNumeric = true;
+            try {
+                Long.parseLong(s);
+            } catch (NumberFormatException e) {
+                allInteger = false;
+            }
+        }
+        if (!anyNumeric) {
+            return 0;
+        }
+        return allInteger ? 1 : 2;
+    }
+
+    /** Format a raw cell value by column type: integers as-is, doubles to 4 decimals, text untouched. */
+    private static String format(String raw, int type) {
+        if (raw == null || raw.isEmpty() || type == 0) {
+            return raw == null ? "" : raw;
+        }
+        try {
+            if (type == 1) {
+                return Long.toString(Long.parseLong(raw.trim()));
+            }
+            return String.format(Locale.US, "%.4f", Double.parseDouble(raw.trim()));
+        } catch (NumberFormatException e) {
+            return raw;
+        }
     }
 }
