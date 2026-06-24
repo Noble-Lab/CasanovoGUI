@@ -7,9 +7,10 @@ CasanovoGUI is a cross-platform desktop application for
 from MS/MS spectra with a transformer model. Configure your inputs and parameters
 in a simple form, click **Run Casanovo**, and watch the output stream live in the
 console. The GUI wraps Casanovo's command-line sub-commands — *de novo* sequencing,
-database search, evaluation, training, and config generation — each as its own tab,
-and can open your results in [PDV](https://github.com/wenbostar/PDV) for
-annotated-spectrum visualization.
+database search, evaluation, and training — each as its own tab, plus a **View** tab
+to explore your results: map peptides to a reference proteome, inspect score
+distributions and per-residue confidence, and open spectra in
+[PDV](https://github.com/wenbostar/PDV) for annotated-spectrum visualization.
 
 ## Installation
 
@@ -53,5 +54,23 @@ Click **Parameters** to fine-tune any Casanovo setting (precursor m/z tolerance,
 peptide length, number of beams, batch size, accelerator, and more) without editing
 YAML by hand, and the live **command preview** shows the exact `casanovo …` command
 that will run.
+
+## The View panel
+
+The **View** tab opens a Casanovo `.mzTab` result so you can explore it without
+leaving the GUI:
+
+- **Map to a proteome** *(optional)* — point it at a reference **FASTA** and it maps
+  every de novo peptide back to your proteins (via
+  [pepmap](https://github.com/wenbostar/pepmap), auto-downloaded on first use). You
+  get an **Overview** with score-distribution, mapping-vs-cutoff, and top-protein
+  charts, plus **Proteins**, **Mapped**, and **Unmapped** tables and a per-protein
+  coverage map. Leave the FASTA blank to skip mapping and just browse the peptides
+  and their scores.
+- **Per-residue confidence** — double-click a peptide to open a residue-by-residue
+  confidence track and a table of all its PSMs (sorted by peptide score).
+- **Drive PDV** — with [PDV](https://github.com/wenbostar/PDV) open, clicking a
+  peptide selects its best PSM and renders the annotated spectrum (requires PDV
+  2.5.0+).
 
 
