@@ -30,6 +30,7 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 import org.casanovo.gui.core.CasanovoCommand;
@@ -67,8 +68,9 @@ public class MainApp extends Application {
     private final TabPane tabs = new TabPane();
     private ConsoleOutput console;
     private SplitPane split;
-    /** Run bar and console view; hidden on the Plot tab so only the plot + its settings show. */
-    private Region runBar;
+    /** Run bar (split into the params row and command row) and console view; hidden on the Plot tab. */
+    private Region paramsRow;
+    private Region cmdRow;
     private Region consoleView;
     private final List<CommandPane> panes = new ArrayList<>();
     /** The View tab (peptide-to-protein mapping); auto-populated with the result mzTab after a successful run. */
@@ -82,6 +84,7 @@ public class MainApp extends Application {
     private final Button stopButton = new Button("Stop");
     private final Label statusLabel = new Label("Ready.");
     private final ProgressBar progressBar = new ProgressBar(0);
+    private final SpectrumTrace spectrum = new SpectrumTrace();
     private final UpdateBanner updateBanner = new UpdateBanner();
 
     private static final Pattern PCT = Pattern.compile("(\\d+)%\\|");
@@ -159,9 +162,19 @@ public class MainApp extends Application {
             updateChromeForTab();
         });
 
-        runBar = buildRunBar();
-        VBox topArea = new VBox(tabs, runBar);
+        buildRunBar(); // populates paramsRow and cmdRow
+        // The running-activity animation overlays everything above the command line — the tab
+        // content (form) plus the Parameters row — while a run is in progress; hidden otherwise.
+        // Gated by the View-menu toggle. The command row stays below, uncovered.
+        spectrum.setVisible(false);
+        VBox overlaidContent = new VBox(tabs, paramsRow);
         VBox.setVgrow(tabs, Priority.ALWAYS);
+        StackPane topStack = new StackPane(overlaidContent, spectrum);
+        // Keep the overlay off the tab-header strip: inset it below the header so it
+        // covers only the tab content + params row, matching the highlighted region.
+        installSpectrumHeaderOffset();
+        VBox topArea = new VBox(topStack, cmdRow);
+        VBox.setVgrow(topStack, Priority.ALWAYS);
 
         consoleView = console.getView();
         split = new SplitPane(topArea, consoleView);
@@ -286,6 +299,7 @@ public class MainApp extends Application {
                 if (Themes.apply(name)) {
                     settings.setTheme(name);
                     settings.save();
+                    spectrum.applyTheme(); // keep the running animation's colours in sync
                 }
             });
             themeMenu.getItems().add(item);
@@ -300,7 +314,55 @@ public class MainApp extends Application {
             swapConsole(coloredItem.isSelected());
         });
         viewMenu.getItems().add(coloredItem);
+
+        CheckMenuItem animationItem = new CheckMenuItem("Show running animation");
+        animationItem.setSelected(settings.isShowRunningAnimation());
+        animationItem.setOnAction(e -> {
+            settings.setShowRunningAnimation(animationItem.isSelected());
+            settings.save();
+            updateAnimation();
+        });
+        viewMenu.getItems().add(animationItem);
         return viewMenu;
+    }
+
+    /**
+     * Show and animate the spectrum band only while a Casanovo process is running
+     * <em>and</em> the View-menu toggle is on; otherwise stop and collapse it.
+     * Safe to call from the JavaFX thread at any time.
+     */
+    /**
+     * Offset the spectrum overlay below the tab-header strip so it covers only the
+     * tab <em>content</em> (the form area), leaving the De&nbsp;novo/DB&nbsp;Search/…
+     * tabs visible. The {@code .tab-header-area} node exists only once the TabPane
+     * skin is built, so resolve it on a later pulse and track its height.
+     */
+    private void installSpectrumHeaderOffset() {
+        Runnable apply = () -> {
+            javafx.scene.Node header = tabs.lookup(".tab-header-area");
+            if (header instanceof Region hr) {
+                StackPane.setMargin(spectrum, new Insets(hr.getHeight(), 0, 0, 0));
+            }
+        };
+        Platform.runLater(() -> {
+            javafx.scene.Node header = tabs.lookup(".tab-header-area");
+            if (header instanceof Region hr) {
+                apply.run();
+                hr.heightProperty().addListener((o, a, b) -> apply.run());
+            } else {
+                Platform.runLater(apply); // skin not ready yet; try again next pulse
+            }
+        });
+    }
+
+    private void updateAnimation() {
+        boolean show = runner.isRunning() && settings.isShowRunningAnimation();
+        spectrum.setVisible(show);
+        if (show) {
+            spectrum.start();
+        } else {
+            spectrum.stop();
+        }
     }
 
     /** Create the console implementation for the given preference. */
@@ -329,10 +391,10 @@ public class MainApp extends Application {
         }
     }
 
-    private Region buildRunBar() {
-        HBox paramsRow = new HBox(8, paramsButton, useGuiParams);
-        paramsRow.setAlignment(Pos.CENTER_LEFT);
-        paramsRow.setPadding(new Insets(6, 10, 0, 10));
+    private void buildRunBar() {
+        HBox params = new HBox(8, paramsButton, useGuiParams);
+        params.setAlignment(Pos.CENTER_LEFT);
+        params.setPadding(new Insets(6, 10, 0, 10));
 
         runButton.getStyleClass().add("accent");
         runButton.setTooltip(new javafx.scene.control.Tooltip("Run the current Casanovo command (Ctrl+R)"));
@@ -344,11 +406,12 @@ public class MainApp extends Application {
         // Match the console output: the app's sans-serif base font (not monospace).
         commandPreview.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif; -fx-font-size: 13px;");
         HBox.setHgrow(commandPreview, Priority.ALWAYS);
-        HBox cmdRow = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton);
-        cmdRow.setAlignment(Pos.CENTER_LEFT);
-        cmdRow.setPadding(new Insets(8, 10, 8, 10));
+        HBox command = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton);
+        command.setAlignment(Pos.CENTER_LEFT);
+        command.setPadding(new Insets(8, 10, 8, 10));
 
-        return new VBox(paramsRow, cmdRow);
+        paramsRow = params;
+        cmdRow = command;
     }
 
     private Region buildStatusBar() {
@@ -451,8 +514,10 @@ public class MainApp extends Application {
         // The View tab streams pepmap output to the shared console; show it only while a mapping
         // runs, and size it to sit just below the Run button so the settings panel stays unscrolled.
         boolean mapping = isViewTab() && viewPane.runningProperty().get();
-        runBar.setVisible(commandTab);
-        runBar.setManaged(commandTab);
+        paramsRow.setVisible(commandTab);
+        paramsRow.setManaged(commandTab);
+        cmdRow.setVisible(commandTab);
+        cmdRow.setManaged(commandTab);
         if (commandTab || mapping) {
             boolean added = false;
             if (!split.getItems().contains(consoleView)) {
@@ -605,6 +670,8 @@ public class MainApp extends Application {
         runner.start(command, settings, workingDir,
                 this::onOutput,
                 (exit, err) -> Platform.runLater(() -> onFinished(exit, err)));
+        // After start(): runner.isRunning() is now true, so the overlay shows.
+        updateAnimation();
     }
 
     /**
@@ -862,6 +929,7 @@ public class MainApp extends Application {
 
     private void onFinished(int exitCode, Throwable error) {
         updateRunningState(false);
+        updateAnimation();
         progressBar.setProgress(exitCode == 0 ? 1.0 : 0.0);
         progressBar.setVisible(false);
         if (error != null) {

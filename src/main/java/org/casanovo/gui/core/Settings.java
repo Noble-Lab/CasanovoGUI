@@ -29,6 +29,7 @@ public class Settings {
     private static final String KEY_PEPMAP_JAR = "pepmapJar";
     private static final String KEY_THEME = "theme";
     private static final String KEY_COLORED_CONSOLE = "coloredConsole";
+    private static final String KEY_SHOW_RUNNING_ANIMATION = "showRunningAnimation";
 
     private final Preferences prefs = Preferences.userRoot().node("org/casanovo/gui");
 
@@ -40,6 +41,7 @@ public class Settings {
     private String pepmapJar;
     private String theme;
     private boolean coloredConsole;
+    private boolean showRunningAnimation;
 
     public Settings() {
         load();
@@ -55,6 +57,7 @@ public class Settings {
         pepmapJar = prefs.get(KEY_PEPMAP_JAR, "");
         theme = prefs.get(KEY_THEME, "PrimerLight");
         coloredConsole = prefs.getBoolean(KEY_COLORED_CONSOLE, true);
+        showRunningAnimation = prefs.getBoolean(KEY_SHOW_RUNNING_ANIMATION, true);
     }
 
     /** Persist the current values so they survive a restart. */
@@ -67,6 +70,7 @@ public class Settings {
         prefs.put(KEY_PEPMAP_JAR, nullToEmpty(pepmapJar));
         prefs.put(KEY_THEME, nullToEmpty(theme));
         prefs.putBoolean(KEY_COLORED_CONSOLE, coloredConsole);
+        prefs.putBoolean(KEY_SHOW_RUNNING_ANIMATION, showRunningAnimation);
     }
 
     public String getCasanovoExecutable() {
@@ -133,6 +137,14 @@ public class Settings {
 
     public void setColoredConsole(boolean coloredConsole) {
         this.coloredConsole = coloredConsole;
+    }
+
+    public boolean isShowRunningAnimation() {
+        return showRunningAnimation;
+    }
+
+    public void setShowRunningAnimation(boolean showRunningAnimation) {
+        this.showRunningAnimation = showRunningAnimation;
     }
 
     private static String nullToEmpty(String s) {
