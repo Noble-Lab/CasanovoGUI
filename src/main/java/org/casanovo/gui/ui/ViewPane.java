@@ -21,6 +21,7 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
+import javafx.scene.control.Menu;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ScrollPane;
@@ -92,19 +93,30 @@ public class ViewPane extends BorderPane {
                          String start, String end, String preAa, String postAa) {
     }
 
-    /** Protein-level aggregate. {@code coverage} is null when the protein is not found in the FASTA. */
-    private record ProteinRow(String protein, int totalPeptides, int uniquePeptides,
+    /**
+     * A position where the de novo peptide differs from the protein substring it matched.
+     * {@code index} is 1-based into the peptide; {@code equivalence} is true for an allowed I/L
+     * difference (under {@code -i2l}) or an X wildcard, false for a true substitution.
+     */
+    public record Mismatch(int index, char query, char protein, boolean equivalence) {
+    }
+
+    /**
+     * Protein-level aggregate. {@code coverage} is null when the protein is not found in the FASTA.
+     * {@code mismatchPeptides} counts peptides that reach this protein only with ≥1 substitution.
+     */
+    private record ProteinRow(String protein, int totalPeptides, int uniquePeptides, int mismatchPeptides,
                               int totalPsms, int uniquePsms, Double coverage) {
     }
 
     /** One peptide mapped to the currently-selected protein. {@code unique} = maps to one protein only. */
     private record PeptideRow(String peptide, int start, int end, String preAa, String postAa,
-                              int psms, boolean unique, double bestScore) {
+                              int psms, boolean unique, double bestScore, int mismatches, int bestMatch) {
     }
 
-    /** A peptide that maps to two or more proteins. */
+    /** A peptide that mapped to one or more proteins. {@code minMismatches} = fewest substitutions across them. */
     private record MappedRow(String peptide, int proteinCount, String proteins, int psms,
-                             double bestScore) {
+                             double bestScore, int minMismatches) {
     }
 
     /** A de novo peptide that mapped to no protein. */
@@ -114,9 +126,13 @@ public class ViewPane extends BorderPane {
     /** Everything derived from one completed mapping; computed off-thread, applied on the FX thread. */
     private record Results(List<ProteinRow> proteins,
                            Map<String, List<MapRow>> rowsByProtein,
+                           Map<String, List<MapRow>> rowsByPeptide,
                            Map<String, Set<String>> proteinsByPeptide,
                            Map<String, Integer> psmByPeptide,
+                           Map<String, Integer> minMismatchByPeptide,
                            Map<String, String> seqByProtein,
+                           boolean i2l,
+                           int mismatches,
                            List<MappedRow> mapped,
                            List<UnmappedRow> unmapped,
                            int totalPeptides, int mappedPeptides,
@@ -129,10 +145,13 @@ public class ViewPane extends BorderPane {
     private static final Color UNIQUE_COLOR = Color.web(UNIQUE_HEX);
     private static final Color SHARED_COLOR = Color.web(SHARED_HEX);
     private static final Color PLAIN_COLOR = Color.web("#444444");
+    private static final String MISMATCH_HEX = "#C0392B"; // red – a de novo↔protein substitution site
+    private static final Color MISMATCH_COLOR = Color.web(MISMATCH_HEX);
     private static final Font MONO = Font.font("Monospaced", 13);
     private static final Font MONO_BOLD = Font.font("Monospaced", FontWeight.BOLD, 13);
     private static final int COVERAGE_WRAP = 60;
     private static final int ROW_HEIGHT = 26; // compact, consistent row height across all result tables
+    private static final double PLOT_CELL_HEIGHT = 330; // fixed Overview cell height (width still resizes)
 
     private final Window owner;
     private final Settings settings;
@@ -167,7 +186,10 @@ public class ViewPane extends BorderPane {
     private Tab proteinViewTab;
 
     // Overview
-    private final Label overviewLabel = new Label();
+    private final javafx.scene.layout.GridPane statCards = new javafx.scene.layout.GridPane();
+    /** Side length of each square plot cell; resizes with the Overview width, clamped to [300, 350]. */
+    private final javafx.beans.property.DoubleProperty plotCellSize =
+            new javafx.beans.property.SimpleDoubleProperty(350);
     private final Label overviewPlaceholder = new Label("Run a mapping to see the overview.");
     private VBox overviewChartsBox;
     private BarChart<Number, String> topChart = newTopChart();
@@ -183,6 +205,10 @@ public class ViewPane extends BorderPane {
     private VBox cutoffBox; // the mapping (cutoff) plot cell — hidden when there is no mapping
     private VBox topBox;    // the top-proteins plot cell — hidden when there is no mapping
     private javafx.scene.layout.FlowPane chartsFlow; // wraps the plots; kept ≥2 columns when mapping
+    private javafx.scene.layout.StackPane summaryCell; // holds the stat cards; inset to the plots' axis labels
+    /** Chart plot-backgrounds already wired to re-align the cards (identity set; charts may be rebuilt). */
+    private final java.util.Set<javafx.scene.Node> hookedPlots =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
     // Proteins
     private final TableView<ProteinRow> proteinTable = new TableView<>();
@@ -203,6 +229,15 @@ public class ViewPane extends BorderPane {
     private Pager<MappedRow> mappedPager;
     private final TableView<UnmappedRow> unmappedTable = new TableView<>();
     private Pager<UnmappedRow> unmappedPager;
+
+    // Mismatch-only UI (hidden when a mapping found no mismatches): the mismatch columns + Mapped "Match" filter.
+    private TableColumn<ProteinRow, Integer> proteinMismatchCol;
+    private TableColumn<PeptideRow, Integer> proteinViewMismatchCol;
+    private TableColumn<PeptideRow, Integer> proteinViewBestMatchCol;
+    private TableColumn<MappedRow, Integer> mappedBestMatchCol;
+    private ComboBox<String> matchFilter;
+    private HBox matchBox;
+    private Label coverageMismatchSwatch; // "mismatch site" legend swatch in the Protein-view coverage map
 
     private final Label sharedStatus;          // the window's shared bottom status label (same as de novo)
     private final ProgressBar sharedProgress;  // the window's shared bottom progress bar
@@ -240,6 +275,15 @@ public class ViewPane extends BorderPane {
         addAaScoreMenuItem(mappedTable, MappedRow::peptide);
         addAaScoreMenuItem(unmappedTable, UnmappedRow::peptide);
         setRight(buildSettings());
+        // No mapping has run yet (default mismatches = 0), so hide the mismatch columns/filter/legend; they
+        // only carry data when a mapping allowed mismatches. applyResults updates this per run.
+        setMismatchColumnsVisible(false);
+        // Size columns to their (bold) headers now, and re-size on sort so a freshly-sorted column gets room
+        // for its arrow even before any data loads. (Data loads also re-autoSize via the Pagers' setData.)
+        autoSizeWithSort(proteinTable);
+        autoSizeWithSort(proteinPeptideTable);
+        autoSizeWithSort(mappedTable);
+        autoSizeWithSort(unmappedTable);
         setRunning(false);
     }
 
@@ -288,8 +332,13 @@ public class ViewPane extends BorderPane {
     }
 
     private ScrollPane buildOverviewTab() {
-        overviewLabel.setStyle("-fx-font-size: 13px;");
-        overviewLabel.setMinHeight(Region.USE_PREF_SIZE);
+        statCards.setHgap(10);
+        statCards.setVgap(10);
+        // No padding here: the enclosing cell carries the inset that lines the grid up with the plots'
+        // axis labels (syncSummaryToPlotArea); the grid then stretches to fill that inset rectangle so
+        // all four card-block edges meet the neighbouring plots.
+        statCards.setPadding(Insets.EMPTY);
+        statCards.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
 
         cutoffChart.setTitle("Mapped peptides");
         cutoffChart.setLegendVisible(false);
@@ -352,17 +401,52 @@ public class ViewPane extends BorderPane {
         scoreControls.setMaxWidth(Double.MAX_VALUE);
         VBox scoreBox = new VBox(4, scoreControls, fixedCell(scoreChart));
 
-        // Score plot first, then the mapping (cutoff) plot, then the top-proteins plot. A FlowPane keeps
-        // all three on one row when wide enough and wraps the trailing one(s) otherwise. A 2-plot minimum
-        // width keeps at least two columns (a sideways scroll bar appears only if even two won't fit);
-        // when there is no mapping only the score plot is shown (see applyResults).
-        chartsFlow = new javafx.scene.layout.FlowPane(2, 2, scoreBox, cutoffBox, topBox);
-        chartsFlow.setMinWidth(2 * 350 + 2);
-        VBox box = new VBox(10, chartsFlow, overviewLabel);
+        // Summary tile first, then the score plot, mapping (cutoff) plot, and top-proteins plot. A
+        // FlowPane keeps them on one row when wide enough and wraps otherwise; a 2-plot minimum width
+        // keeps at least two columns (a sideways scroll bar appears only if even two won't fit). When
+        // there is no mapping only the summary + score tiles are shown (see applyResults).
+
+        ComboBox<String> summaryMode = new ComboBox<>();
+        summaryMode.getItems().add("Summary");
+        summaryMode.setValue("Summary");
+        HBox summaryControls = new HBox(8, new Label("Show:"), summaryMode);
+        summaryControls.setAlignment(Pos.CENTER);
+        summaryControls.setMaxWidth(Double.MAX_VALUE);
+        summaryCell = fixedCellNode(statCards);
+        VBox summaryBox = new VBox(4, summaryControls, summaryCell);
+
+        chartsFlow = new javafx.scene.layout.FlowPane(2, 2, summaryBox, scoreBox, cutoffBox, topBox);
+        chartsFlow.setMinWidth(2 * 300 + 12); // 2 cells + gap + slack, so ≥2 columns hold at the minimum
+        // Re-align whenever any tile is (re)positioned or resized: covers first layout, window resize,
+        // and the FlowPane wrapping to a different column count — which changes which plots are the
+        // summary's neighbours. syncSummaryToPlotArea finds those neighbours by position, so it tracks
+        // whatever plot now sits to the right / below regardless of tile order; refreshSummaryAlign also
+        // wires up any newly laid-out chart so a later data change that shifts its axes re-aligns.
+        for (javafx.scene.Node tile : chartsFlow.getChildrenUnmodifiable()) {
+            tile.boundsInParentProperty().addListener((o, a, b) -> refreshSummaryAlign());
+        }
+        VBox box = new VBox(10, chartsFlow);
         box.setPadding(new Insets(2, 2, 2, 2));
         box.setVisible(false);
         box.setManaged(false);
         overviewChartsBox = box;
+        // Right-click the Overview to export its four plots as a high-resolution PNG.
+        Menu saveMenu = new Menu("Save image as…");
+        for (int d : new int[]{150, 300, 600}) {
+            final int dpi = d;
+            MenuItem mi = new MenuItem(dpi + " DPI");
+            mi.setOnAction(e -> saveOverviewImage(dpi));
+            saveMenu.getItems().add(mi);
+        }
+        ContextMenu overviewMenu = new ContextMenu(saveMenu);
+        box.setOnContextMenuRequested(e -> overviewMenu.show(box, e.getScreenX(), e.getScreenY()));
+        // The charts consume mouse presses, so the menu's built-in auto-hide misses left-clicks inside
+        // the Overview. Hide it explicitly on any non-right-button press (a filter runs before children).
+        box.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, e -> {
+            if (overviewMenu.isShowing() && e.getButton() != javafx.scene.input.MouseButton.SECONDARY) {
+                overviewMenu.hide();
+            }
+        });
         overviewPlaceholder.setStyle("-fx-opacity: 0.55;");
 
         // Charts are shown only once there are results: an empty JavaFX chart ignores its size and
@@ -370,25 +454,217 @@ public class ViewPane extends BorderPane {
         javafx.scene.layout.StackPane content = new javafx.scene.layout.StackPane(box, overviewPlaceholder);
         javafx.scene.layout.StackPane.setAlignment(box, Pos.TOP_LEFT);
 
-        // Fixed 350x350 plots; if the window is too small to show them, scroll bars appear.
+        // The plots wrap/resize to the viewport; a vertical scroll bar appears when they don't all fit.
         ScrollPane scroll = new ScrollPane(content);
         scroll.setFitToWidth(true); // let the FlowPane wrap to the viewport instead of scrolling sideways
         scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         scroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
+        // Cell WIDTH fills the flow width; the cells keep a FIXED height (see fixedCell). So when the
+        // vertical scroll bar appears/disappears it only changes widths — it can't change the content
+        // height and flip the bar again, which is the flicker AS_NEEDED would otherwise cause.
+        chartsFlow.widthProperty().addListener((o, a, w) -> updatePlotCellSize(w.doubleValue()));
         return scroll;
     }
 
-    /** Wrap a chart in a fixed 350x350 cell (the cell forces the chart's size); the Overview
-        scrolls if the window is too small to show both cells. */
-    private static javafx.scene.layout.StackPane fixedCell(javafx.scene.chart.Chart chart) {
-        // An empty chart's natural min height is large; drop it to 0 so the fixed cell can force 350.
+    /** Right-click handler: choose a file, then export the Overview at the given scale. */
+    private void saveOverviewImage(int dpi) {
+        if (results == null) {
+            status("Run a mapping first, then export the overview image.");
+            return;
+        }
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Save overview image");
+        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("PNG image", "*.png"));
+        fc.setInitialFileName("overview.png");
+        initialDir(fc, mzTabField.getText());
+        File chosen = fc.showSaveDialog(owner);
+        if (chosen == null) {
+            return;
+        }
+        File out = chosen.getName().toLowerCase(Locale.ROOT).endsWith(".png")
+                ? chosen : new File(chosen.getParentFile(), chosen.getName() + ".png");
+        try {
+            exportOverview(dpi, out);
+            status("Saved overview image (" + dpi + " DPI): " + out.getName());
+        } catch (IOException ex) {
+            status("Could not save image: " + ex.getMessage());
+        }
+    }
+
+    /** Snapshot the four Overview plots to a high-resolution PNG, hiding the per-tile "Show:" selectors
+        for a clean figure (chart titles stay). Vector charts → crisp at any scale. */
+    private void exportOverview(int dpi, File out) throws IOException {
+        List<javafx.scene.Node> hidden = new ArrayList<>();
+        for (javafx.scene.Node tile : chartsFlow.getChildren()) {
+            if (tile instanceof VBox vb && !vb.getChildren().isEmpty()) {
+                javafx.scene.Node controls = vb.getChildren().get(0);
+                if (controls.isManaged()) {
+                    controls.setVisible(false);
+                    controls.setManaged(false);
+                    hidden.add(controls);
+                }
+            }
+        }
+        try {
+            chartsFlow.applyCss();
+            chartsFlow.layout();
+            ImageExport.writeHiResPng(chartsFlow, dpi, ImageExport.sceneBackground(chartsFlow, Color.WHITE), out);
+        } finally {
+            for (javafx.scene.Node controls : hidden) {
+                controls.setVisible(true);
+                controls.setManaged(true);
+            }
+            chartsFlow.layout();
+        }
+    }
+
+    /** Wrap a chart in a cell whose width fills the Overview (300–350) and whose height is fixed
+        ({@link #PLOT_CELL_HEIGHT}) — the fixed height keeps a scroll-bar toggle from flickering the layout. */
+    private javafx.scene.layout.StackPane fixedCell(javafx.scene.chart.Chart chart) {
+        // An empty chart's natural min height is large; drop it to 0 so the cell can size the chart.
         chart.setMinSize(0, 0);
         javafx.scene.layout.StackPane cell = new javafx.scene.layout.StackPane(chart);
-        cell.setMinSize(350, 350);
-        cell.setPrefSize(350, 350);
-        cell.setMaxSize(350, 350);
+        cell.setMinSize(300, PLOT_CELL_HEIGHT);
+        cell.setMaxSize(350, PLOT_CELL_HEIGHT);
+        cell.prefWidthProperty().bind(plotCellSize);
+        cell.setPrefHeight(PLOT_CELL_HEIGHT);
         return cell;
+    }
+
+    /** Wrap a node in a cell matching the chart cells: width fills the Overview (300–350), height fixed
+        ({@link #PLOT_CELL_HEIGHT}). The card grid inside stretches to fill it (syncSummaryToPlotArea). */
+    private javafx.scene.layout.StackPane fixedCellNode(javafx.scene.Node node) {
+        javafx.scene.layout.StackPane cell = new javafx.scene.layout.StackPane(node);
+        cell.setMinWidth(300);
+        cell.setMaxWidth(350);
+        cell.prefWidthProperty().bind(plotCellSize);
+        cell.setMinHeight(PLOT_CELL_HEIGHT);
+        cell.setPrefHeight(PLOT_CELL_HEIGHT);
+        cell.setMaxHeight(PLOT_CELL_HEIGHT);
+        return cell;
+    }
+
+    /** Set the plot cells' width to fill the Overview's flow width across its columns, clamped to [300, 350]. */
+    private void updatePlotCellSize(double width) {
+        if (width <= 0) {
+            return;
+        }
+        double hgap = chartsFlow.getHgap();
+        int cols = Math.max(1, (int) Math.floor((width + hgap) / (300 + hgap)));
+        // Subtract a few px of slack: if the cells sum to exactly the width, pixel-snapping tips them
+        // over and the FlowPane wraps to a single column.
+        double size = (width - hgap * (cols - 1)) / cols - 4;
+        plotCellSize.set(Math.max(300, Math.min(350, size)));
+    }
+
+    /** Bounds of a chart sub-node (its plot-background, an axis, …) expressed in the chart's own
+        coordinates. The chart fills its cell, so these offsets equal the inset from the cell's edges.
+        Null until the chart and the node have been laid out. */
+    private static javafx.geometry.Bounds inChart(javafx.scene.chart.Chart chart, javafx.scene.Node child) {
+        if (child == null || chart.getWidth() <= 0) {
+            return null;
+        }
+        return chart.sceneToLocal(child.localToScene(child.getBoundsInLocal()));
+    }
+
+    /** Wire every laid-out chart's plot-background to re-align the cards (so a later data change that
+        moves an axis re-aligns), then re-align now. Idempotent: each plot-background is hooked once,
+        and rebuilt charts (e.g. the top-proteins chart) get their fresh background hooked on a later call. */
+    private void refreshSummaryAlign() {
+        if (chartsFlow != null) {
+            for (javafx.scene.Node bg : chartsFlow.lookupAll(".chart-plot-background")) {
+                if (hookedPlots.add(bg)) {
+                    bg.boundsInParentProperty().addListener((o, a, b) -> syncSummaryToPlotArea());
+                }
+            }
+        }
+        syncSummaryToPlotArea();
+    }
+
+    /** Inset the summary cell so the (stretched) card grid lines its four edges up with the neighbouring
+        plots: top with the score plot's data top (below its title) and bottom with that plot's x-axis
+        label; left with the column-neighbour's y-axis label and right with its data edge. */
+    private void syncSummaryToPlotArea() {
+        if (summaryCell == null || statCards.getChildren().isEmpty() || chartsFlow == null) {
+            return;
+        }
+        javafx.scene.Node tile = summaryTile();
+        if (tile == null) {
+            return;
+        }
+        XYChart<?, ?> rowRef = neighbourChart(tile, false); // to the right (same row)    -> top, bottom
+        XYChart<?, ?> colRef = neighbourChart(tile, true);  // directly below (same column) -> left, right
+        if (rowRef == null) {
+            rowRef = colRef; // nothing to the right (e.g. single column): borrow the one neighbour we have
+        }
+        if (colRef == null) {
+            colRef = rowRef; // nothing below (e.g. single row / no mapping): take left/right from the row
+        }
+        if (rowRef == null) {
+            return; // no neighbour laid out yet
+        }
+        javafx.geometry.Bounds rowPlot = inChart(rowRef, rowRef.lookup(".chart-plot-background"));
+        javafx.geometry.Bounds rowXAxis = inChart(rowRef, rowRef.getXAxis());
+        javafx.geometry.Bounds colPlot = inChart(colRef, colRef.lookup(".chart-plot-background"));
+        javafx.geometry.Bounds colYAxis = inChart(colRef, colRef.getYAxis());
+        if (rowPlot == null || rowXAxis == null || colPlot == null || colYAxis == null) {
+            return;
+        }
+        double colW = colRef.getWidth();
+        double rowH = rowRef.getHeight();
+        if (colW <= 0 || rowH <= 0) {
+            return;
+        }
+        double top = Math.max(0, rowPlot.getMinY());            // below the chart title (data area top)
+        double bottom = Math.max(0, rowH - rowXAxis.getMaxY()); // below the x-axis label
+        double left = Math.max(0, colYAxis.getMinX());          // at the y-axis label
+        double right = Math.max(0, colW - colPlot.getMaxX());   // at the data edge (no right-hand label)
+        summaryCell.setPadding(new Insets(top, right, bottom, left));
+    }
+
+    /** The summary tile: the direct child of the charts FlowPane that wraps the stat-card grid. */
+    private javafx.scene.Node summaryTile() {
+        javafx.scene.Node n = summaryCell;
+        while (n != null && n.getParent() != chartsFlow) {
+            n = n.getParent();
+        }
+        return n;
+    }
+
+    /** The XY chart in the managed tile immediately to the right of (same row) or directly below (same
+        column) {@code tile} within the charts FlowPane, located by laid-out position so it tracks whatever
+        plot currently sits there — independent of tile order or how the FlowPane has wrapped. Null if
+        there is no such tile yet or it holds no XY chart. */
+    private XYChart<?, ?> neighbourChart(javafx.scene.Node tile, boolean below) {
+        javafx.geometry.Bounds b = tile.getBoundsInParent();
+        double eps = 4.0; // tiles in a row share a top; tiles in a column share a left (same cell width)
+        javafx.scene.Node best = null;
+        double bestKey = Double.MAX_VALUE;
+        for (javafx.scene.Node other : chartsFlow.getChildrenUnmodifiable()) {
+            if (other == tile || !other.isManaged() || !other.isVisible()) {
+                continue;
+            }
+            javafx.geometry.Bounds ob = other.getBoundsInParent();
+            double key;
+            if (below) {
+                if (Math.abs(ob.getMinX() - b.getMinX()) > eps || ob.getMinY() <= b.getMinY() + eps) {
+                    continue;
+                }
+                key = ob.getMinY();
+            } else {
+                if (Math.abs(ob.getMinY() - b.getMinY()) > eps || ob.getMinX() <= b.getMinX() + eps) {
+                    continue;
+                }
+                key = ob.getMinX();
+            }
+            if (key < bestKey) { // nearest neighbour in that direction
+                bestKey = key;
+                best = other;
+            }
+        }
+        javafx.scene.Node chart = best == null ? null : best.lookup(".chart");
+        return chart instanceof XYChart<?, ?> xy ? xy : null;
     }
 
     /** A fresh, configured Top-proteins bar chart. A new one is built per run so its category axis
@@ -400,6 +676,11 @@ public class ViewPane extends BorderPane {
         c.setLegendVisible(false);
         c.setAnimated(false);
         c.setCategoryGap(3);
+        // A 10px font with no tick-label gap lets all 12 protein names render even at the minimum (300px)
+        // cell; with the default gap, JavaFX's CategoryAxis drops the 2 tightest labels to avoid overlap.
+        CategoryAxis topAxis = (CategoryAxis) c.getYAxis();
+        topAxis.setTickLabelFont(javafx.scene.text.Font.font(10));
+        topAxis.setTickLabelGap(0);
         c.setMinSize(0, 0);
         ((NumberAxis) c.getXAxis()).setLabel("Peptides");
         return c;
@@ -414,6 +695,9 @@ public class ViewPane extends BorderPane {
                 "All distinct peptides mapped to this protein, including peptides shared with other proteins."));
         pepGroup.getColumns().add(intColumn("Unique", ProteinRow::uniquePeptides,
                 "Peptides that map to only this protein."));
+        proteinMismatchCol = intColumn("Mismatch", ProteinRow::mismatchPeptides,
+                "Peptides that reach this protein only with one or more substitutions (no exact match here).");
+        pepGroup.getColumns().add(proteinMismatchCol);
         TableColumn<ProteinRow, Integer> psmGroup = new TableColumn<>("PSMs");
         headerTip(psmGroup, "PSMs", "Peptide-spectrum matches (de novo spectra) supporting this protein.", false);
         psmGroup.getColumns().add(intColumn("Total", ProteinRow::totalPsms,
@@ -472,6 +756,11 @@ public class ViewPane extends BorderPane {
                 "Number of peptide-spectrum matches in the mzTab for this peptide.");
         dblCol(proteinPeptideTable, "Best score", PeptideRow::bestScore,
                 "Highest Casanovo peptide score among this peptide's PSMs.");
+        proteinViewMismatchCol = intCol(proteinPeptideTable, "Mismatches", PeptideRow::mismatches,
+                mismatchesColumnTip(true)); // refreshed per-run in applyResults from the recorded I/L setting
+        proteinViewBestMatchCol = intCol(proteinPeptideTable, "Best match", PeptideRow::bestMatch,
+                "Fewest substitutions needed to map this peptide to any protein (0 = an exact match somewhere). "
+                        + "Can be lower than Mismatches when the peptide matches another protein better.");
         strCol(proteinPeptideTable, "Mapping", pr -> pr.unique() ? "unique" : "shared", 90,
                 "Whether this peptide is unique to this protein or shared across several proteins.");
         proteinPeptideTable.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
@@ -516,8 +805,10 @@ public class ViewPane extends BorderPane {
                 "Number of peptide-spectrum matches in the mzTab for this peptide.");
         dblCol(mappedTable, "Best score", MappedRow::bestScore,
                 "Highest Casanovo peptide score among this peptide's PSMs.");
+        mappedBestMatchCol = intCol(mappedTable, "Best match", MappedRow::minMismatches,
+                "Fewest substitutions needed to map this peptide to any protein (0 = an exact match somewhere).");
         strCol(mappedTable, "Proteins", MappedRow::proteins, 380,
-                "List of all proteins this peptide maps to.");
+                "All proteins this peptide maps to; each is annotated with its substitution count when > 0.");
         mappedTable.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
         mappedTable.setFixedCellSize(ROW_HEIGHT);
         mappedTable.setPlaceholder(new Label("No mapped peptides."));
@@ -527,7 +818,19 @@ public class ViewPane extends BorderPane {
         mappedFilter.setPromptText("Filter by peptide…");
         mappedFilter.setPrefWidth(260);
         mappedFilter.textProperty().addListener((o, a, b) -> mappedPager.setQuery(b));
-        HBox top = new HBox(8, new Label("Filter:"), mappedFilter);
+        matchFilter = new ComboBox<>();
+        matchFilter.getItems().addAll("All", "Exact only", "With mismatches");
+        matchFilter.setValue("All");
+        matchFilter.valueProperty().addListener((o, a, b) -> {
+            java.util.function.Predicate<MappedRow> p =
+                    "Exact only".equals(b) ? r -> r.minMismatches() == 0
+                            : "With mismatches".equals(b) ? r -> r.minMismatches() > 0
+                            : null;
+            mappedPager.setExtraFilter(p);
+        });
+        matchBox = new HBox(8, new Label("Match:"), matchFilter);
+        matchBox.setAlignment(Pos.CENTER_LEFT);
+        HBox top = new HBox(8, new Label("Filter:"), mappedFilter, matchBox);
         top.setAlignment(Pos.CENTER_LEFT);
         top.setPadding(new Insets(0, 0, 6, 0));
         BorderPane bp = new BorderPane(mappedTable);
@@ -655,8 +958,10 @@ public class ViewPane extends BorderPane {
         return l;
     }
 
-    private static HBox buildLegend() {
-        HBox h = new HBox(18, swatch(UNIQUE_HEX, "unique"), swatch(SHARED_HEX, "shared"));
+    private HBox buildLegend() {
+        coverageMismatchSwatch = swatch(MISMATCH_HEX, "mismatch site");
+        HBox h = new HBox(18, swatch(UNIQUE_HEX, "unique"), swatch(SHARED_HEX, "shared"),
+                coverageMismatchSwatch);
         h.setAlignment(Pos.CENTER_LEFT);
         return h;
     }
@@ -679,6 +984,7 @@ public class ViewPane extends BorderPane {
         private final Label info = new Label();
         private final HBox bar;
         private BiPredicate<T, String> filter;
+        private java.util.function.Predicate<T> extraFilter; // optional class filter, ANDed with the text filter
         private String query = "";
         private int page;
 
@@ -712,6 +1018,12 @@ public class ViewPane extends BorderPane {
             this.filter = f;
         }
 
+        void setExtraFilter(java.util.function.Predicate<T> p) {
+            this.extraFilter = p;
+            page = 0;
+            refresh();
+        }
+
         void setData(List<T> data) {
             model.setAll(data);
             page = 0;
@@ -728,7 +1040,9 @@ public class ViewPane extends BorderPane {
         private void refresh() {
             working.clear();
             for (T t : model) {
-                if (filter == null || query.isEmpty() || filter.test(t, query)) {
+                boolean classOk = extraFilter == null || extraFilter.test(t);
+                boolean textOk = filter == null || query.isEmpty() || filter.test(t, query);
+                if (classOk && textOk) {
                     working.add(t);
                 }
             }
@@ -766,7 +1080,8 @@ public class ViewPane extends BorderPane {
             MzTabScores.BestPsm best = bestByPeptide.get(key);
             peps.add(new PeptideRow(r.peptide(), parseIntSafe(r.start()), parseIntSafe(r.end()),
                     r.preAa(), r.postAa(), results.psmByPeptide().getOrDefault(key, 0), unique,
-                    best != null ? best.score() : Double.NaN));
+                    best != null ? best.score() : Double.NaN, substitutions(r, results.i2l()),
+                    results.minMismatchByPeptide().getOrDefault(key, 0)));
         }
         peptidePager.setData(peps);
         renderCoverage(protein);
@@ -802,7 +1117,44 @@ public class ViewPane extends BorderPane {
             if (refCol >= 0 && refCol < row.values().length) {
                 drivePdvRef(row.values()[refCol]);
             }
-        }, pdvVizCheck.isSelected());
+        }, pdvVizCheck.isSelected(), proteinMatchesFor(bare), results.i2l());
+    }
+
+    /** Build the per-residue alignment(s) of {@code bare} against each distinct protein substring it matched. */
+    private List<AaScorePopup.ProteinMatch> proteinMatchesFor(String bare) {
+        if (results == null) {
+            return List.of();
+        }
+        List<MapRow> rows = results.rowsByPeptide().getOrDefault(bare, List.of());
+        boolean i2l = results.i2l();
+        LinkedHashMap<String, LinkedHashSet<String>> byOnProtein = new LinkedHashMap<>();
+        for (MapRow r : rows) {
+            String op = r.peptideOnProtein() == null ? "" : r.peptideOnProtein().trim().toUpperCase(Locale.ROOT);
+            if (!op.isEmpty()) {
+                byOnProtein.computeIfAbsent(op, k -> new LinkedHashSet<>()).add(r.protein());
+            }
+        }
+        List<AaScorePopup.ProteinMatch> out = new ArrayList<>();
+        for (Map.Entry<String, LinkedHashSet<String>> en : byOnProtein.entrySet()) {
+            String op = en.getKey();
+            int[] cls = new int[op.length()];
+            int sub = 0;
+            for (int i = 0; i < op.length() && i < bare.length(); i++) {
+                char a = bare.charAt(i);
+                char b = op.charAt(i);
+                if (a == b) {
+                    cls[i] = 0;
+                } else if ((i2l && isIL(a) && isIL(b)) || a == 'X' || b == 'X') {
+                    cls[i] = 2;
+                } else {
+                    cls[i] = 1;
+                    sub++;
+                }
+            }
+            out.add(new AaScorePopup.ProteinMatch(op, cls, new ArrayList<>(en.getValue()), sub));
+        }
+        out.sort(Comparator.comparingInt(AaScorePopup.ProteinMatch::substitutions));
+        return out;
     }
 
     private void renderCoverage(String protein) {
@@ -811,16 +1163,40 @@ public class ViewPane extends BorderPane {
             coverageLabel.setText("Coverage: protein sequence not found in the FASTA.");
             return;
         }
-        int[] cat = coverageCategories(results.rowsByProtein().getOrDefault(protein, List.of()),
-                results.proteinsByPeptide(), seq);
+        List<MapRow> protRows = results.rowsByProtein().getOrDefault(protein, List.of());
+        int[] cat = coverageCategories(protRows, results.proteinsByPeptide(), seq);
+        // Substitution sites: protein positions where a mapped peptide's de novo residue disagrees.
+        String[] subSite = new String[seq.length()]; // de novo residue(s) read here, or null
+        for (MapRow r : protRows) {
+            int s = parseIntSafe(r.start());
+            if (s <= 0) {
+                continue;
+            }
+            for (Mismatch m : mismatchesOf(r, results.i2l())) {
+                if (m.equivalence()) {
+                    continue; // I/L and X are not substitutions
+                }
+                int idx = s + m.index() - 2; // 0-based protein index
+                if (idx >= 0 && idx < seq.length()) {
+                    String prev = subSite[idx];
+                    String q = String.valueOf(m.query());
+                    subSite[idx] = prev == null ? q : (prev.contains(q) ? prev : prev + "/" + q);
+                }
+            }
+        }
         int covered = 0;
-        for (int c : cat) {
-            if (c > 0) {
+        int subs = 0;
+        for (int i = 0; i < cat.length; i++) {
+            if (cat[i] > 0) {
                 covered++;
+            }
+            if (subSite[i] != null) {
+                subs++;
             }
         }
         coverageLabel.setText(String.format(Locale.US,
-                "Coverage: %.1f%%  (%d / %d residues)", 100.0 * covered / seq.length(), covered, seq.length()));
+                "Coverage: %.1f%%  (%d / %d residues)%s", 100.0 * covered / seq.length(), covered, seq.length(),
+                subs > 0 ? "  ·  " + subs + " mismatch site" + (subs == 1 ? "" : "s") : ""));
 
         for (int start = 0; start < seq.length(); start += COVERAGE_WRAP) {
             int end = Math.min(start + COVERAGE_WRAP, seq.length());
@@ -831,9 +1207,20 @@ public class ViewPane extends BorderPane {
             line.getChildren().add(pos);
             int i = start;
             while (i < end) {
+                if (subSite[i] != null) {
+                    Text t = new Text(String.valueOf(seq.charAt(i)));
+                    t.setFont(MONO_BOLD);
+                    t.setFill(MISMATCH_COLOR);
+                    t.setUnderline(true);
+                    Tooltip.install(t, new Tooltip("Position " + (i + 1) + ": protein " + seq.charAt(i)
+                            + ", de novo read " + subSite[i]));
+                    line.getChildren().add(t);
+                    i++;
+                    continue;
+                }
                 int c = cat[i];
                 int j = i;
-                while (j < end && cat[j] == c) {
+                while (j < end && cat[j] == c && subSite[j] == null) {
                     j++;
                 }
                 Text t = new Text(seq.substring(i, j));
@@ -899,6 +1286,29 @@ public class ViewPane extends BorderPane {
         header.setAlignment(rightAligned ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
         col.setGraphic(header);
         col.setText(null); // avoid showing the title twice (text + graphic)
+        // At first open (no data) size every column snugly to its header text plus cell insets. No sort
+        // arrow is shown until a column is sorted, and by then the table has data and the Pagers have
+        // re-run TableUtils.autoSizeColumns (which adds arrow padding), so we don't reserve arrow space
+        // here. prefWidth overrides the data-oriented widths set above; minWidth keeps headers from
+        // clipping. Harmless on group columns (their width is the sum of their leaves).
+        javafx.scene.text.Text probe = new javafx.scene.text.Text(name);
+        probe.setFont(javafx.scene.text.Font.font(13));
+        double headerWidth = probe.getLayoutBounds().getWidth() * 1.15 + 20;
+        col.setMinWidth(headerWidth);
+        col.setPrefWidth(headerWidth);
+    }
+
+    /** Size a table's columns to their (bold) headers now, and again whenever its sort order changes — so a
+        freshly-sorted column gets room for its sort arrow while unsorted columns stay snug to their names. */
+    private static <S> void autoSizeWithSort(TableView<S> table) {
+        TableUtils.autoSizeColumns(table, 60);
+        table.getSortOrder().addListener((javafx.beans.Observable o) -> TableUtils.autoSizeColumns(table, 60));
+    }
+
+    /** Tooltip for the Protein-view "Mismatches" column — what's excluded depends on the I/L setting. */
+    private static String mismatchesColumnTip(boolean i2l) {
+        return "Substitutions between this peptide and the protein here (" + (i2l ? "I/L and X" : "X")
+                + " equivalences excluded). Double-click the peptide to see them aligned against its confidence.";
     }
 
     private static <S> void strCol(TableView<S> table, String name, Function<S, String> getter, double prefW, String tip) {
@@ -911,13 +1321,15 @@ public class ViewPane extends BorderPane {
         table.getColumns().add(col);
     }
 
-    private static <S> void intCol(TableView<S> table, String name, ToIntFunction<S> getter, String tip) {
+    private static <S> TableColumn<S, Integer> intCol(TableView<S> table, String name, ToIntFunction<S> getter,
+                                                      String tip) {
         TableColumn<S, Integer> col = new TableColumn<>(name);
         col.setCellValueFactory(d -> new ReadOnlyObjectWrapper<>(getter.applyAsInt(d.getValue())));
         col.setStyle("-fx-alignment: CENTER-RIGHT;");
         col.setPrefWidth(92);
         headerTip(col, name, tip, true);
         table.getColumns().add(col);
+        return col;
     }
 
     /** A right-aligned integer column returned (not added) — for nesting under a group header. */
@@ -1359,7 +1771,7 @@ public class ViewPane extends BorderPane {
             // No reference FASTA provided: skip pepmap entirely and load every de novo peptide as
             // unmapped (empty mappings -> computeResults puts them all in the Unmapped table).
             if (fasta == null) {
-                Results res = computeResults(List.of(), psms, null);
+                Results res = computeResults(List.of(), psms, null, opts.i2l, opts.mismatches);
                 Platform.runLater(() -> {
                     scoreCurve = scoreCurveLocal;
                     emptyPsmColumns = Set.copyOf(emptyColsLocal);
@@ -1425,7 +1837,7 @@ public class ViewPane extends BorderPane {
             } else if (exit == 0 && detail.isFile()) {
                 Platform.runLater(() -> status("Summarizing results…"));
                 List<MapRow> rows = parseDetail(detail);
-                Results res = computeResults(rows, psms, fasta);
+                Results res = computeResults(rows, psms, fasta, opts.i2l, opts.mismatches);
                 Platform.runLater(() -> {
                     scoreCurve = scoreCurveLocal;
                     emptyPsmColumns = Set.copyOf(emptyColsLocal);
@@ -1545,7 +1957,8 @@ public class ViewPane extends BorderPane {
 
     // ---- derive the result model (off the FX thread) -----------------------
 
-    private static Results computeResults(List<MapRow> rows, List<MzTabScores.Psm> psms, File fasta)
+    private static Results computeResults(List<MapRow> rows, List<MzTabScores.Psm> psms, File fasta, boolean i2l,
+                                          int mismatches)
             throws IOException {
         // PSM count + best score per bare peptide; and every distinct de novo peptide.
         Map<String, Integer> psmByPeptide = new HashMap<>();
@@ -1561,35 +1974,55 @@ public class ViewPane extends BorderPane {
             bestScore.merge(key, p.score(), Math::max);
         }
 
-        // peptide -> proteins ; protein -> its detail rows.
+        // peptide -> proteins ; protein -> its detail rows ; peptide -> its detail rows.
         Map<String, Set<String>> proteinsByPeptide = new HashMap<>();
         Map<String, List<MapRow>> rowsByProtein = new LinkedHashMap<>();
+        Map<String, List<MapRow>> rowsByPeptide = new LinkedHashMap<>();
         for (MapRow r : rows) {
-            proteinsByPeptide.computeIfAbsent(bare(r.peptide()), k -> new LinkedHashSet<>()).add(r.protein());
+            String pep = bare(r.peptide());
+            proteinsByPeptide.computeIfAbsent(pep, k -> new LinkedHashSet<>()).add(r.protein());
             rowsByProtein.computeIfAbsent(r.protein(), k -> new ArrayList<>()).add(r);
+            rowsByPeptide.computeIfAbsent(pep, k -> new ArrayList<>()).add(r);
+        }
+
+        // fewest substitutions each peptide needs to match SOME protein (0 = matches exactly somewhere).
+        Map<String, Integer> minMismatchByPeptide = new HashMap<>();
+        for (Map.Entry<String, List<MapRow>> en : rowsByPeptide.entrySet()) {
+            int min = Integer.MAX_VALUE;
+            for (MapRow r : en.getValue()) {
+                min = Math.min(min, substitutions(r, i2l));
+            }
+            minMismatchByPeptide.put(en.getKey(), min == Integer.MAX_VALUE ? 0 : min);
         }
 
         Map<String, String> seqByProtein = readFastaSequences(fasta, rowsByProtein.keySet());
 
         List<ProteinRow> proteinRows = new ArrayList<>();
         for (Map.Entry<String, List<MapRow>> en : rowsByProtein.entrySet()) {
-            Set<String> peps = new LinkedHashSet<>();
+            // fewest substitutions each peptide needs to match THIS protein.
+            Map<String, Integer> minSubForProtein = new LinkedHashMap<>();
             for (MapRow r : en.getValue()) {
-                peps.add(bare(r.peptide()));
+                minSubForProtein.merge(bare(r.peptide()), substitutions(r, i2l), Math::min);
             }
             int uniquePep = 0;
             int totalPsm = 0;
             int uniquePsm = 0;
-            for (String pep : peps) {
+            int mismatchPep = 0;
+            for (Map.Entry<String, Integer> pe : minSubForProtein.entrySet()) {
+                String pep = pe.getKey();
                 int c = psmByPeptide.getOrDefault(pep, 0);
                 totalPsm += c;
                 if (proteinsByPeptide.getOrDefault(pep, Set.of()).size() <= 1) {
                     uniquePep++;
                     uniquePsm += c;
                 }
+                if (pe.getValue() > 0) {
+                    mismatchPep++;
+                }
             }
             Double cov = coverage(en.getValue(), proteinsByPeptide, seqByProtein.get(en.getKey()));
-            proteinRows.add(new ProteinRow(en.getKey(), peps.size(), uniquePep, totalPsm, uniquePsm, cov));
+            proteinRows.add(new ProteinRow(en.getKey(), minSubForProtein.size(), uniquePep, mismatchPep,
+                    totalPsm, uniquePsm, cov));
         }
         proteinRows.sort(Comparator.comparingInt(ProteinRow::totalPeptides).reversed()
                 .thenComparing(ProteinRow::protein));
@@ -1598,9 +2031,20 @@ public class ViewPane extends BorderPane {
         List<MappedRow> mappedRows = new ArrayList<>();
         int uniquePeptides = 0;
         for (Map.Entry<String, Set<String>> en : proteinsByPeptide.entrySet()) {
-            mappedRows.add(new MappedRow(en.getKey(), en.getValue().size(),
-                    String.join("; ", en.getValue()), psmByPeptide.getOrDefault(en.getKey(), 0),
-                    bestScore.getOrDefault(en.getKey(), Double.NaN)));
+            String pep = en.getKey();
+            // fewest substitutions per protein, for the annotated protein list ("P12345 (1 mm)").
+            Map<String, Integer> minSubByProtein = new LinkedHashMap<>();
+            for (MapRow r : rowsByPeptide.getOrDefault(pep, List.of())) {
+                minSubByProtein.merge(r.protein(), substitutions(r, i2l), Math::min);
+            }
+            List<String> labels = new ArrayList<>();
+            for (String prot : en.getValue()) {
+                int mm = minSubByProtein.getOrDefault(prot, 0);
+                labels.add(mm > 0 ? prot + " (" + mm + " mm)" : prot);
+            }
+            mappedRows.add(new MappedRow(pep, en.getValue().size(), String.join("; ", labels),
+                    psmByPeptide.getOrDefault(pep, 0), bestScore.getOrDefault(pep, Double.NaN),
+                    minMismatchByPeptide.getOrDefault(pep, 0)));
             if (en.getValue().size() < 2) {
                 uniquePeptides++;
             }
@@ -1657,9 +2101,9 @@ public class ViewPane extends BorderPane {
             }
         }
 
-        return new Results(proteinRows, rowsByProtein, proteinsByPeptide, psmByPeptide, seqByProtein,
-                mappedRows, unmapped, allPeptides.size(), mapped.size(), totalPsms, mappedPsms, uniquePeptides,
-                cutoffs, mappedByCutoff, totalByCutoff);
+        return new Results(proteinRows, rowsByProtein, rowsByPeptide, proteinsByPeptide, psmByPeptide,
+                minMismatchByPeptide, seqByProtein, i2l, mismatches, mappedRows, unmapped, allPeptides.size(),
+                mapped.size(), totalPsms, mappedPsms, uniquePeptides, cutoffs, mappedByCutoff, totalByCutoff);
     }
 
     /**
@@ -1713,8 +2157,28 @@ public class ViewPane extends BorderPane {
 
     // ---- apply to the UI (FX thread) ---------------------------------------
 
+    /** Show/hide the mismatch columns, the Mapped "Match" filter, and the coverage "mismatch site" legend.
+        These carry meaning only when a mapping allowed mismatches; hidden otherwise (incl. at first open). */
+    private void setMismatchColumnsVisible(boolean show) {
+        proteinMismatchCol.setVisible(show);
+        proteinViewMismatchCol.setVisible(show);
+        proteinViewBestMatchCol.setVisible(show);
+        mappedBestMatchCol.setVisible(show);
+        matchBox.setVisible(show);
+        matchBox.setManaged(show);
+        coverageMismatchSwatch.setVisible(show);
+        coverageMismatchSwatch.setManaged(show);
+        if (!show) {
+            matchFilter.setValue("All");
+        }
+    }
+
     private void applyResults(Results res) {
         this.results = res;
+        // The mismatch columns and the Mapped "Match" filter only make sense when mismatches were allowed.
+        setMismatchColumnsVisible(res.mismatches() > 0);
+        // The "Mismatches" column tooltip wording depends on whether I/L counted as a substitution this run.
+        ((Label) proteinViewMismatchCol.getGraphic()).setTooltip(tip(mismatchesColumnTip(res.i2l())));
         overviewChartsBox.setVisible(true);
         overviewChartsBox.setManaged(true);
         overviewPlaceholder.setVisible(false);
@@ -1728,7 +2192,7 @@ public class ViewPane extends BorderPane {
         showProtein(proteinSelector.getValue()); // refresh even when the value did not change
         mappedPager.setData(res.mapped());
         unmappedPager.setData(res.unmapped());
-        overviewLabel.setText(overviewText(res));
+        buildStatCards(res);
         // Mapping plots (cutoff + top proteins) only make sense when peptides actually mapped; with no
         // mapping (e.g. no FASTA) show just the score plot. The score plot is always present.
         boolean hasMapping = !res.mapped().isEmpty();
@@ -1736,12 +2200,14 @@ public class ViewPane extends BorderPane {
         cutoffBox.setManaged(hasMapping);
         topBox.setVisible(hasMapping);
         topBox.setManaged(hasMapping);
-        chartsFlow.setMinWidth(hasMapping ? 2 * 350 + 2 : Region.USE_COMPUTED_SIZE);
+        chartsFlow.setMinWidth(2 * 300 + 12); // 2 cells + gap + slack, so ≥2 columns hold at the minimum
         buildScoreChart();
         if (hasMapping) {
             buildTopChart(res);
             buildCutoffChart(res);
         }
+        // Re-align the (re-sized) cards once the charts have laid out and their data area is known.
+        javafx.application.Platform.runLater(this::refreshSummaryAlign);
     }
 
     /** Render the score plot (cumulative PSM or peptide counts vs peptide score) for the current mode. */
@@ -1762,16 +2228,108 @@ public class ViewPane extends BorderPane {
         ((NumberAxis) scoreChart.getYAxis()).setLabel(mode + " (≥ score)");
     }
 
-    private static String overviewText(Results r) {
-        int unmapped = r.totalPeptides() - r.mappedPeptides();
-        double rate = r.totalPeptides() == 0 ? 0.0 : 100.0 * r.mappedPeptides() / r.totalPeptides();
-        return String.format(Locale.US,
-                "Peptides:  %,d total   ·   %,d mapped (%.1f%%)   ·   %,d unmapped\n"
-                        + "Proteins:  %,d   ·   unique peptides: %,d   ·   shared peptides: %,d\n"
-                        + "PSMs:  %,d mapped / %,d total",
-                r.totalPeptides(), r.mappedPeptides(), rate, unmapped,
-                r.proteins().size(), r.uniquePeptides(), r.mapped().size() - r.uniquePeptides(),
-                r.mappedPsms(), r.totalPsms());
+    /** Replace the overview's text summary with a row of KPI stat cards (dashboard style). */
+    private void buildStatCards(Results r) {
+        statCards.getChildren().clear();
+        List<javafx.scene.Node> cards = new ArrayList<>();
+        int total = r.totalPeptides();
+        int mapped = r.mappedPeptides();
+        if (!r.mapped().isEmpty()) {
+            int unmapped = total - mapped;
+            int shared = r.mapped().size() - r.uniquePeptides();
+            double pepRate = total == 0 ? 0 : (double) mapped / total;
+            double psmRate = r.totalPsms() == 0 ? 0 : (double) r.mappedPsms() / r.totalPsms();
+            // Per-level mismatch breakdown, shown as extra lines inside the Peptides-mapped card.
+            java.util.TreeMap<Integer, Integer> byMm = new java.util.TreeMap<>();
+            for (int v : r.minMismatchByPeptide().values()) {
+                byMm.merge(v, 1, Integer::sum);
+            }
+            List<String> breakdown = null;
+            if (byMm.keySet().stream().anyMatch(k -> k > 0)) {
+                breakdown = new ArrayList<>();
+                for (Map.Entry<Integer, Integer> e : byMm.entrySet()) {
+                    int lvl = e.getKey();
+                    breakdown.add((lvl == 0 ? "exact" : lvl + " mm") + ": " + fmt(e.getValue()));
+                }
+            }
+            cards.add(statCard("Peptides mapped", fmt(mapped),
+                    String.format(Locale.US, "%.1f%% of %,d", pepRate * 100, total), pepRate, breakdown));
+            cards.add(statCard("Unmapped", fmt(unmapped),
+                    total == 0 ? null : String.format(Locale.US, "%.1f%% of total", 100.0 * unmapped / total), null));
+            cards.add(statCard("Proteins", fmt(r.proteins().size()), null, null));
+            cards.add(statCard("Unique peptides", fmt(r.uniquePeptides()), "proteotypic", null));
+            cards.add(statCard("Shared peptides", fmt(shared), null, null));
+            cards.add(statCard("PSMs mapped", fmt(r.mappedPsms()),
+                    String.format(Locale.US, "%.1f%% of %,d", psmRate * 100, r.totalPsms()), psmRate));
+        } else {
+            cards.add(statCard("Peptides", fmt(total), "loaded from the mzTab", null));
+            cards.add(statCard("PSMs", fmt(r.totalPsms()), null, null));
+        }
+        for (int i = 0; i < cards.size(); i++) {
+            statCards.add(cards.get(i), i % 2, i / 2);
+        }
+        // Stretch the grid to fill the plot rectangle: equal halves across, evenly-grown rows down.
+        int cols = Math.min(2, cards.size());
+        int rows = (cards.size() + cols - 1) / cols;
+        List<javafx.scene.layout.ColumnConstraints> ccs = new ArrayList<>();
+        for (int c = 0; c < cols; c++) {
+            javafx.scene.layout.ColumnConstraints cc = new javafx.scene.layout.ColumnConstraints();
+            cc.setPercentWidth(100.0 / cols);
+            ccs.add(cc);
+        }
+        statCards.getColumnConstraints().setAll(ccs);
+        List<javafx.scene.layout.RowConstraints> rcs = new ArrayList<>();
+        for (int ri = 0; ri < rows; ri++) {
+            javafx.scene.layout.RowConstraints rc = new javafx.scene.layout.RowConstraints();
+            rc.setVgrow(javafx.scene.layout.Priority.ALWAYS);
+            rcs.add(rc);
+        }
+        statCards.getRowConstraints().setAll(rcs);
+    }
+
+    private static String fmt(int n) {
+        return String.format(Locale.US, "%,d", n);
+    }
+
+    private static javafx.scene.Node statCard(String caption, String value, String sub, Double progress) {
+        return statCard(caption, value, sub, progress, null);
+    }
+
+    /** A KPI "info box": a caption, a big value, an optional sub-line, an optional progress bar, and
+        optional extra muted lines (e.g. the per-level mismatch breakdown). */
+    private static javafx.scene.Node statCard(String caption, String value, String sub, Double progress,
+                                              List<String> extra) {
+        Label cap = new Label(caption);
+        cap.getStyleClass().add("text-muted");
+        cap.setStyle("-fx-font-size: 11px;");
+        Label val = new Label(value);
+        val.setStyle("-fx-font-size: 19px; -fx-font-weight: bold;");
+        VBox card = new VBox(2, cap, val);
+        card.setAlignment(Pos.CENTER_LEFT); // centre content vertically when the tile is stretched to fill
+        card.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE); // fill the grid cell so the block meets the plots' edges
+        card.setStyle("-fx-padding: 8 10 8 10; -fx-background-radius: 8; -fx-border-radius: 8; "
+                + "-fx-background-color: rgba(128,128,128,0.06); -fx-border-color: rgba(128,128,128,0.35);");
+        if (sub != null) {
+            Label s = new Label(sub);
+            s.getStyleClass().add("text-muted");
+            s.setStyle("-fx-font-size: 10px;");
+            card.getChildren().add(s);
+        }
+        if (progress != null) {
+            javafx.scene.control.ProgressBar pb = new javafx.scene.control.ProgressBar(progress);
+            pb.setPrefHeight(5);
+            pb.setMaxWidth(Double.MAX_VALUE);
+            card.getChildren().add(pb);
+        }
+        if (extra != null) {
+            for (String line : extra) {
+                Label e = new Label(line);
+                e.getStyleClass().add("text-muted");
+                e.setStyle("-fx-font-size: 10px;");
+                card.getChildren().add(e);
+            }
+        }
+        return card;
     }
 
     private void buildTopChart(Results res) {
@@ -1864,7 +2422,7 @@ public class ViewPane extends BorderPane {
         coverageLabel.setText("");
         topChart.getData().clear();
         cutoffChart.getData().clear();
-        overviewLabel.setText("");
+        statCards.getChildren().clear();
     }
 
     // ---- parse pepmap detail -----------------------------------------------
@@ -1908,6 +2466,42 @@ public class ViewPane extends BorderPane {
     /** Strip non-letters and upper-case — the same normalization pepmap applies to its input. */
     private static String bare(String s) {
         return Peptides.bare(s);
+    }
+
+    private static boolean isIL(char c) {
+        return c == 'I' || c == 'L';
+    }
+
+    /**
+     * Classify every position where the de novo peptide differs from the {@code peptideOnProtein}
+     * substring it matched. I/L (when {@code i2l}) and X are flagged as equivalences, not substitutions.
+     */
+    static List<Mismatch> mismatchesOf(MapRow r, boolean i2l) {
+        String q = bare(r.peptide());
+        String p = r.peptideOnProtein() == null ? "" : r.peptideOnProtein().trim().toUpperCase(Locale.ROOT);
+        List<Mismatch> out = new ArrayList<>();
+        int n = Math.min(q.length(), p.length());
+        for (int i = 0; i < n; i++) {
+            char a = q.charAt(i);
+            char b = p.charAt(i);
+            if (a == b) {
+                continue;
+            }
+            boolean equiv = (i2l && isIL(a) && isIL(b)) || a == 'X' || b == 'X';
+            out.add(new Mismatch(i + 1, a, b, equiv));
+        }
+        return out;
+    }
+
+    /** Number of true substitutions (excludes I/L and X equivalences) between a peptide and its match. */
+    static int substitutions(MapRow r, boolean i2l) {
+        int c = 0;
+        for (Mismatch m : mismatchesOf(r, i2l)) {
+            if (!m.equivalence()) {
+                c++;
+            }
+        }
+        return c;
     }
 
     private static int parseIntSafe(String s) {

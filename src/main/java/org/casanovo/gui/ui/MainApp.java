@@ -285,6 +285,18 @@ public class MainApp extends Application {
         return new MenuBar(fileMenu, buildViewMenu(), helpMenu);
     }
 
+    /** Dialog to export the whole CasanovoGUI window as a high-resolution framed PNG at a chosen DPI. The
+        scene's vector content re-renders at scale×, so it's crisp regardless of display DPI. */
+    private void showExportDialog() {
+        ImageExport.promptExportOptions(stage, java.util.List.of()).ifPresent(opts -> {
+            javafx.scene.Node root = stage.getScene().getRoot();
+            ImageExport.exportFramed(stage, java.util.List.of(root), "casanovo-gui.png", opts,
+                    () -> statusLabel.setVisible(false), // keep the status-bar text out of the image
+                    () -> statusLabel.setVisible(true),
+                    statusLabel::setText);
+        });
+    }
+
     private Menu buildViewMenu() {
         Menu viewMenu = new Menu("View");
         Menu themeMenu = new Menu("Theme");
@@ -323,6 +335,10 @@ public class MainApp extends Application {
             updateAnimation();
         });
         viewMenu.getItems().add(animationItem);
+
+        MenuItem exportItem = new MenuItem("Export window image");
+        exportItem.setOnAction(e -> showExportDialog());
+        viewMenu.getItems().addAll(new javafx.scene.control.SeparatorMenuItem(), exportItem);
         return viewMenu;
     }
 

@@ -2,17 +2,32 @@ package org.casanovo.gui.ui;
 
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.Scene;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.ScrollPane;
+import javafx.scene.control.SplitPane;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
+import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.Text;
+import javafx.scene.text.TextFlow;
 import javafx.stage.Stage;
 import javafx.stage.Window;
 
 import org.casanovo.gui.core.MzTabScores;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -28,9 +43,28 @@ public final class AaScorePopup {
     private static Stage stage;
     private static AaScoreChart chart;
     private static TableView<MzTabScores.PsmRow> table;
+    private static VBox alignmentBox; // protein-match alignment(s) for the peptide (mismatches highlighted)
+    private static ScrollPane alignmentScroll; // scrolls the alignment when a peptide hits many proteins
+    private static SplitPane psmSplit; // draggable PSM-table / protein-mapping divider
+    private static boolean psmDividerInit; // set the 55/45 divider once (preserve later drags)
     private static Label pdvHint; // shown only while PDV is active (visibility set per show())
     private static String currentPeptide = "";
     private static java.util.function.Consumer<MzTabScores.PsmRow> onRowActivate; // double-click a row -> drive PDV
+    private static VBox tableBox; // PSM-table panel (psmSplit's first item) — a field so export can snapshot it
+    private static Label exportStatus; // toolbar status line ("Saved …")
+
+    private static final Font ALIGN_FONT = Font.font("Monospaced", 13);
+    private static final Color SUB_COLOR = Color.web("#C0392B");   // a true substitution
+    private static final Color EQUIV_COLOR = Color.web("#2C6FBB"); // an I/L or X equivalence
+    private static final Color MATCH_COLOR = Color.web("#888888"); // an exact-match residue
+
+    /**
+     * One distinct protein substring the peptide matched, for the alignment panel. {@code cls[i]}
+     * classifies residue i of {@code onProtein}: 0 = match, 1 = substitution, 2 = I/L-or-X equivalence.
+     * {@code proteins} lists the proteins sharing this substring; {@code substitutions} counts the 1s.
+     */
+    public record ProteinMatch(String onProtein, int[] cls, List<String> proteins, int substitutions) {
+    }
 
     private AaScorePopup() {
     }
@@ -40,10 +74,12 @@ public final class AaScorePopup {
      * {@code rows} are its PSM rows (already sorted best-first). {@code onDoubleClick} (nullable) is
      * invoked with the row the user double-clicks — used to drive an open PDV to that PSM's spectrum.
      * {@code pdvActive} shows a hint about navigating PSMs into PDV (only meaningful when PDV is on).
+     * {@code proteinMatches} (nullable/empty) renders an alignment panel of the peptide against each
+     * distinct protein substring it mapped to, highlighting mismatches.
      */
     public static void show(Window owner, String peptide, List<String> columns, List<MzTabScores.PsmRow> rows,
                             Set<String> emptyColumns, java.util.function.Consumer<MzTabScores.PsmRow> onDoubleClick,
-                            boolean pdvActive) {
+                            boolean pdvActive, List<ProteinMatch> proteinMatches, boolean i2l) {
         if (stage == null) {
             build(owner);
         }
@@ -51,11 +87,12 @@ public final class AaScorePopup {
         pdvHint.setVisible(pdvActive);
         pdvHint.setManaged(pdvActive);
         currentPeptide = peptide;
+        exportStatus.setText(""); // clear any stale "Saved …" message from a previously shown peptide
+        renderAlignment(peptide, proteinMatches, i2l);
         rebuildColumns(columns, emptyColumns, rows);
         table.getItems().setAll(rows);
         TableUtils.autoSizeColumns(table, 60); // fit columns to header + content, capped at 60 chars
-        stage.setTitle("Per-residue confidence — " + peptide
-                + "  (" + rows.size() + " PSM" + (rows.size() == 1 ? "" : "s") + ")");
+        stage.setTitle("PSM: " + peptide + " (" + rows.size() + ")");
         if (stage.isShowing()) {
             stage.toFront();
         } else {
@@ -72,8 +109,74 @@ public final class AaScorePopup {
             javafx.application.Platform.runLater(() -> {
                 table.getSelectionModel().clearAndSelect(0);
                 table.scrollTo(0);
+                // A first-open divider change relays out the taller table; pin row 0 back to the top after it.
+                javafx.application.Platform.runLater(() -> table.scrollTo(0));
             });
         }
+    }
+
+    /** Populate the protein-mapping panel: the peptide aligned against every matched protein. */
+    private static void renderAlignment(String peptide, List<ProteinMatch> matches, boolean i2l) {
+        alignmentBox.getChildren().clear();
+        if (matches == null || matches.isEmpty()) {
+            Label none = new Label("No protein mapping for this peptide.");
+            none.setStyle("-fx-font-size: 11px; -fx-opacity: 0.6;");
+            alignmentBox.getChildren().add(none);
+            return;
+        }
+        int proteinCount = matches.stream().mapToInt(m -> m.proteins().size()).sum();
+        Label title = new Label("Protein mapping — " + proteinCount + " protein" + (proteinCount == 1 ? "" : "s")
+                + "  ·  red = substitution, blue = " + (i2l ? "I/L or X" : "X"));
+        title.setStyle("-fx-font-weight: bold; -fx-padding: 2 0 2 0;");
+        alignmentBox.getChildren().add(title);
+        for (ProteinMatch m : matches) {
+            String summary = m.substitutions() == 0
+                    ? (hasEquiv(m) ? "exact (" + (i2l ? "I/L or X" : "X") + " only)" : "exact")
+                    : m.substitutions() + " substitution" + (m.substitutions() == 1 ? "" : "s");
+            Label head = new Label(String.join(", ", m.proteins()) + "  (" + summary + ")");
+            head.setStyle("-fx-font-size: 11px; -fx-opacity: 0.75;");
+            head.setWrapText(true);
+            alignmentBox.getChildren().add(head);
+            if (anyDiff(m)) {
+                alignmentBox.getChildren().add(alignRow("de novo", peptide, m.cls()));
+                alignmentBox.getChildren().add(alignRow("protein", m.onProtein(), m.cls()));
+            }
+        }
+    }
+
+    private static boolean anyDiff(ProteinMatch m) {
+        for (int c : m.cls()) {
+            if (c != 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasEquiv(ProteinMatch m) {
+        for (int c : m.cls()) {
+            if (c == 2) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** One monospaced alignment row: each residue colored by its class (0 match, 1 sub, 2 equivalence). */
+    private static TextFlow alignRow(String label, String seq, int[] cls) {
+        TextFlow tf = new TextFlow();
+        Text lab = new Text(String.format("%-9s", label));
+        lab.setFont(ALIGN_FONT);
+        lab.setFill(MATCH_COLOR);
+        tf.getChildren().add(lab);
+        for (int i = 0; i < seq.length(); i++) {
+            Text t = new Text(seq.charAt(i) + " ");
+            t.setFont(ALIGN_FONT);
+            int c = i < cls.length ? cls[i] : 0;
+            t.setFill(c == 1 ? SUB_COLOR : c == 2 ? EQUIV_COLOR : MATCH_COLOR);
+            tf.getChildren().add(t);
+        }
+        return tf;
     }
 
     private static void build(Window owner) {
@@ -116,22 +219,66 @@ public final class AaScorePopup {
         pdvHint = new Label("ⓘ Select a row, single-click it, or use ↑/↓ to navigate PSMs and show the "
                 + "selected PSM's annotated spectrum in PDV.");
         pdvHint.setStyle("-fx-font-size: 11px; -fx-opacity: 0.6;");
-        VBox tableBox = new VBox(4, tableTitle, pdvHint, table);
+        // 55/45 split with the mapping (below); the table can still be dragged down to a 5-row minimum.
+        table.setMinHeight(5 * 26 + 40);
+        tableBox = new VBox(4, tableTitle, pdvHint, table);
         tableBox.setPadding(new Insets(2, 10, 10, 10));
         tableBox.getStyleClass().add("result-tabs"); // compact column headers via settings.css
         VBox.setVgrow(table, Priority.ALWAYS);
 
-        VBox root = new VBox(chart, tableBox);
+        // Protein mapping, below the PSM table; scrolls when a peptide hits many proteins.
+        alignmentBox = new VBox(2);
+        alignmentBox.setPadding(new Insets(4, 10, 8, 10));
+        alignmentScroll = new ScrollPane(alignmentBox);
+        alignmentScroll.setFitToWidth(true);
+        alignmentScroll.setMinHeight(60);
+        alignmentScroll.setPrefHeight(180);
+        alignmentScroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
+
+        // Draggable split between the PSM table and the protein mapping. The table keeps its 10-row
+        // preferred height (the mapping takes the rest) until the user drags the divider.
+        psmSplit = new SplitPane(tableBox, alignmentScroll);
+        psmSplit.setOrientation(javafx.geometry.Orientation.VERTICAL);
+        // 55/45 split (PSM table : protein mapping). Set once the split has a real height (during the
+        // first layout, before the row-selection scrollTo) so it doesn't fight scrollTo(0).
+        psmSplit.heightProperty().addListener((obs, oldH, newH) -> {
+            if (!psmDividerInit && newH.doubleValue() > 100) {
+                psmSplit.setDividerPositions(0.55);
+                psmDividerInit = true;
+            }
+        });
+
+        Button exportBtn = new Button("Export image");
+        exportBtn.setTooltip(new Tooltip(
+                "Save the per-residue chart, PSM table, and protein alignment as a high-resolution PNG (Ctrl+S)"));
+        exportBtn.setOnAction(e -> exportImage());
+        exportStatus = new Label();
+        exportStatus.setStyle("-fx-font-size: 11px; -fx-opacity: 0.7;");
+        HBox toolbar = new HBox(8, exportBtn, exportStatus);
+        toolbar.setAlignment(Pos.CENTER_LEFT);
+        toolbar.setPadding(new Insets(6, 8, 6, 8));
+
+        VBox content = new VBox(chart, psmSplit); // the figure area below the toolbar
+        VBox.setVgrow(psmSplit, Priority.ALWAYS);
+        VBox root = new VBox(toolbar, content);
+        VBox.setVgrow(content, Priority.ALWAYS);
         // Match the main window's base font (set on its root in MainApp) so the PSM table renders
         // identically to the View tab's tables; a separate popup Stage otherwise falls back to the
         // AtlantaFX default (System 14px) instead of the app's Segoe UI 13px. The chart sets its own
         // Arial font, so it is unaffected.
         root.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif; -fx-font-size: 13px;");
-        VBox.setVgrow(tableBox, Priority.ALWAYS);
 
         stage = new Stage();
+        // Deliberately NOT initOwner(owner): an owned window's minimize button is disabled on Windows,
+        // and this PSM window should be independently minimizable. Instead, close it when the main window
+        // closes so it doesn't outlive the app. (Minimizing the main window keeps showing == true, so the
+        // PSM window stays open in that case.)
         if (owner != null) {
-            stage.initOwner(owner);
+            owner.showingProperty().addListener((o, was, showing) -> {
+                if (!showing && stage != null) {
+                    stage.close();
+                }
+            });
         }
         try (java.io.InputStream icon = AaScorePopup.class.getResourceAsStream("/org/casanovo/gui/icon.png")) {
             if (icon != null) {
@@ -140,12 +287,42 @@ public final class AaScorePopup {
         } catch (java.io.IOException ignored) {
             // no icon is fine
         }
-        Scene scene = new Scene(root, 940, 620); // ~10 compact rows visible by default
+        // Default 820 (chart + 10-row PSM table + protein mapping), but never taller than the monitor
+        // (visual bounds exclude the taskbar; subtract a little for the title bar).
+        double screenH = javafx.stage.Screen.getPrimary().getVisualBounds().getHeight();
+        Scene scene = new Scene(root, 940, Math.min(820, screenH - 40));
+        scene.getAccelerators().put(
+                new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN), AaScorePopup::exportImage);
         java.net.URL css = AaScorePopup.class.getResource("/org/casanovo/gui/settings.css");
         if (css != null) {
             scene.getStylesheets().add(css.toExternalForm());
         }
         stage.setScene(scene);
+        stage.setMaxHeight(screenH); // the user can't drag it taller than the monitor either
+    }
+
+    /** Export the selected panels (per-residue chart, PSM table, protein mapping) of the PSM window as a
+        high-resolution framed PNG. Each selected panel is snapshotted at its own size and stacked, so a
+        subset isn't padded with empty space, and matches the on-screen panels (only the toolbar, not a
+        panel, is excluded). */
+    private static void exportImage() {
+        ImageExport.promptExportOptions(stage, List.of("Per-residue chart", "PSM table", "Protein mapping"))
+                .ifPresent(opts -> {
+            boolean[] sel = opts.components();
+            List<Node> panels = new ArrayList<>();
+            if (sel[0]) {
+                panels.add(chart);
+            }
+            if (sel[1]) {
+                panels.add(tableBox);
+            }
+            if (sel[2]) {
+                panels.add(alignmentScroll); // the scroll viewport — export what's currently visible
+            }
+            String base = currentPeptide.replaceAll("[^A-Za-z0-9._-]", "_");
+            String name = (base.isEmpty() ? "peptide" : base) + "-psms.png";
+            ImageExport.exportFramed(stage, panels, name, opts, null, null, exportStatus::setText);
+        });
     }
 
     private static void rebuildColumns(List<String> columns, Set<String> emptyColumns,

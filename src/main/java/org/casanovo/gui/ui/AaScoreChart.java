@@ -3,10 +3,12 @@ package org.casanovo.gui.ui;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.geometry.VPos;
+import javafx.scene.SnapshotParameters;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.image.WritableImage;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
@@ -25,7 +27,7 @@ import java.util.Locale;
  * plus a gradient legend and a hover readout. Everything is drawn on a single {@link Canvas}, so it
  * stays fast for long peptides. Pass data with {@link #setData}; standalone and panel-agnostic.
  */
-public class AaScoreChart extends BorderPane {
+public class AaScoreChart extends BorderPane implements ImageExport.HiResExportable {
 
     private static final double CELL_W = 30;
     private static final double LETTER_H = 28;
@@ -39,6 +41,8 @@ public class AaScoreChart extends BorderPane {
     private final Label title = new Label();
     private final Label subtitle = new Label();
     private final Label hover = new Label(" ");
+    private VBox head;   // title row — snapshotted (vector) for high-res export
+    private HBox legend; // color-scale legend — snapshotted (vector) for high-res export
 
     private String sequence = "";
     private double[] scores = new double[0];
@@ -51,7 +55,7 @@ public class AaScoreChart extends BorderPane {
         subtitle.setStyle("-fx-font-size: 11px; -fx-opacity: 0.8;");
         subtitle.setVisible(false);
         subtitle.setManaged(false);
-        VBox head = new VBox(2, title, subtitle);
+        head = new VBox(2, title, subtitle);
         head.setAlignment(Pos.CENTER);
         head.setPadding(new Insets(0, 0, 2, 0));
         setTop(head);
@@ -75,7 +79,7 @@ public class AaScoreChart extends BorderPane {
                 + "hsb(0,70%,90%), hsb(60,70%,90%), hsb(120,70%,90%)); -fx-background-radius: 2;");
         Label lowLabel = new Label("low");
         Label highLabel = new Label("high");
-        HBox legend = new HBox(6, lowLabel, grad, highLabel);
+        legend = new HBox(6, lowLabel, grad, highLabel);
         legend.setAlignment(Pos.CENTER);
 
         hover.setStyle("-fx-font-family: 'Arial';");
@@ -128,6 +132,12 @@ public class AaScoreChart extends BorderPane {
     private void draw() {
         GraphicsContext g = canvas.getGraphicsContext2D();
         g.clearRect(0, 0, canvas.getWidth(), canvas.getHeight());
+        paint(g);
+    }
+
+    /** Draw the chart graphics (residue circles, score bars, axes) onto {@code g}, which the caller has
+        sized/cleared. Uses only logical coordinates, so a pre-scaled {@code g} renders it at high res. */
+    private void paint(GraphicsContext g) {
         int n = residues();
         double left = AXIS_W + PAD;
         double letterTop = PAD;
@@ -198,6 +208,40 @@ public class AaScoreChart extends BorderPane {
         double s = scores[i];
         hover.setText(String.format(Locale.US, "residue %d:  %c  =  %s",
                 i + 1, sequence.charAt(i), Double.isNaN(s) ? "—" : String.format(Locale.US, "%.4f", s)));
+    }
+
+    /** High-resolution render for export: the title and legend are vector (snapshotted crisp at {@code
+        scale}), while the canvas is raster, so it's redrawn at {@code scale} onto a larger canvas. The
+        three are composed, centered, into one image — so a 300-DPI export of the chart isn't blurry. */
+    @Override
+    public WritableImage renderHiRes(double scale, Color fill) {
+        WritableImage headImg = ImageExport.snapshotScaled(head, scale, fill);
+        WritableImage legendImg = ImageExport.snapshotScaled(legend, scale, fill);
+
+        Canvas hi = new Canvas(canvas.getWidth() * scale, canvas.getHeight() * scale);
+        GraphicsContext g = hi.getGraphicsContext2D();
+        g.scale(scale, scale);
+        paint(g);
+        SnapshotParameters transparent = new SnapshotParameters();
+        transparent.setFill(Color.TRANSPARENT);
+        WritableImage canvasImg = hi.snapshot(transparent, null);
+
+        double gap = 6 * scale;
+        double w = Math.max(headImg.getWidth(), Math.max(canvasImg.getWidth(), legendImg.getWidth()));
+        double h = headImg.getHeight() + gap + canvasImg.getHeight() + gap + legendImg.getHeight();
+        Canvas comp = new Canvas(w, h);
+        GraphicsContext cg = comp.getGraphicsContext2D();
+        if (fill != null) {
+            cg.setFill(fill);
+            cg.fillRect(0, 0, w, h);
+        }
+        double y = 0;
+        cg.drawImage(headImg, (w - headImg.getWidth()) / 2, y);
+        y += headImg.getHeight() + gap;
+        cg.drawImage(canvasImg, (w - canvasImg.getWidth()) / 2, y);
+        y += canvasImg.getHeight() + gap;
+        cg.drawImage(legendImg, (w - legendImg.getWidth()) / 2, y);
+        return comp.snapshot(transparent, null);
     }
 
     private static Color colorFor(double s) {

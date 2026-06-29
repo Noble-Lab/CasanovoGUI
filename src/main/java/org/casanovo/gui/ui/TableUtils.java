@@ -16,6 +16,7 @@ import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
 import javafx.scene.text.Text;
 
 import java.util.HashMap;
@@ -41,7 +42,8 @@ public final class TableUtils {
     public static final String NO_CAP = "tableutils.noCap";
 
     private static final double FUDGE = 1.15;     // Font.font(13) probe underestimates the cell render font
-    private static final double HEADER_PAD = 30;  // header text + sort arrow + cell insets
+    private static final double HEADER_PAD = 30;  // sorted header: text + sort arrow + cell insets
+    private static final double HEADER_PAD_TIGHT = 14; // unsorted header: text + insets only (no arrow shown)
     private static final double CELL_PAD = 16;    // cell insets
     private static final double MIN_W = 40;       // never narrower than this
 
@@ -59,15 +61,18 @@ public final class TableUtils {
     public static <S> void autoSizeColumns(TableView<S> table, int capChars) {
         Text probe = new Text();
         probe.setFont(Font.font(13)); // ~the table cell font, for a quick width estimate
+        Text headerProbe = new Text();
+        headerProbe.setFont(Font.font(null, FontWeight.BOLD, 13)); // column headers render bold — measure bold
         for (TableColumn<S, ?> col : table.getColumns()) {
-            autoSizeLeaf(table, col, probe, capChars);
+            autoSizeLeaf(table, col, probe, headerProbe, capChars);
         }
     }
 
-    private static <S> void autoSizeLeaf(TableView<S> table, TableColumn<S, ?> col, Text probe, int cap) {
+    private static <S> void autoSizeLeaf(TableView<S> table, TableColumn<S, ?> col, Text probe, Text headerProbe,
+                                         int cap) {
         if (!col.getColumns().isEmpty()) { // grouped column: size its leaves (its own width is their sum)
             for (TableColumn<S, ?> sub : col.getColumns()) {
-                autoSizeLeaf(table, sub, probe, cap);
+                autoSizeLeaf(table, sub, probe, headerProbe, cap);
             }
             return;
         }
@@ -76,7 +81,12 @@ public final class TableUtils {
         if ((header == null || header.isEmpty()) && col.getGraphic() instanceof Labeled lbl) {
             header = lbl.getText(); // headerTip moves the title into a header-graphic Label
         }
-        double w = textWidth(probe, clip(header, colCap)) + HEADER_PAD;
+        // Measure the header with the BOLD probe (headers render bold). Reserve sort-arrow room only on a
+        // SORTED column (the arrow shows only when sorted), so unsorted columns hug their header and stay
+        // tight. A plain probe / always-on arrow padding left them too narrow or too wide. Callers re-run
+        // this on sort-order changes so a freshly-sorted column grows to fit its arrow.
+        double headerPad = table.getSortOrder().contains(col) ? HEADER_PAD : HEADER_PAD_TIGHT;
+        double w = textWidth(headerProbe, clip(header, colCap)) + headerPad;
         Object fn = col.getProperties().get(DISPLAY_TEXT);
         for (S item : table.getItems()) {
             String s;
@@ -108,6 +118,21 @@ public final class TableUtils {
     public static void enableCellCopy(TableView<?> table) {
         table.getSelectionModel().setCellSelectionEnabled(true);
         table.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
+
+        // Sorting while a cell selection is active trips a JavaFX bug (IndexOutOfBoundsException in
+        // ControlUtils.updateSelectedIndices, via fireCustomSelectedCellsListChangeEvent). Clear the
+        // selection on a column-header press — captured before the click reaches the header's sort
+        // handler — so there are no selected cells to remap during the sort.
+        table.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, e -> {
+            if (e.getTarget() instanceof javafx.scene.Node node) {
+                for (javafx.scene.Node n = node; n != null; n = n.getParent()) {
+                    if (n instanceof javafx.scene.control.skin.TableColumnHeader) {
+                        table.getSelectionModel().clearSelection();
+                        break;
+                    }
+                }
+            }
+        });
 
         table.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
             if (COPY.match(e)) {

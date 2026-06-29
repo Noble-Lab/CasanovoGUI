@@ -27,6 +27,11 @@
 .result-tabs .table-view .column-header .label {
     -fx-padding: 0 5px 0 5px;
 }
+/* Visually smaller sort arrow. Scale only — overriding its -fx-shape makes the arrow disappear. */
+.result-tabs .table-view .column-header .arrow {
+    -fx-scale-x: 0.72;
+    -fx-scale-y: 0.72;
+}
 
 /* Overview plots: slightly smaller chart titles. */
 .result-tabs .chart-title {
