@@ -49,6 +49,7 @@ public final class AaScorePopup {
     private static boolean psmDividerInit; // set the 55/45 divider once (preserve later drags)
     private static Label pdvHint; // shown only while PDV is active (visibility set per show())
     private static String currentPeptide = "";
+    private static boolean hasMapping; // false for unmapped peptides → hide the protein-mapping panel
     private static java.util.function.Consumer<MzTabScores.PsmRow> onRowActivate; // double-click a row -> drive PDV
     private static VBox tableBox; // PSM-table panel (psmSplit's first item) — a field so export can snapshot it
     private static Label exportStatus; // toolbar status line ("Saved …")
@@ -89,6 +90,16 @@ public final class AaScorePopup {
         currentPeptide = peptide;
         exportStatus.setText(""); // clear any stale "Saved …" message from a previously shown peptide
         renderAlignment(peptide, proteinMatches, i2l);
+        // Unmapped peptides have no protein mapping — hide that panel (and its divider) instead of showing
+        // an empty "No protein mapping" placeholder; restore it for mapped peptides.
+        hasMapping = proteinMatches != null && !proteinMatches.isEmpty();
+        boolean mappingShown = psmSplit.getItems().contains(alignmentScroll);
+        if (hasMapping && !mappingShown) {
+            psmSplit.getItems().setAll(tableBox, alignmentScroll);
+            javafx.application.Platform.runLater(() -> psmSplit.setDividerPositions(0.55));
+        } else if (!hasMapping && mappingShown) {
+            psmSplit.getItems().setAll(tableBox);
+        }
         rebuildColumns(columns, emptyColumns, rows);
         table.getItems().setAll(rows);
         TableUtils.autoSizeColumns(table, 60); // fit columns to header + content, capped at 60 chars
@@ -306,8 +317,11 @@ public final class AaScorePopup {
         subset isn't padded with empty space, and matches the on-screen panels (only the toolbar, not a
         panel, is excluded). */
     private static void exportImage() {
-        ImageExport.promptExportOptions(stage, List.of("Per-residue chart", "PSM table", "Protein mapping"))
-                .ifPresent(opts -> {
+        List<String> labels = new ArrayList<>(List.of("Per-residue chart", "PSM table"));
+        if (hasMapping) {
+            labels.add("Protein mapping");
+        }
+        ImageExport.promptExportOptions(stage, labels).ifPresent(opts -> {
             boolean[] sel = opts.components();
             List<Node> panels = new ArrayList<>();
             if (sel[0]) {
@@ -316,7 +330,7 @@ public final class AaScorePopup {
             if (sel[1]) {
                 panels.add(tableBox);
             }
-            if (sel[2]) {
+            if (sel.length > 2 && sel[2]) {
                 panels.add(alignmentScroll); // the scroll viewport — export what's currently visible
             }
             String base = currentPeptide.replaceAll("[^A-Za-z0-9._-]", "_");
