@@ -31,7 +31,7 @@ public abstract class CommandPane {
 
     /**
      * The spectrum input file(s) for panes that produce a viewable mzTab result
-     * (sequence / db-search / evaluate). Empty by default. This lets the GUI load the
+     * (sequence, sequence --evaluate, db-search). Empty by default. This lets the GUI load the
      * result straight into PDV after a run, without re-selecting the input files.
      */
     public java.util.List<java.io.File> resultSpectra() {

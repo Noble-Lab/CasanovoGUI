@@ -14,7 +14,8 @@ import java.util.List;
  * {@code casanovo sequence --evaluate} against annotated spectra.
  *
  * <p>Input must be an annotated MGF where the peptide is in the {@code SEQ}
- * field. Casanovo requires {@code top_match: 1} when evaluating.</p>
+ * field. Evaluation metrics are undefined when {@code top_match > 1}, so the
+ * default {@code top_match: 1} is recommended.</p>
  */
 public class EvalPane extends CommandPane {
 
@@ -27,7 +28,8 @@ public class EvalPane extends CommandPane {
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Annotated spectra:", peakField.node(), peakField.browseButton())
                 .addNote("Required. Annotated MGF file(s) with peptide sequences in the SEQ field. "
-                        + "Requires top_match: 1 in the parameters.");
+                        + "top_match: 1 (the default) is recommended; evaluation metrics are "
+                        + "undefined when top_match > 1.");
         options.addToForm(owner, form);
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);
