@@ -21,11 +21,12 @@ public class SequencePane extends CommandPane {
 
     public SequencePane(Window owner) {
         peakField = new MultiFileField(owner, "MS/MS files",
-                "MS/MS spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf");
+                "MS/MS spectra (*.mzML, *.mzXML, *.mgf, *.raw)", "*.mzML", "*.mzXML", "*.mgf", "*.raw");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
-                .addNote("Required. One or more mzML / mzXML / MGF files. Select multiple in the "
-                        + "browser, or separate paths with '" + File.pathSeparator + "'.");
+                .addNote("Required. One or more mzML/mzXML/MGF/raw files. "
+                        + "Select multiple in the browser, or separate paths with '"
+                        + File.pathSeparator + "'.");
         options.addToForm(owner, form);
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);

@@ -24,11 +24,11 @@ public class DbSearchPane extends CommandPane {
 
     public DbSearchPane(Window owner) {
         peakField = new MultiFileField(owner, "MS/MS files",
-                "MS/MS spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf");
+                "MS/MS spectra (*.mzML, *.mzXML, *.mgf, *.raw)", "*.mzML", "*.mzXML", "*.mgf", "*.raw");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
-                .addNote("Required. mzML / mzXML / MGF. Select multiple in the browser, or separate "
-                        + "paths with '" + File.pathSeparator + "'.");
+                .addNote("Required. mzML/mzXML/MGF/raw files. Select multiple in the "
+                        + "browser, or separate paths with '" + File.pathSeparator + "'.");
         form.addRow("Protein database (FASTA):", fastaField,
                         FxUtils.fileButton(owner, fastaField, false,
                                 "FASTA (*.fasta, *.fa)", "*.fasta", "*.fa", "*.gz"))

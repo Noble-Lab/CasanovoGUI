@@ -73,6 +73,10 @@ public final class UpdateChecker {
             "https://api.github.com/repos/wenbostar/PDV/releases/latest";
     private static final String PEPMAP_GH_RELEASES_API =
             "https://api.github.com/repos/wenbostar/pepmap/releases/latest";
+    private static final String RAWPARSER_RELEASES_PAGE =
+            "https://github.com/compomics/ThermoRawFileParser/releases";
+    private static final String RAWPARSER_GH_RELEASES_API =
+            "https://api.github.com/repos/compomics/ThermoRawFileParser/releases/latest";
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
@@ -91,13 +95,14 @@ public final class UpdateChecker {
     private static final String KEY_SKIPPED_CASA   = "skippedCasanovoVersion";
     private static final String KEY_SKIPPED_PDV    = "skippedPdvVersion";
     private static final String KEY_SKIPPED_PEPMAP = "skippedPepmapVersion";
+    private static final String KEY_SKIPPED_RAWPARSER = "skippedRawParserVersion";
 
     private UpdateChecker() {}
 
     // ---- model -------------------------------------------------------------
 
     /** Which product an {@link UpdateInfo} describes. */
-    public enum Target { GUI, CASANOVO, PDV, PEPMAP }
+    public enum Target { GUI, CASANOVO, PDV, PEPMAP, RAWPARSER }
 
     /** Outcome for a single product: current vs latest, and whether newer exists. */
     public static final class UpdateInfo {
@@ -379,6 +384,9 @@ public final class UpdateChecker {
         addJarTarget(infos, Target.PEPMAP, "pepmap", settings.getPepmapJar(),
                 PepMapLauncher::latestUsableVersion, PepMapLauncher::installedVersion,
                 PepMapLauncher::versionOfJarPath, PEPMAP_RELEASES_PAGE, PEPMAP_GH_RELEASES_API);
+        addJarTarget(infos, Target.RAWPARSER, "ThermoRawFileParser", settings.getRawParserPath(),
+                RawFileParserLauncher::latestUsableVersion, RawFileParserLauncher::installedVersion,
+                RawFileParserLauncher::versionOfExePath, RAWPARSER_RELEASES_PAGE, RAWPARSER_GH_RELEASES_API);
 
         return new CheckOutcome(infos, networkError);
     }
@@ -512,6 +520,7 @@ public final class UpdateChecker {
             case GUI:    return KEY_SKIPPED_GUI;
             case PDV:    return KEY_SKIPPED_PDV;
             case PEPMAP: return KEY_SKIPPED_PEPMAP;
+            case RAWPARSER: return KEY_SKIPPED_RAWPARSER;
             case CASANOVO:
             default:     return KEY_SKIPPED_CASA;
         }

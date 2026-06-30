@@ -18,6 +18,7 @@ import javafx.scene.layout.Region;
 import javafx.stage.Window;
 import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.PepMapLauncher;
+import org.casanovo.gui.core.RawFileParserLauncher;
 import org.casanovo.gui.core.Settings;
 import org.casanovo.gui.core.UpdateChecker;
 
@@ -41,6 +42,7 @@ public class SettingsDialog {
     private final TextField condaEnvField = FxUtils.wideField();
     private final TextField pdvField = FxUtils.wideField();
     private final TextField pepmapField = FxUtils.wideField();
+    private final TextField rawParserField = FxUtils.wideField();
     private HBox execRow; // Casanovo executable + Browse + Install; grayed out under Conda
 
     private final Label pdvStatusLabel = new Label();
@@ -52,6 +54,11 @@ public class SettingsDialog {
     private final Button pepmapUpgradeButton = new Button();
     private final ProgressBar pepmapProgressBar = new ProgressBar();
     private String pepmapTargetVersion;
+
+    private final Label rawParserStatusLabel = new Label();
+    private final Button rawParserUpgradeButton = new Button();
+    private final ProgressBar rawParserProgressBar = new ProgressBar();
+    private String rawParserTargetVersion;
 
     public SettingsDialog(Window owner, Settings settings, Runnable onInstall) {
         this.owner = owner;
@@ -67,6 +74,7 @@ public class SettingsDialog {
         condaEnvField.setText(settings.getCondaEnv());
         pdvField.setText(settings.getPdvJar());
         pepmapField.setText(settings.getPepmapJar());
+        rawParserField.setText(settings.getRawParserPath());
         useCondaCheck.setOnAction(e -> updateEnabled());
         useCondaCheck.setMinWidth(Region.USE_PREF_SIZE); // never truncate the checkbox label
 
@@ -97,6 +105,11 @@ public class SettingsDialog {
                         browseRow(pepmapField, FxUtils.fileButton(owner, pepmapField, false, "pepmap jar (*.jar)", "*.jar")))
                 .addNote("Path to a pepmap jar for the View tab. Leave blank to auto-download the latest pepmap.")
                 .addFullWidth(buildPepmapStatusRow());
+        form.addRow("ThermoRawFileParser (optional):",
+                        browseRow(rawParserField, FxUtils.fileButton(owner, rawParserField, false, null)))
+                .addNote("Path to a ThermoRawFileParser executable, used to convert Thermo .raw files to "
+                        + "mzML before Sequence/DB Search runs. Leave blank to auto-download the latest release.")
+                .addFullWidth(buildRawParserStatusRow());
         updateEnabled();
 
         Dialog<ButtonType> dialog = new Dialog<>();
@@ -131,6 +144,7 @@ public class SettingsDialog {
 
         checkPdvVersionAsync();
         checkPepmapVersionAsync();
+        checkRawParserVersionAsync();
         ButtonType result = dialog.showAndWait().orElse(ButtonType.CANCEL);
         if (result == saveType) {
             settings.setCasanovoExecutable(executableField.getText().trim());
@@ -139,6 +153,7 @@ public class SettingsDialog {
             settings.setCondaEnv(condaEnvField.getText().trim());
             settings.setPdvJar(pdvField.getText().trim());
             settings.setPepmapJar(pepmapField.getText().trim());
+            settings.setRawParserPath(rawParserField.getText().trim());
             settings.save();
             return true;
         }
@@ -417,6 +432,134 @@ public class SettingsDialog {
     private void hidePepmapUpgrade() {
         pepmapUpgradeButton.setVisible(false);
         pepmapUpgradeButton.setManaged(false);
+    }
+
+    // ---- ThermoRawFileParser version status + one-click download -----------
+
+    private HBox buildRawParserStatusRow() {
+        rawParserStatusLabel.getStyleClass().add("text-muted");
+        rawParserStatusLabel.setStyle("-fx-font-style: italic;");
+        rawParserStatusLabel.setWrapText(true);
+        rawParserStatusLabel.setMaxWidth(Double.MAX_VALUE);
+        rawParserProgressBar.setPrefWidth(140);
+        rawParserProgressBar.setVisible(false);
+        rawParserProgressBar.setManaged(false);
+        rawParserUpgradeButton.setOnAction(e -> upgradeRawParser());
+        hideRawParserUpgrade();
+        HBox row = new HBox(8, rawParserStatusLabel, rawParserProgressBar, rawParserUpgradeButton);
+        row.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(rawParserStatusLabel, Priority.ALWAYS);
+        return row;
+    }
+
+    /** Look up the latest ThermoRawFileParser (off the FX thread) and reflect it in the status row. */
+    private void checkRawParserVersionAsync() {
+        String configuredExe = rawParserField.getText().trim();
+        boolean configured = !configuredExe.isEmpty();
+        rawParserStatusLabel.setText("Checking for the latest ThermoRawFileParser…");
+        Thread t = new Thread(() -> {
+            Optional<String> latest = RawFileParserLauncher.latestUsableVersion();
+            // "Current" = the configured executable's version when one is set, else the cached download.
+            Optional<String> current = configured
+                    ? RawFileParserLauncher.versionOfExePath(configuredExe)
+                    : RawFileParserLauncher.installedVersion();
+            Platform.runLater(() -> applyRawParserStatus(latest, current, configured));
+        }, "rawparser-version-check");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void applyRawParserStatus(Optional<String> latest, Optional<String> current, boolean configured) {
+        if (latest.isEmpty()) {
+            if (configured) {
+                rawParserStatusLabel.setText("Using the configured executable above "
+                        + "(couldn't check for a newer ThermoRawFileParser — offline?).");
+            } else if (current.isPresent()) {
+                rawParserStatusLabel.setText("Using cached ThermoRawFileParser v" + current.get()
+                        + " (could not check for a newer release).");
+            } else {
+                rawParserStatusLabel.setText("Could not check for the latest ThermoRawFileParser (offline?).");
+            }
+            hideRawParserUpgrade();
+            return;
+        }
+        String latestV = latest.get();
+        rawParserTargetVersion = latestV;
+        if (configured) {
+            // A configured executable overrides any download, so report status but never offer auto-download.
+            hideRawParserUpgrade();
+            rawParserStatusLabel.setText("Using the configured executable above (auto-download disabled). "
+                    + "Latest public ThermoRawFileParser: v" + latestV + ".");
+            return;
+        }
+        if (current.isEmpty()) {
+            rawParserStatusLabel.setText("Latest ThermoRawFileParser: v" + latestV
+                    + " — downloaded on first .raw conversion.");
+            showRawParserUpgrade("Download v" + latestV);
+        } else if (UpdateChecker.isNewer(latestV, current.get())) {
+            rawParserStatusLabel.setText("New ThermoRawFileParser available: v" + latestV
+                    + " (you have v" + current.get() + ").");
+            showRawParserUpgrade("Upgrade to v" + latestV);
+        } else {
+            rawParserStatusLabel.setText("ThermoRawFileParser v" + current.get() + " is up to date.");
+            hideRawParserUpgrade();
+        }
+    }
+
+    private void upgradeRawParser() {
+        hideRawParserUpgrade();
+        rawParserProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        rawParserProgressBar.setVisible(true);
+        rawParserProgressBar.setManaged(true);
+        rawParserStatusLabel.setText("Downloading ThermoRawFileParser"
+                + (rawParserTargetVersion == null ? "" : " v" + rawParserTargetVersion) + "…");
+        Thread t = new Thread(() -> {
+            try {
+                java.nio.file.Path exe = RawFileParserLauncher.downloadAndExtract(
+                        msg -> {
+                            if (msg != null && msg.startsWith("Extracting")) {
+                                Platform.runLater(() -> {
+                                    rawParserStatusLabel.setText("Extracting ThermoRawFileParser…");
+                                    rawParserProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+                                });
+                            }
+                        },
+                        frac -> Platform.runLater(() -> rawParserProgressBar.setProgress(
+                                frac < 0 ? ProgressBar.INDETERMINATE_PROGRESS : frac)));
+                Optional<String> now = RawFileParserLauncher.installedVersion();
+                Platform.runLater(() -> {
+                    rawParserProgressBar.setVisible(false);
+                    rawParserProgressBar.setManaged(false);
+                    // Show where it landed WITHOUT pinning the field, so auto-download stays on.
+                    rawParserStatusLabel.setText("ThermoRawFileParser v" + now.orElse(rawParserTargetVersion)
+                            + " installed: " + exe);
+                    hideRawParserUpgrade();
+                });
+            } catch (Exception ex) {
+                String m = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> {
+                    rawParserProgressBar.setVisible(false);
+                    rawParserProgressBar.setManaged(false);
+                    rawParserStatusLabel.setText("Download failed: " + m);
+                    showRawParserUpgrade(rawParserTargetVersion == null
+                            ? "Retry download" : "Retry v" + rawParserTargetVersion);
+                });
+            }
+        }, "rawparser-upgrade");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void showRawParserUpgrade(String text) {
+        rawParserUpgradeButton.setText(text);
+        rawParserUpgradeButton.setDisable(false);
+        rawParserUpgradeButton.setVisible(true);
+        rawParserUpgradeButton.setManaged(true);
+    }
+
+    private void hideRawParserUpgrade() {
+        rawParserUpgradeButton.setVisible(false);
+        rawParserUpgradeButton.setManaged(false);
     }
 
     private String validate() {

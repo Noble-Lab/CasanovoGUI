@@ -41,16 +41,24 @@ import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
 import org.casanovo.gui.core.Os;
 import org.casanovo.gui.core.PyVenv;
+import org.casanovo.gui.core.RawFileParserLauncher;
 import org.casanovo.gui.core.Settings;
 import org.casanovo.gui.core.UpdateChecker;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -116,6 +124,12 @@ public class MainApp extends Application {
 
     private volatile boolean installing = false;
     private volatile boolean checkpointErrorSeen = false;
+
+    // Raw-file (.raw -> .mzML) conversion, run before the Casanovo process itself starts.
+    private volatile boolean convertingRaw = false;
+    private volatile Process rawConvertProc;
+    private volatile boolean rawConvertCancelled;
+    private volatile Thread rawConvertThread;
 
     // Inputs + output dir captured at run start, resolved when the run finishes so the
     // produced mzTab can auto-fill the View tab.
@@ -607,7 +621,7 @@ public class MainApp extends Application {
     }
 
     private void onRun() {
-        if (runner.isRunning() || installing) {
+        if (runner.isRunning() || installing || convertingRaw) {
             return;
         }
         CommandPane pane = currentPane();
@@ -662,9 +676,240 @@ public class MainApp extends Application {
         }
         refreshPreview();
 
+        convertRawThenRun(pane, command);
+    }
+
+    /**
+     * Convert any Thermo {@code .raw} input files in {@code command}'s arguments to {@code .mzML}
+     * before starting the run, substituting the converted paths back in. Proceeds immediately
+     * (today's exact behavior/timing) when there are no {@code .raw} inputs.
+     */
+    private void convertRawThenRun(CommandPane pane, CasanovoCommand command) {
+        List<File> rawFiles = new ArrayList<>();
+        for (String a : command.getArguments()) {
+            if (isRawFile(a)) {
+                rawFiles.add(new File(a));
+            }
+        }
+        if (rawFiles.isEmpty()) {
+            proceedWithRun(pane, command, pane.resultSpectra());
+            return;
+        }
+
+        File mzmlDir = new File(resolveOutputDir(command), "mzML");
+        mzmlDir.mkdirs();
+        if (!mzmlDir.isDirectory()) {
+            alert(Alert.AlertType.ERROR, "Cannot run",
+                    "Could not create the mzML output folder:\n" + mzmlDir.getAbsolutePath());
+            return;
+        }
+
+        // Map each source .raw (by absolute path) to a UNIQUE .mzML target. Two selected raws that
+        // share a basename (e.g. a/run.raw and b/run.raw) would otherwise collapse onto one target
+        // and silently overwrite each other, so the colliding ones are disambiguated with a short
+        // hash of their absolute path. The common (no-collision) case keeps a clean <base>.mzML name.
+        Map<String, Long> baseCounts = new HashMap<>();
+        for (File raw : rawFiles) {
+            baseCounts.merge(stripExtension(raw.getName()).toLowerCase(Locale.ROOT), 1L, Long::sum);
+        }
+        Map<String, File> targets = new LinkedHashMap<>(); // raw file's absolute path -> its .mzML target
+        List<File> toConvert = new ArrayList<>();
+        for (File raw : rawFiles) {
+            String base = stripExtension(raw.getName());
+            String fileName = (baseCounts.get(base.toLowerCase(Locale.ROOT)) > 1)
+                    ? base + "_" + Integer.toHexString(raw.getAbsolutePath().hashCode()) + ".mzML"
+                    : base + ".mzML";
+            File target = new File(mzmlDir, fileName);
+            targets.put(raw.getAbsolutePath(), target);
+            if (target.isFile() && target.lastModified() >= raw.lastModified()) {
+                console.appendLine("[raw] Reusing cached mzML for " + raw.getName() + ": " + target.getName());
+            } else {
+                toConvert.add(raw);
+            }
+        }
+
+        // Capture the pane's spectrum list now, on the FX thread — resultSpectra() reads JavaFX
+        // fields, so the background conversion thread must not call it.
+        List<File> originalSpectra = pane.resultSpectra();
+
+        if (toConvert.isEmpty()) {
+            proceedWithRun(pane, substituteRawPaths(command, targets),
+                    substituteRawFiles(originalSpectra, targets));
+            return;
+        }
+
+        rawConvertCancelled = false;
+        convertingRaw = true;
+        updateRunningState(true);
+        progressBar.setVisible(true);
+        progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        statusLabel.setText("Preparing ThermoRawFileParser…");
+
+        Thread t = new Thread(() -> runRawConversion(pane, command, toConvert, targets, originalSpectra),
+                "raw-conversion");
+        t.setDaemon(true);
+        rawConvertThread = t;
+        t.start();
+    }
+
+    /** Background-thread half of {@link #convertRawThenRun}: resolves the converter, then converts each file. */
+    private void runRawConversion(CommandPane pane, CasanovoCommand command, List<File> toConvert,
+                                  Map<String, File> targets, List<File> originalSpectra) {
+        Path exe;
+        try {
+            exe = RawFileParserLauncher.ensureRawFileParser(settings.getRawParserPath(),
+                    msg -> Platform.runLater(() -> {
+                        console.appendLine("[raw] " + msg);
+                        statusLabel.setText(msg);
+                    }));
+        } catch (Exception ex) {
+            // A Stop during the (uninterruptible) download surfaces as an InterruptedException here.
+            if (rawConvertCancelled || ex instanceof InterruptedException) {
+                Platform.runLater(() -> abortRawConversion("Stopped."));
+            } else {
+                String m = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> abortRawConversion("Could not prepare ThermoRawFileParser: " + m));
+            }
+            return;
+        }
+        if (rawConvertCancelled) {
+            Platform.runLater(() -> abortRawConversion("Stopped."));
+            return;
+        }
+
+        for (int i = 0; i < toConvert.size(); i++) {
+            File raw = toConvert.get(i);
+            File target = targets.get(raw.getAbsolutePath());
+            // Convert to a temp .part file and only publish it onto the final target on a clean exit,
+            // so a cancelled/failed conversion can never leave a truncated .mzML the cache would reuse.
+            File part = new File(target.getParentFile(), target.getName() + ".part");
+            int idx = i + 1;
+            int total = toConvert.size();
+            Platform.runLater(() -> statusLabel.setText(
+                    "Converting " + raw.getName() + " to mzML… (" + idx + "/" + total + ")"));
+            boolean published = false;
+            try {
+                part.delete();
+                Process p = RawFileParserLauncher.convertToMzml(exe, raw, part,
+                        msg -> Platform.runLater(() -> console.appendLine("[raw] " + msg)));
+                rawConvertProc = p;
+                try (BufferedReader r = new BufferedReader(
+                        new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        String out = line;
+                        Platform.runLater(() -> console.appendLine("[raw] " + out));
+                    }
+                }
+                int exit = p.waitFor();
+                rawConvertProc = null;
+                if (rawConvertCancelled) {
+                    Platform.runLater(() -> abortRawConversion("Stopped."));
+                    return;
+                }
+                if (exit != 0 || !part.isFile()) {
+                    Platform.runLater(() -> abortRawConversion(
+                            "ThermoRawFileParser failed to convert " + raw.getName() + " (exit " + exit + ")."));
+                    return;
+                }
+                publish(part, target);
+                published = true;
+            } catch (Exception ex) {
+                rawConvertProc = null;
+                String m = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                Platform.runLater(() -> abortRawConversion("Could not convert " + raw.getName() + ": " + m));
+                return;
+            } finally {
+                if (!published) {
+                    part.delete();
+                }
+            }
+        }
+
+        final CasanovoCommand substituted;
+        final List<File> spectra;
+        try {
+            substituted = substituteRawPaths(command, targets);
+            spectra = substituteRawFiles(originalSpectra, targets);
+        } catch (Exception ex) {
+            String m = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+            Platform.runLater(() -> abortRawConversion("Could not finalize converted inputs: " + m));
+            return;
+        }
+        Platform.runLater(() -> {
+            // Stop may have arrived after the last conversion but before this runnable ran.
+            if (rawConvertCancelled) {
+                abortRawConversion("Stopped.");
+                return;
+            }
+            convertingRaw = false;
+            rawConvertThread = null;
+            proceedWithRun(pane, substituted, spectra);
+        });
+    }
+
+    /** Atomically move a finished {@code .part} file onto its final {@code .mzML} target. */
+    private static void publish(File part, File target) throws IOException {
+        try {
+            Files.move(part.toPath(), target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException atomicUnsupported) {
+            Files.move(part.toPath(), target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /** Reset the UI after a failed/cancelled raw conversion; the Casanovo run never starts. */
+    private void abortRawConversion(String message) {
+        convertingRaw = false;
+        rawConvertProc = null;
+        rawConvertThread = null;
+        updateRunningState(false);
+        progressBar.setVisible(false);
+        statusLabel.setText(message);
+        if ("Stopped.".equals(message)) {
+            console.appendLine("[stopped] Raw conversion was cancelled by the user.");
+        } else {
+            console.appendLine("[error] " + message);
+            alert(Alert.AlertType.ERROR, "Raw conversion failed", message);
+        }
+    }
+
+    /** Replace each {@code .raw} argument in {@code command} with its converted {@code .mzML} path. */
+    private static CasanovoCommand substituteRawPaths(CasanovoCommand command, Map<String, File> targets) {
+        List<String> args = new ArrayList<>();
+        for (String a : command.getArguments()) {
+            File target = isRawFile(a) ? targets.get(new File(a).getAbsolutePath()) : null;
+            args.add(target != null ? target.getAbsolutePath() : a);
+        }
+        return new CasanovoCommand(command.getSubcommand(), args);
+    }
+
+    /** Replace each {@code .raw} file with its converted {@code .mzML} file, for "Open in PDV" auto-load. */
+    private static List<File> substituteRawFiles(List<File> files, Map<String, File> targets) {
+        List<File> out = new ArrayList<>();
+        for (File f : files) {
+            File target = targets.get(f.getAbsolutePath());
+            out.add(target != null ? target : f);
+        }
+        return out;
+    }
+
+    private static boolean isRawFile(String arg) {
+        return arg != null && arg.toLowerCase(java.util.Locale.ROOT).endsWith(".raw") && new File(arg).isFile();
+    }
+
+    private static String stripExtension(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 ? fileName.substring(0, dot) : fileName;
+    }
+
+    /** The rest of a run, once the command's inputs are all in their final (non-{@code .raw}) form. */
+    private void proceedWithRun(CommandPane pane, CasanovoCommand command, List<File> spectra) {
         File workingDir = inferWorkingDir(command);
         // Remember the inputs + where the result will land so "Open in PDV" can load it directly.
-        pendingSpectra = pane.resultSpectra();
+        pendingSpectra = spectra;
         pendingOutputDir = (workingDir != null) ? workingDir : new File(System.getProperty("user.dir"));
         pendingRunStartMs = System.currentTimeMillis() - 3000L; // small clock-skew buffer
         console.append(System.lineSeparator() + "$ " + command.toDisplayString(settings)
@@ -1023,6 +1268,20 @@ public class MainApp extends Application {
         if (runner.isRunning()) {
             statusLabel.setText("Stopping…");
             runner.cancel();
+        } else if (convertingRaw) {
+            statusLabel.setText("Stopping…");
+            rawConvertCancelled = true;
+            Process p = rawConvertProc;
+            if (p != null) {
+                p.destroyForcibly();
+            } else {
+                // No subprocess yet (e.g. still downloading the converter): interrupt the worker so
+                // its blocking HTTP download unwinds promptly instead of running to completion.
+                Thread t = rawConvertThread;
+                if (t != null) {
+                    t.interrupt();
+                }
+            }
         }
     }
 
@@ -1238,12 +1497,14 @@ public class MainApp extends Application {
     }
 
     /**
-     * Handle the banner's "View" link. PDV and pepmap upgrade from the Settings
-     * dialog (which has the one-click download), so open that; the GUI/Casanovo
-     * rows open their release page in the browser.
+     * Handle the banner's "View" link. PDV, pepmap and ThermoRawFileParser upgrade from the
+     * Settings dialog (which has the one-click download), so open that; the GUI/Casanovo rows
+     * open their release page in the browser.
      */
     private void onViewUpdate(UpdateChecker.UpdateInfo info) {
-        if (info.target == UpdateChecker.Target.PDV || info.target == UpdateChecker.Target.PEPMAP) {
+        if (info.target == UpdateChecker.Target.PDV
+                || info.target == UpdateChecker.Target.PEPMAP
+                || info.target == UpdateChecker.Target.RAWPARSER) {
             openSettings();
         } else if (info.pageUrl != null) {
             getHostServices().showDocument(info.pageUrl);

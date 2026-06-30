@@ -27,6 +27,7 @@ public class Settings {
     private static final String KEY_CONDA_EXECUTABLE = "condaExecutable";
     private static final String KEY_PDV_JAR = "pdvJar";
     private static final String KEY_PEPMAP_JAR = "pepmapJar";
+    private static final String KEY_RAWPARSER_PATH = "rawParserPath";
     private static final String KEY_THEME = "theme";
     private static final String KEY_COLORED_CONSOLE = "coloredConsole";
     private static final String KEY_SHOW_RUNNING_ANIMATION = "showRunningAnimation";
@@ -39,6 +40,7 @@ public class Settings {
     private String condaExecutable;
     private String pdvJar;
     private String pepmapJar;
+    private String rawParserPath;
     private String theme;
     private boolean coloredConsole;
     private boolean showRunningAnimation;
@@ -55,6 +57,7 @@ public class Settings {
         condaExecutable = prefs.get(KEY_CONDA_EXECUTABLE, "conda");
         pdvJar = prefs.get(KEY_PDV_JAR, "");
         pepmapJar = prefs.get(KEY_PEPMAP_JAR, "");
+        rawParserPath = prefs.get(KEY_RAWPARSER_PATH, "");
         theme = prefs.get(KEY_THEME, "PrimerLight");
         coloredConsole = prefs.getBoolean(KEY_COLORED_CONSOLE, true);
         showRunningAnimation = prefs.getBoolean(KEY_SHOW_RUNNING_ANIMATION, true);
@@ -68,6 +71,7 @@ public class Settings {
         prefs.put(KEY_CONDA_EXECUTABLE, nullToEmpty(condaExecutable));
         prefs.put(KEY_PDV_JAR, nullToEmpty(pdvJar));
         prefs.put(KEY_PEPMAP_JAR, nullToEmpty(pepmapJar));
+        prefs.put(KEY_RAWPARSER_PATH, nullToEmpty(rawParserPath));
         prefs.put(KEY_THEME, nullToEmpty(theme));
         prefs.putBoolean(KEY_COLORED_CONSOLE, coloredConsole);
         prefs.putBoolean(KEY_SHOW_RUNNING_ANIMATION, showRunningAnimation);
@@ -121,6 +125,14 @@ public class Settings {
 
     public void setPepmapJar(String pepmapJar) {
         this.pepmapJar = pepmapJar;
+    }
+
+    public String getRawParserPath() {
+        return rawParserPath == null ? "" : rawParserPath.trim();
+    }
+
+    public void setRawParserPath(String rawParserPath) {
+        this.rawParserPath = rawParserPath;
     }
 
     public String getTheme() {
