@@ -788,14 +788,20 @@ public class MainApp extends Application {
         for (int i = 0; i < toConvert.size(); i++) {
             File raw = toConvert.get(i);
             File target = targets.get(raw.getAbsolutePath());
-            // Convert to a temp .part file and only publish it onto the final target on a clean exit,
-            // so a cancelled/failed conversion can never leave a truncated .mzML the cache would reuse.
-            File part = new File(target.getParentFile(), target.getName() + ".part");
+            // Convert to a temp file and only publish it onto the final target on a clean exit, so a
+            // cancelled/failed conversion can never leave a truncated .mzML the cache would reuse. The
+            // temp name must still end in ".mzML": ThermoRawFileParser standardizes the -b output
+            // extension to match -f (mzML), so a plain ".part" suffix gets ".mzML" appended by the tool
+            // (yielding <name>.part.mzML) and the exact ".part" path would never exist. "<base>.part.mzML"
+            // already has the extension the tool wants, so it is written verbatim; we then rename it.
+            File part = new File(target.getParentFile(),
+                    target.getName().replaceAll("(?i)\\.mzML$", "") + ".part.mzML");
             int idx = i + 1;
             int total = toConvert.size();
             Platform.runLater(() -> statusLabel.setText(
                     "Converting " + raw.getName() + " to mzML… (" + idx + "/" + total + ")"));
             boolean published = false;
+            boolean icuMissing = false;
             try {
                 part.delete();
                 Process p = RawFileParserLauncher.convertToMzml(exe, raw, part,
@@ -806,6 +812,10 @@ public class MainApp extends Application {
                     String line;
                     while ((line = r.readLine()) != null) {
                         String out = line;
+                        // The self-contained .NET build aborts on Linux when the ICU library is absent.
+                        if (out.contains("valid ICU package") || out.contains("libicu")) {
+                            icuMissing = true;
+                        }
                         Platform.runLater(() -> console.appendLine("[raw] " + out));
                     }
                 }
@@ -816,8 +826,16 @@ public class MainApp extends Application {
                     return;
                 }
                 if (exit != 0 || !part.isFile()) {
-                    Platform.runLater(() -> abortRawConversion(
-                            "ThermoRawFileParser failed to convert " + raw.getName() + " (exit " + exit + ")."));
+                    final boolean icu = icuMissing;
+                    final String rawName = raw.getName();
+                    Platform.runLater(() -> abortRawConversion(icu
+                            ? "ThermoRawFileParser could not run: it needs the ICU library (libicu), which "
+                              + "is not installed on this system.\n\nInstall it, then run again:\n"
+                              + "  • Debian/Ubuntu:  sudo apt install libicu-dev\n"
+                              + "  • Fedora/RHEL:    sudo dnf install libicu\n"
+                              + "  • Alpine:         sudo apk add icu-libs\n\n"
+                              + "More info: https://aka.ms/dotnet-missing-libicu"
+                            : "ThermoRawFileParser failed to convert " + rawName + " (exit " + exit + ")."));
                     return;
                 }
                 publish(part, target);

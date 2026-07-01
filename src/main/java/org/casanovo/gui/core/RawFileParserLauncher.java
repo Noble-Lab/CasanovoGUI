@@ -337,6 +337,10 @@ public final class RawFileParserLauncher {
         log.accept("Converting: " + String.join(" ", cmd));
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
+        // Note: the self-contained .NET build needs ICU (libicu) on Linux and cannot use
+        // DOTNET_SYSTEM_GLOBALIZATION_INVARIANT — ThermoRawFileParser hard-codes the en-US culture
+        // per scan, so invariant mode makes every scan fail. If libicu is missing the caller detects
+        // the "valid ICU package" error and tells the user to install it.
         return pb.start();
     }
 
