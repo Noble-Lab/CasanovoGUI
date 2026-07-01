@@ -31,6 +31,7 @@ public class Settings {
     private static final String KEY_THEME = "theme";
     private static final String KEY_COLORED_CONSOLE = "coloredConsole";
     private static final String KEY_SHOW_RUNNING_ANIMATION = "showRunningAnimation";
+    private static final String KEY_UNIPROT_LOOKUP = "uniProtLookup";
 
     private final Preferences prefs = Preferences.userRoot().node("org/casanovo/gui");
 
@@ -44,6 +45,7 @@ public class Settings {
     private String theme;
     private boolean coloredConsole;
     private boolean showRunningAnimation;
+    private boolean uniProtLookup;
 
     public Settings() {
         load();
@@ -61,6 +63,7 @@ public class Settings {
         theme = prefs.get(KEY_THEME, "PrimerLight");
         coloredConsole = prefs.getBoolean(KEY_COLORED_CONSOLE, true);
         showRunningAnimation = prefs.getBoolean(KEY_SHOW_RUNNING_ANIMATION, true);
+        uniProtLookup = prefs.getBoolean(KEY_UNIPROT_LOOKUP, true);
     }
 
     /** Persist the current values so they survive a restart. */
@@ -75,6 +78,7 @@ public class Settings {
         prefs.put(KEY_THEME, nullToEmpty(theme));
         prefs.putBoolean(KEY_COLORED_CONSOLE, coloredConsole);
         prefs.putBoolean(KEY_SHOW_RUNNING_ANIMATION, showRunningAnimation);
+        prefs.putBoolean(KEY_UNIPROT_LOOKUP, uniProtLookup);
     }
 
     public String getCasanovoExecutable() {
@@ -157,6 +161,14 @@ public class Settings {
 
     public void setShowRunningAnimation(boolean showRunningAnimation) {
         this.showRunningAnimation = showRunningAnimation;
+    }
+
+    public boolean isUniProtLookup() {
+        return uniProtLookup;
+    }
+
+    public void setUniProtLookup(boolean uniProtLookup) {
+        this.uniProtLookup = uniProtLookup;
     }
 
     private static String nullToEmpty(String s) {

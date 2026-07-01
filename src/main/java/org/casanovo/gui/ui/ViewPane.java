@@ -1,5 +1,6 @@
 package org.casanovo.gui.ui;
 
+import javafx.animation.PauseTransition;
 import javafx.application.Platform;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.ReadOnlyObjectWrapper;
@@ -51,11 +52,13 @@ import javafx.scene.text.TextFlow;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import javafx.scene.input.MouseButton;
+import javafx.util.Duration;
 import org.casanovo.gui.core.MzTabScores;
 import org.casanovo.gui.core.PdvController;
 import org.casanovo.gui.core.PepMapLauncher;
 import org.casanovo.gui.core.Peptides;
 import org.casanovo.gui.core.Settings;
+import org.casanovo.gui.core.UniProtClient;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -216,6 +219,16 @@ public class ViewPane extends BorderPane {
     private final TextField mappedFilter = new TextField();
     private final TextField unmappedFilter = new TextField();
     private Pager<ProteinRow> proteinPager;
+
+    // UniProt hover popup for the Proteins table: a bare Popup shown to the right of the hovered
+    // protein cell after a short delay. A Popup (not a Tooltip) is used because a Tooltip repositions
+    // itself to the screen's top-left when its content is replaced asynchronously. uniProtHoverId
+    // guards async content updates; the anchor is re-asserted after the fetch fills the content.
+    private final javafx.stage.Popup uniProtPopup = new javafx.stage.Popup();
+    private final VBox uniProtBox = new VBox(2);
+    private final PauseTransition uniProtHoverDelay = new PauseTransition(Duration.millis(350));
+    private String uniProtHoverId;
+    private javafx.geometry.Bounds uniProtCellBounds; // screen bounds of the hovered cell, for placement
 
     // Protein view
     private final ComboBox<String> proteinSelector = new ComboBox<>();
@@ -687,8 +700,7 @@ public class ViewPane extends BorderPane {
     }
 
     private BorderPane buildProteinsTab() {
-        strCol(proteinTable, "Protein", ProteinRow::protein, 240,
-                "Reference protein identifier (from the FASTA header) that received at least one peptide hit.");
+        addProteinNameColumn(proteinTable);
         TableColumn<ProteinRow, Integer> pepGroup = new TableColumn<>("Peptides");
         headerTip(pepGroup, "Peptides", "Distinct peptide sequences mapped to this protein.", false);
         pepGroup.getColumns().add(intColumn("Total", ProteinRow::totalPeptides,
@@ -1319,6 +1331,209 @@ public class ViewPane extends BorderPane {
         }
         headerTip(col, name, tip, false);
         table.getColumns().add(col);
+    }
+
+    /**
+     * The "Protein" column for the Proteins table: a plain text column, but a UniProt-format
+     * identifier gets a hover tooltip with its UniProt entry info, fetched lazily on hover and
+     * cached. The lookup is gated by the View-menu toggle ({@link Settings#isUniProtLookup()}),
+     * read live at hover time so the toggle takes effect immediately.
+     */
+    private void addProteinNameColumn(TableView<ProteinRow> table) {
+        configureUniProtPopup();
+        TableColumn<ProteinRow, String> col = new TableColumn<>("Protein");
+        col.setCellValueFactory(d -> new ReadOnlyStringWrapper(nullToEmpty(d.getValue().protein())));
+        col.setPrefWidth(240);
+        headerTip(col, "Protein",
+                "Reference protein identifier (from the FASTA header) that received at least one peptide hit. "
+                        + "Hover a UniProt-format ID for its UniProt entry (toggle in the View menu).", false);
+        col.setCellFactory(c -> {
+            TableCell<ProteinRow, String> cell = new TableCell<>() {
+                @Override
+                protected void updateItem(String item, boolean empty) {
+                    super.updateItem(item, empty);
+                    setText(empty || item == null || item.isEmpty() ? null : item);
+                }
+            };
+            cell.setOnMouseEntered(e -> onProteinHoverEnter(cell));
+            cell.setOnMouseExited(e -> onProteinHoverExit());
+            return cell;
+        });
+        table.getColumns().add(col);
+    }
+
+    /** One-time setup of the shared UniProt popup (styled container, anchor policy). */
+    private void configureUniProtPopup() {
+        uniProtBox.setMaxWidth(420);
+        uniProtBox.setStyle(
+                "-fx-background-color: #2f3033;"
+                        + "-fx-background-radius: 6;"
+                        + "-fx-border-color: rgba(255,255,255,0.18);"
+                        + "-fx-border-radius: 6;"
+                        + "-fx-padding: 8 11 8 11;"
+                        + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.4), 10, 0, 0, 2);");
+        uniProtPopup.getContent().add(uniProtBox);
+        // autoFix OFF: near the right edge JavaFX would otherwise shift the popup left onto the cursor,
+        // which fires the cell's mouse-exit and makes the popup flash out. We place it ourselves
+        // (right / below / left of the cell) in placeUniProtPopup so it never covers the cursor.
+        uniProtPopup.setAutoFix(false);
+        uniProtPopup.setAutoHide(false); // hidden explicitly on mouse-exit
+        uniProtPopup.setAnchorLocation(javafx.stage.PopupWindow.AnchorLocation.WINDOW_TOP_LEFT);
+    }
+
+    /** Start the hover delay to show the UniProt popup for a UniProt-format protein cell. */
+    private void onProteinHoverEnter(TableCell<ProteinRow, String> cell) {
+        String id = cell.getItem();
+        if (id == null || id.isEmpty() || !settings.isUniProtLookup()
+                || UniProtClient.parse(id).isEmpty()) {
+            return;
+        }
+        uniProtHoverDelay.stop();
+        uniProtHoverDelay.setOnFinished(ev -> showUniProtPopup(cell, id));
+        uniProtHoverDelay.playFromStart();
+    }
+
+    /** Cancel any pending hover and hide the popup when the pointer leaves a protein cell. */
+    private void onProteinHoverExit() {
+        uniProtHoverDelay.stop();
+        uniProtHoverId = null;
+        uniProtPopup.hide();
+    }
+
+    /**
+     * Show the UniProt popup just past the right edge of {@code cell}, top-aligned to it. The anchor
+     * is captured and re-asserted after the async fetch fills the content, so the popup never drifts
+     * (a Tooltip would jump to the screen's top-left on content change). Content comes from the
+     * cache, else a background fetch.
+     */
+    private void showUniProtPopup(TableCell<ProteinRow, String> cell, String id) {
+        if (!id.equals(cell.getItem())) {
+            return; // pointer moved on / cell recycled during the delay
+        }
+        javafx.geometry.Bounds b = cell.localToScreen(cell.getBoundsInLocal());
+        if (b == null) {
+            return;
+        }
+        uniProtHoverId = id;
+        uniProtCellBounds = b;
+        UniProtClient.Entry hit = UniProtClient.peek(id);
+        if (hit != null) {
+            setUniProtContent(hit);
+        } else if (UniProtClient.knownMissing(id)) {
+            setUniProtContent(null);
+        } else {
+            setUniProtMessage("Looking up " + id + " on UniProt…");
+            UniProtClient.fetchAsync(id, entry -> Platform.runLater(() -> {
+                if (id.equals(uniProtHoverId) && uniProtPopup.isShowing()) {
+                    setUniProtContent(entry);
+                    scheduleUniProtPlacement(); // content resized -> re-place
+                }
+            }));
+        }
+        if (uniProtPopup.isShowing()) {
+            uniProtPopup.hide();
+        }
+        // Provisional position (just right of the cell); corrected once the popup is laid out — see
+        // placeUniProtPopup, which flips it below/left when the right edge runs off-screen.
+        uniProtPopup.show(cell, b.getMaxX() + 4, b.getMinY());
+        scheduleUniProtPlacement();
+    }
+
+    private void scheduleUniProtPlacement() {
+        Platform.runLater(this::placeUniProtPopup);
+    }
+
+    /**
+     * Position the popup so it never overlaps the hovered cell — right of it when there is room, else
+     * below it, else to its left. Keeping it off the cell means it can't land under the cursor and
+     * trigger the cell's mouse-exit (which made it flash out near the screen's right edge).
+     */
+    private void placeUniProtPopup() {
+        if (!uniProtPopup.isShowing() || uniProtCellBounds == null) {
+            return;
+        }
+        javafx.geometry.Bounds cell = uniProtCellBounds;
+        double w = uniProtPopup.getWidth();
+        double h = uniProtPopup.getHeight();
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        javafx.geometry.Rectangle2D screen = screenFor(cell);
+        double gap = 4;
+        double x;
+        double y;
+        if (cell.getMaxX() + gap + w <= screen.getMaxX()) {
+            x = cell.getMaxX() + gap;      // right of the cell (preferred)
+            y = cell.getMinY();
+        } else if (cell.getMaxY() + gap + h <= screen.getMaxY()) {
+            x = cell.getMinX();            // below the cell
+            y = cell.getMaxY() + gap;
+        } else if (cell.getMinX() - gap - w >= screen.getMinX()) {
+            x = cell.getMinX() - gap - w;  // left of the cell
+            y = cell.getMinY();
+        } else {
+            x = cell.getMinX();            // last resort
+            y = cell.getMaxY() + gap;
+        }
+        // Clamp only the axis that is already clear of the cell, so this can't pull the popup back over it.
+        x = Math.max(screen.getMinX(), Math.min(x, screen.getMaxX() - w));
+        y = Math.max(screen.getMinY(), Math.min(y, screen.getMaxY() - h));
+        uniProtPopup.setAnchorX(x);
+        uniProtPopup.setAnchorY(y);
+    }
+
+    /** The visual bounds of the screen the cell sits on (falls back to the primary screen). */
+    private static javafx.geometry.Rectangle2D screenFor(javafx.geometry.Bounds cell) {
+        for (javafx.stage.Screen s : javafx.stage.Screen.getScreensForRectangle(
+                cell.getMinX(), cell.getMinY(), Math.max(1, cell.getWidth()), Math.max(1, cell.getHeight()))) {
+            return s.getVisualBounds();
+        }
+        return javafx.stage.Screen.getPrimary().getVisualBounds();
+    }
+
+    private void setUniProtMessage(String message) {
+        uniProtBox.getChildren().setAll(uniProtLabel(message, "#dddddd", 12, false, false));
+    }
+
+    /** Render a UniProt {@link UniProtClient.Entry} (or a "not found" note) into the popup. */
+    private void setUniProtContent(UniProtClient.Entry e) {
+        if (e == null) {
+            setUniProtMessage("No UniProt info available.");
+            return;
+        }
+        java.util.List<javafx.scene.Node> rows = new java.util.ArrayList<>();
+        rows.add(uniProtLabel(e.proteinName().isEmpty() ? e.accession() : e.proteinName(),
+                "#ffffff", 13, true, true));
+        StringBuilder meta = new StringBuilder();
+        if (!e.gene().isEmpty()) {
+            meta.append("Gene ").append(e.gene());
+        }
+        if (!e.organism().isEmpty()) {
+            meta.append(meta.length() > 0 ? "  ·  " : "").append(e.organism());
+        }
+        if (e.length() > 0) {
+            meta.append(meta.length() > 0 ? "  ·  " : "").append(e.length()).append(" aa");
+        }
+        if (meta.length() > 0) {
+            rows.add(uniProtLabel(meta.toString(), "#c9c9cf", 11, false, true));
+        }
+        if (!e.function().isEmpty()) {
+            rows.add(uniProtLabel(e.function(), "#dddddd", 11, false, true));
+        }
+        rows.add(uniProtLabel("UniProt: " + e.accession()
+                + (e.entryName().isEmpty() ? "" : " (" + e.entryName() + ")"), "#9a9aa2", 10, false, false));
+        uniProtBox.getChildren().setAll(rows);
+    }
+
+    private static Label uniProtLabel(String text, String colorHex, int size, boolean bold, boolean wrap) {
+        Label l = new Label(text);
+        l.setWrapText(wrap);
+        if (wrap) {
+            l.setMaxWidth(400);
+        }
+        l.setStyle("-fx-text-fill: " + colorHex + "; -fx-font-size: " + size + "px;"
+                + (bold ? " -fx-font-weight: bold;" : ""));
+        return l;
     }
 
     private static <S> TableColumn<S, Integer> intCol(TableView<S> table, String name, ToIntFunction<S> getter,

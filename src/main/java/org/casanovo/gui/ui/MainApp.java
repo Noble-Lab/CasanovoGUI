@@ -350,6 +350,14 @@ public class MainApp extends Application {
         });
         viewMenu.getItems().add(animationItem);
 
+        CheckMenuItem uniProtItem = new CheckMenuItem("Look up UniProt info on hover (Proteins table)");
+        uniProtItem.setSelected(settings.isUniProtLookup());
+        uniProtItem.setOnAction(e -> {
+            settings.setUniProtLookup(uniProtItem.isSelected());
+            settings.save();
+        });
+        viewMenu.getItems().add(uniProtItem);
+
         MenuItem exportItem = new MenuItem("Export window image");
         exportItem.setOnAction(e -> showExportDialog());
         viewMenu.getItems().addAll(new javafx.scene.control.SeparatorMenuItem(), exportItem);
