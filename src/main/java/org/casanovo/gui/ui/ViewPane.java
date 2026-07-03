@@ -306,8 +306,10 @@ public class ViewPane extends BorderPane {
         Label faLabel = new Label("Reference DB (FASTA):");
         mzLabel.setMinWidth(140);
         faLabel.setMinWidth(140);
-        mzTabField.setPromptText("Casanovo .mzTab result (auto-filled after a run)");
+        mzTabField.setPromptText("Required. Casanovo .mzTab result (auto-filled after a run)");
+        mzTabField.getStyleClass().add("prompt-required");
         fastaField.setPromptText("Optional. Reference protein database in FASTA format");
+        fastaField.getStyleClass().add("prompt-optional");
         HBox.setHgrow(mzTabField, Priority.ALWAYS);
         HBox.setHgrow(fastaField, Priority.ALWAYS);
         mzBrowse.setOnAction(e -> browseMzTab());
