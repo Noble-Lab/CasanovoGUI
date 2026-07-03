@@ -751,9 +751,7 @@ public class ViewPane extends BorderPane {
 
         proteinPager = new Pager<>(proteinTable);
         proteinPager.setFilter((p, q) -> p.protein().toLowerCase(Locale.ROOT).contains(q.toLowerCase(Locale.ROOT)));
-        proteinFilter.setPromptText("Filter by protein…");
-        proteinFilter.setPrefWidth(260);
-        proteinFilter.textProperty().addListener((o, a, b) -> proteinPager.setQuery(b));
+        wireFilter(proteinFilter, "Filter by protein…", proteinPager);
         Label proteinsHint = new Label("ⓘ Double-click a row to open it in Protein view.");
         proteinsHint.getStyleClass().add("hint");
         HBox top = new HBox(8, new Label("Filter:"), proteinFilter, proteinsHint);
@@ -807,7 +805,7 @@ public class ViewPane extends BorderPane {
         BorderPane pepPane = new BorderPane(proteinPeptideTable);
         // Same single-click→PDV and double-click→PSMs behaviour as the Mapped/Unmapped tables, so
         // advertise both hints here too (this table previously showed only the double-click hint).
-        VBox pepHints = new VBox(0, peptideHint(), pdvPeptideHint());
+        VBox pepHints = peptideHintsBox();
         BorderPane.setMargin(pepHints, new Insets(4, 0, 0, 2));
         pepPane.setBottom(pepHints);
 
@@ -850,9 +848,7 @@ public class ViewPane extends BorderPane {
             return r.peptide().toLowerCase(Locale.ROOT).contains(ql)
                     || r.proteins().toLowerCase(Locale.ROOT).contains(ql);
         });
-        mappedFilter.setPromptText("Filter by peptide or protein…");
-        mappedFilter.setPrefWidth(260);
-        mappedFilter.textProperty().addListener((o, a, b) -> mappedPager.setQuery(b));
+        wireFilter(mappedFilter, "Filter by peptide or protein…", mappedPager);
         matchFilter = new ComboBox<>();
         matchFilter.getItems().addAll("All", "Exact only", "With mismatches");
         matchFilter.setValue("All");
@@ -870,13 +866,7 @@ public class ViewPane extends BorderPane {
         top.setPadding(new Insets(0, 0, 6, 0));
         BorderPane bp = new BorderPane(mappedTable);
         bp.setTop(top);
-        Region hintSpacer = new Region();
-        HBox.setHgrow(hintSpacer, Priority.ALWAYS);
-        VBox hints = new VBox(0, peptideHint(), pdvPeptideHint());
-        HBox bottom = new HBox(8, hints, hintSpacer, mappedPager.bar);
-        bottom.setAlignment(Pos.CENTER_LEFT);
-        bp.setBottom(bottom);
-        BorderPane.setMargin(bottom, new Insets(6, 0, 0, 0));
+        setHintsAndPagerBottom(bp, mappedPager);
         return bp;
     }
 
@@ -895,22 +885,36 @@ public class ViewPane extends BorderPane {
         onRowDoubleClick(unmappedTable, UnmappedRow::peptide);
         unmappedPager = new Pager<>(unmappedTable);
         unmappedPager.setFilter((r, q) -> r.peptide().toLowerCase(Locale.ROOT).contains(q.toLowerCase(Locale.ROOT)));
-        unmappedFilter.setPromptText("Filter by peptide…");
-        unmappedFilter.setPrefWidth(260);
-        unmappedFilter.textProperty().addListener((o, a, b) -> unmappedPager.setQuery(b));
+        wireFilter(unmappedFilter, "Filter by peptide…", unmappedPager);
         HBox top = new HBox(8, new Label("Filter:"), unmappedFilter);
         top.setAlignment(Pos.CENTER_LEFT);
         top.setPadding(new Insets(0, 0, 6, 0));
         BorderPane bp = new BorderPane(unmappedTable);
         bp.setTop(top);
-        Region hintSpacer = new Region();
-        HBox.setHgrow(hintSpacer, Priority.ALWAYS);
-        VBox hints = new VBox(0, peptideHint(), pdvPeptideHint());
-        HBox bottom = new HBox(8, hints, hintSpacer, unmappedPager.bar);
+        setHintsAndPagerBottom(bp, unmappedPager);
+        return bp;
+    }
+
+    /** Wire a results-table filter field: prompt, width, and live query into the pager. */
+    private static void wireFilter(TextField field, String prompt, Pager<?> pager) {
+        field.setPromptText(prompt);
+        field.setPrefWidth(260);
+        field.textProperty().addListener((o, a, b) -> pager.setQuery(b));
+    }
+
+    /** The stacked peptide hints (single-click → PDV, double-click → PSMs) shown under a peptide table. */
+    private VBox peptideHintsBox() {
+        return new VBox(0, peptideHint(), pdvPeptideHint());
+    }
+
+    /** Attach a bottom bar to {@code bp}: peptide hints on the left, the pager on the right. */
+    private void setHintsAndPagerBottom(BorderPane bp, Pager<?> pager) {
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        HBox bottom = new HBox(8, peptideHintsBox(), spacer, pager.bar);
         bottom.setAlignment(Pos.CENTER_LEFT);
         bp.setBottom(bottom);
         BorderPane.setMargin(bottom, new Insets(6, 0, 0, 0));
-        return bp;
     }
 
     /**
@@ -1581,21 +1585,23 @@ public class ViewPane extends BorderPane {
 
     private static <S> TableColumn<S, Integer> intCol(TableView<S> table, String name, ToIntFunction<S> getter,
                                                       String tip) {
-        TableColumn<S, Integer> col = new TableColumn<>(name);
-        col.setCellValueFactory(d -> new ReadOnlyObjectWrapper<>(getter.applyAsInt(d.getValue())));
-        col.setStyle("-fx-alignment: CENTER-RIGHT;");
-        col.setPrefWidth(92);
-        headerTip(col, name, tip, true);
+        TableColumn<S, Integer> col = intColumnOf(name, getter, tip, 92);
         table.getColumns().add(col);
         return col;
     }
 
     /** A right-aligned integer column returned (not added) — for nesting under a group header. */
     private static <S> TableColumn<S, Integer> intColumn(String name, ToIntFunction<S> getter, String tip) {
+        return intColumnOf(name, getter, tip, 72);
+    }
+
+    /** Shared builder for a right-aligned integer column with a header tooltip. */
+    private static <S> TableColumn<S, Integer> intColumnOf(String name, ToIntFunction<S> getter, String tip,
+                                                           double prefWidth) {
         TableColumn<S, Integer> col = new TableColumn<>(name);
         col.setCellValueFactory(d -> new ReadOnlyObjectWrapper<>(getter.applyAsInt(d.getValue())));
         col.setStyle("-fx-alignment: CENTER-RIGHT;");
-        col.setPrefWidth(72);
+        col.setPrefWidth(prefWidth);
         headerTip(col, name, tip, true);
         return col;
     }
