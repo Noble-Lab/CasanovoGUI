@@ -733,14 +733,17 @@ public class ViewPane extends BorderPane {
         proteinTable.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
         proteinTable.setFixedCellSize(ROW_HEIGHT);
         proteinTable.setPlaceholder(new Label("No mapping yet."));
-        proteinTable.setOnMouseClicked(e -> {
-            if (e.getClickCount() == 2) {
-                ProteinRow pr = proteinTable.getSelectionModel().getSelectedItem();
-                if (pr != null) {
-                    proteinSelector.setValue(pr.protein());
+        // Row-scoped double-click (guarded by row.isEmpty()) so double-clicking empty space below
+        // the rows doesn't reopen the Protein view for a stale selection; reads the row's own item.
+        proteinTable.setRowFactory(tv -> {
+            TableRow<ProteinRow> row = new TableRow<>();
+            row.setOnMouseClicked(e -> {
+                if (!row.isEmpty() && e.getClickCount() == 2) {
+                    proteinSelector.setValue(row.getItem().protein());
                     resultTabs.getSelectionModel().select(proteinViewTab);
                 }
-            }
+            });
+            return row;
         });
 
         proteinPager = new Pager<>(proteinTable);
@@ -839,8 +842,12 @@ public class ViewPane extends BorderPane {
         mappedTable.setPlaceholder(new Label("No mapped peptides."));
         onRowDoubleClick(mappedTable, MappedRow::peptide);
         mappedPager = new Pager<>(mappedTable);
-        mappedPager.setFilter((r, q) -> r.peptide().toLowerCase(Locale.ROOT).contains(q.toLowerCase(Locale.ROOT)));
-        mappedFilter.setPromptText("Filter by peptide…");
+        mappedPager.setFilter((r, q) -> {
+            String ql = q.toLowerCase(Locale.ROOT);
+            return r.peptide().toLowerCase(Locale.ROOT).contains(ql)
+                    || r.proteins().toLowerCase(Locale.ROOT).contains(ql);
+        });
+        mappedFilter.setPromptText("Filter by peptide or protein…");
         mappedFilter.setPrefWidth(260);
         mappedFilter.textProperty().addListener((o, a, b) -> mappedPager.setQuery(b));
         matchFilter = new ComboBox<>();
@@ -2535,7 +2542,7 @@ public class ViewPane extends BorderPane {
         if (scoreCurve == null) {
             return;
         }
-        String mode = scoreMode.getValue() == null ? "PSMs" : scoreMode.getValue();
+        String mode = scoreMode.getValue() == null ? "Peptides" : scoreMode.getValue();
         int[] counts = "Peptides".equals(mode) ? scoreCurve.peptideCounts() : scoreCurve.psmCounts();
         double[] thr = scoreCurve.thresholds();
         XYChart.Series<Number, Number> s = new XYChart.Series<>();
