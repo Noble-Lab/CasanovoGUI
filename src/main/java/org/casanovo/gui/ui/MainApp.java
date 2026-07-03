@@ -1592,12 +1592,10 @@ public class MainApp extends Application {
      * open their release page in the browser.
      */
     private void onViewUpdate(UpdateChecker.UpdateInfo info) {
-        if (info.target == UpdateChecker.Target.PDV
-                || info.target == UpdateChecker.Target.PEPMAP
-                || info.target == UpdateChecker.Target.RAWPARSER) {
+        if (info.target.opensUpgradeSettings()) {
             openSettings();
-        } else if (info.pageUrl != null) {
-            getHostServices().showDocument(info.pageUrl);
+        } else {
+            onReleaseNotes(info); // GUI/Casanovo: "View" opens the release page
         }
     }
 

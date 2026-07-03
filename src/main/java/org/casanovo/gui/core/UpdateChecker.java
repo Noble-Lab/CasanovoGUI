@@ -102,7 +102,18 @@ public final class UpdateChecker {
     // ---- model -------------------------------------------------------------
 
     /** Which product an {@link UpdateInfo} describes. */
-    public enum Target { GUI, CASANOVO, PDV, PEPMAP, RAWPARSER }
+    public enum Target {
+        GUI, CASANOVO, PDV, PEPMAP, RAWPARSER;
+
+        /**
+         * True for the bundled tool jars/executables whose upgrade lives in the Settings dialog
+         * (so the update banner labels their action "Update…" and routes it to Settings, while
+         * GUI/Casanovo open their release page). Single source of truth for that split.
+         */
+        public boolean opensUpgradeSettings() {
+            return this == PDV || this == PEPMAP || this == RAWPARSER;
+        }
+    }
 
     /** Outcome for a single product: current vs latest, and whether newer exists. */
     public static final class UpdateInfo {

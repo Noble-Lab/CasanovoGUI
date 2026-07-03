@@ -114,9 +114,7 @@ public class UpdateBanner extends VBox {
 
         // PDV/pepmap/rawparser "View" opens the Settings dialog (where the one-click upgrade lives),
         // so label it "Update…"; the GUI/Casanovo rows' "View" opens the release page and keeps "View".
-        boolean opensUpgradeSettings = info.target == Target.PDV
-                || info.target == Target.PEPMAP
-                || info.target == Target.RAWPARSER;
+        boolean opensUpgradeSettings = info.target.opensUpgradeSettings();
         Hyperlink view = new Hyperlink(opensUpgradeSettings ? "Update…" : "View");
         view.setOnAction(e -> {
             if (onView != null) {
