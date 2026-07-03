@@ -592,11 +592,14 @@ public class ViewPane extends BorderPane {
     }
 
     /** Wire every laid-out chart's plot-background to re-align the cards (so a later data change that
-        moves an axis re-aligns), then re-align now. Idempotent: each plot-background is hooked once,
-        and rebuilt charts (e.g. the top-proteins chart) get their fresh background hooked on a later call. */
+        moves an axis re-aligns), then re-align now. Idempotent: each plot-background is hooked once.
+        Backgrounds of charts that were rebuilt (e.g. the top-proteins chart) are pruned from the set so
+        it doesn't grow every rebuild — and the rebuilt chart's fresh background is hooked on this call. */
     private void refreshSummaryAlign() {
         if (chartsFlow != null) {
-            for (javafx.scene.Node bg : chartsFlow.lookupAll(".chart-plot-background")) {
+            java.util.Set<javafx.scene.Node> current = chartsFlow.lookupAll(".chart-plot-background");
+            hookedPlots.retainAll(current); // drop backgrounds of charts that have since been rebuilt/removed
+            for (javafx.scene.Node bg : current) {
                 if (hookedPlots.add(bg)) {
                     bg.boundsInParentProperty().addListener((o, a, b) -> syncSummaryToPlotArea());
                 }
