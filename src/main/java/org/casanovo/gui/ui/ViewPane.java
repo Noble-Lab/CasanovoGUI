@@ -145,7 +145,7 @@ public class ViewPane extends BorderPane {
                            double[] cutoffs, int[] mappedByCutoff, int[] totalByCutoff) {
     }
 
-    private static final String UNIQUE_HEX = "#1B7F2E"; // green  – unique-peptide coverage
+    private static final String UNIQUE_HEX = "#1F6FB2"; // blue   – unique-peptide coverage (blue/orange is colorblind-safe)
     private static final String SHARED_HEX = "#E08000"; // orange – shared-peptide coverage
     private static final Color UNIQUE_COLOR = Color.web(UNIQUE_HEX);
     private static final Color SHARED_COLOR = Color.web(SHARED_HEX);
