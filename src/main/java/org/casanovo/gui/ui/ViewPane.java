@@ -1003,7 +1003,8 @@ public class ViewPane extends BorderPane {
         private final TableView<T> table;
         private final ObservableList<T> model = FXCollections.observableArrayList();
         private final ObservableList<T> view = FXCollections.observableArrayList();
-        private final List<T> working = new ArrayList<>();
+        private final List<T> sorted = new ArrayList<>();   // model in the current sort order
+        private final List<T> working = new ArrayList<>();  // sorted, then filtered
         private final Button prev = new Button("‹ Prev");
         private final Button next = new Button("Next ›");
         private final Label info = new Label();
@@ -1022,21 +1023,21 @@ public class ViewPane extends BorderPane {
             // so descending sorts would silently not re-page.
             table.setSortPolicy(tv -> {
                 page = 0;
-                refresh();
+                resort();
                 return true;
             });
             prev.setOnAction(e -> {
                 page--;
-                refresh();
+                showPage();
             });
             next.setOnAction(e -> {
                 page++;
-                refresh();
+                showPage();
             });
             info.setMinWidth(150);
             bar = new HBox(8, prev, next, info);
             bar.setAlignment(Pos.CENTER_LEFT);
-            refresh();
+            resort();
         }
 
         void setFilter(BiPredicate<T, String> f) {
@@ -1046,35 +1047,49 @@ public class ViewPane extends BorderPane {
         void setExtraFilter(java.util.function.Predicate<T> p) {
             this.extraFilter = p;
             page = 0;
-            refresh();
+            applyFilter();
         }
 
         void setData(List<T> data) {
             model.setAll(data);
             page = 0;
-            refresh();
+            resort();
             TableUtils.autoSizeColumns(table, 60); // fit columns to this page's content, capped at 60 chars
         }
 
         void setQuery(String q) {
             query = q == null ? "" : q.trim();
             page = 0;
-            refresh();
+            applyFilter();
         }
 
-        private void refresh() {
+        /** Re-sort the full data — call when the data or the sort column/direction changes. */
+        private void resort() {
+            sorted.clear();
+            sorted.addAll(model);
+            Comparator<T> c = table.getComparator();
+            if (c != null) {
+                sorted.sort(c);
+            }
+            applyFilter();
+        }
+
+        /** Re-filter the already-sorted data — call when the query/filter changes. Filtering a
+         *  sorted list preserves the order, so no re-sort is needed here. */
+        private void applyFilter() {
             working.clear();
-            for (T t : model) {
+            for (T t : sorted) {
                 boolean classOk = extraFilter == null || extraFilter.test(t);
                 boolean textOk = filter == null || query.isEmpty() || filter.test(t, query);
                 if (classOk && textOk) {
                     working.add(t);
                 }
             }
-            Comparator<T> c = table.getComparator();
-            if (c != null) {
-                working.sort(c);
-            }
+            showPage();
+        }
+
+        /** Slice the current page out of the filtered+sorted data — call on page navigation. */
+        private void showPage() {
             int total = working.size();
             int pages = Math.max(1, (total + PAGE_SIZE - 1) / PAGE_SIZE);
             page = Math.max(0, Math.min(page, pages - 1));
@@ -2015,6 +2030,7 @@ public class ViewPane extends BorderPane {
     private void mapInBackground(File mzTab, File fasta, PepMapLauncher.Options opts, String pepmapOverride,
                                  double minScore) {
         File pepFile = null;
+        File tempDir = null;
         boolean usingTempDir = false;
         Consumer<String> log = msg -> Platform.runLater(() -> {
             consoleOut.accept(msg);
@@ -2078,6 +2094,7 @@ public class ViewPane extends BorderPane {
             usingTempDir = outDir == null;
             if (usingTempDir) {
                 outDir = Files.createTempDirectory("casanovogui_pepmap_").toFile();
+                tempDir = outDir;
             }
             pepFile = new File(outDir, "peptides.txt");
             try (BufferedWriter w = Files.newBufferedWriter(pepFile.toPath(), StandardCharsets.UTF_8)) {
@@ -2148,14 +2165,11 @@ public class ViewPane extends BorderPane {
             });
         } finally {
             proc = null;
-            // Only clean up the transient input when we fell back to a temp dir. When the output
-            // lives next to the mzTab the user wants those files kept (results + peptides.txt + log).
-            if (usingTempDir && pepFile != null) {
-                try {
-                    Files.deleteIfExists(pepFile.toPath());
-                } catch (IOException ignored) {
-                    // best effort
-                }
+            // When we fell back to a temp dir, remove it and everything pepmap wrote into it — the
+            // results are already parsed into memory. Output that lives next to the mzTab is kept,
+            // since the user wants those files (results + peptides.txt + log).
+            if (usingTempDir && tempDir != null) {
+                deleteRecursively(tempDir);
             }
         }
     }
@@ -2183,6 +2197,24 @@ public class ViewPane extends BorderPane {
             log.accept("Could not create output folder " + outDir.getAbsolutePath()
                     + " (" + e.getMessage() + "); using a temporary output folder instead.");
             return null;
+        }
+    }
+
+    /** Best-effort recursive delete of a directory (or file) and everything under it. */
+    private static void deleteRecursively(File f) {
+        if (f == null) {
+            return;
+        }
+        File[] kids = f.listFiles();
+        if (kids != null) {
+            for (File k : kids) {
+                deleteRecursively(k);
+            }
+        }
+        try {
+            Files.deleteIfExists(f.toPath());
+        } catch (IOException ignored) {
+            // best effort
         }
     }
 
