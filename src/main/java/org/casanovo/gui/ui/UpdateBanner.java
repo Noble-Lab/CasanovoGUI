@@ -24,13 +24,13 @@ import java.util.function.Predicate;
  * Slim notification bar parked at the top of the window. Hidden (and taking no
  * layout space) by default; {@link #show} reveals one row per available update.
  *
- * <p>Each row offers <b>View</b> (what this does is decided by the caller — the
- * GUI/Casanovo rows open the release page in the browser, while the PDV/pepmap
- * rows open the Settings dialog where the upgrade lives), <b>Skip this version</b>
- * (persist the version so the auto-check stops advertising it) and <b>Dismiss</b>
- * (hide the row for this session). The Casanovo row additionally offers
- * <b>Update Casanovo</b> when the GUI manages the install and can upgrade it in
- * place.</p>
+ * <p>Each row offers a primary action, <b>Skip this version</b> (persist the version
+ * so the auto-check stops advertising it) and <b>Dismiss</b> (hide the row for this
+ * session). The primary action is <b>View</b> for the GUI/Casanovo rows (opens the
+ * release page in the browser) and <b>Update…</b> for the PDV/pepmap/rawparser rows
+ * (opens the Settings dialog where the one-click upgrade lives). The Casanovo row
+ * additionally offers <b>Update Casanovo</b> when the GUI manages the install and can
+ * upgrade it in place.</p>
  */
 public class UpdateBanner extends VBox {
 
@@ -59,13 +59,15 @@ public class UpdateBanner extends VBox {
      *
      * @param updates        candidate updates (both targets may be present)
      * @param includeSkipped show versions the user previously chose to skip
-     * @param onView         invoked when the user clicks "View" for a row
+     * @param onView         invoked for a row's primary action ("View" / "Update…")
+     * @param onReleaseNotes invoked when the user clicks "Release notes" (PDV/pepmap/rawparser rows)
      * @param onSelfUpdate   invoked when the user clicks "Update Casanovo"
      * @param canSelfUpdate  whether a given update can be applied in-app
      */
     public void show(List<UpdateInfo> updates,
                      boolean includeSkipped,
                      Consumer<UpdateInfo> onView,
+                     Consumer<UpdateInfo> onReleaseNotes,
                      Consumer<UpdateInfo> onSelfUpdate,
                      Predicate<UpdateInfo> canSelfUpdate) {
         getChildren().clear();
@@ -77,7 +79,7 @@ public class UpdateBanner extends VBox {
             if (!includeSkipped && UpdateChecker.isSkipped(info.target, info.latestVersion)) {
                 continue;
             }
-            Node row = buildRow(info, onView, onSelfUpdate, canSelfUpdate);
+            Node row = buildRow(info, onView, onReleaseNotes, onSelfUpdate, canSelfUpdate);
             rows.put(info.target, row);
             getChildren().add(row);
         }
@@ -86,6 +88,7 @@ public class UpdateBanner extends VBox {
 
     private Node buildRow(UpdateInfo info,
                           Consumer<UpdateInfo> onView,
+                          Consumer<UpdateInfo> onReleaseNotes,
                           Consumer<UpdateInfo> onSelfUpdate,
                           Predicate<UpdateInfo> canSelfUpdate) {
         String released = info.releaseDate == null ? "" : " (released " + info.releaseDate + ")";
@@ -109,7 +112,12 @@ public class UpdateBanner extends VBox {
             row.getChildren().add(update);
         }
 
-        Hyperlink view = new Hyperlink("View");
+        // PDV/pepmap/rawparser "View" opens the Settings dialog (where the one-click upgrade lives),
+        // so label it "Update…"; the GUI/Casanovo rows' "View" opens the release page and keeps "View".
+        boolean opensUpgradeSettings = info.target == Target.PDV
+                || info.target == Target.PEPMAP
+                || info.target == Target.RAWPARSER;
+        Hyperlink view = new Hyperlink(opensUpgradeSettings ? "Update…" : "View");
         view.setOnAction(e -> {
             if (onView != null) {
                 onView.accept(info);
@@ -130,7 +138,16 @@ public class UpdateBanner extends VBox {
         skip.setStyle(TEXT_STYLE);
         dismiss.setStyle(TEXT_STYLE);
 
-        row.getChildren().addAll(view, skip, dismiss);
+        row.getChildren().add(view);
+        // Tool rows send the primary action to Settings; also offer a direct "Release notes" link to
+        // the release page, so the user can see what changed before updating.
+        if (opensUpgradeSettings && onReleaseNotes != null && info.pageUrl != null) {
+            Hyperlink notes = new Hyperlink("Release notes");
+            notes.setOnAction(e -> onReleaseNotes.accept(info));
+            notes.setStyle(TEXT_STYLE);
+            row.getChildren().add(notes);
+        }
+        row.getChildren().addAll(skip, dismiss);
         return row;
     }
 

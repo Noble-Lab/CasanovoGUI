@@ -1552,7 +1552,7 @@ public class MainApp extends Application {
             }
         }
         if (!available.isEmpty()) {
-            updateBanner.show(available, manual, this::onViewUpdate,
+            updateBanner.show(available, manual, this::onViewUpdate, this::onReleaseNotes,
                     this::onUpdateCasanovo, this::canSelfUpdate);
             if (manual) {
                 statusLabel.setText("Update available.");
@@ -1597,6 +1597,13 @@ public class MainApp extends Application {
                 || info.target == UpdateChecker.Target.RAWPARSER) {
             openSettings();
         } else if (info.pageUrl != null) {
+            getHostServices().showDocument(info.pageUrl);
+        }
+    }
+
+    /** Open an update's release page in the browser — the "Release notes" banner link. */
+    private void onReleaseNotes(UpdateChecker.UpdateInfo info) {
+        if (info.pageUrl != null) {
             getHostServices().showDocument(info.pageUrl);
         }
     }
