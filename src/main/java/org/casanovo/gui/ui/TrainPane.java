@@ -27,11 +27,13 @@ public class TrainPane extends CommandPane {
                 "Annotated MGF / Lance (*.mgf, *.lance)", "*.mgf", "*.lance");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Training spectra:", trainField.node(), trainField.browseButton())
-                .addNote("Required. Annotated MGF (peptide in SEQ field) or a prebuilt .lance file.");
-        form.addRow("Validation spectra (--validation_peak_path):", validationField,
+                .required("Annotated MGF or .lance file")
+                .tooltip("Required. Annotated MGF (peptide in SEQ field) or a prebuilt .lance file.");
+        form.addRow("Validation spectra:", validationField,
                         FxUtils.fileButton(owner, validationField, false,
                                 "Annotated MGF / Lance (*.mgf, *.lance)", "*.mgf", "*.lance"))
-                .addNote("Required. Held-out annotated spectra for validation.");
+                .required("Held-out annotated spectra")
+                .tooltip("Required. Held-out annotated spectra for validation. (--validation_peak_path)");
         options.addToForm(owner, form);
         form.addNote("Tip: set a 'Model weights' file to fine-tune from existing weights instead of "
                 + "training from scratch.");

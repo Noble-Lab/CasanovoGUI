@@ -27,7 +27,8 @@ public class EvalPane extends CommandPane {
         peakField = new MultiFileField(owner, "annotated MGF files", "Annotated MGF (*.mgf)", "*.mgf");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Annotated spectra:", peakField.node(), peakField.browseButton())
-                .addNote("Required. Annotated MGF file(s) with peptide sequences in the SEQ field. "
+                .required("Annotated MGF (peptide in SEQ field)")
+                .tooltip("Required. Annotated MGF file(s) with peptide sequences in the SEQ field. "
                         + "top_match: 1 (the default) is recommended; evaluation metrics are "
                         + "undefined when top_match > 1.");
         options.addToForm(owner, form);

@@ -24,7 +24,8 @@ public class SequencePane extends CommandPane {
                 "MS/MS spectra (*.mzML, *.mzXML, *.mgf, *.raw)", "*.mzML", "*.mzXML", "*.mgf", "*.raw");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
-                .addNote("Required. One or more mzML/mzXML/MGF/raw files. "
+                .required("mzML / mzXML / MGF / raw spectrum file(s)")
+                .tooltip("Required. One or more mzML/mzXML/MGF/raw files. "
                         + "Select multiple in the browser, or separate paths with '"
                         + File.pathSeparator + "'.");
         options.addToForm(owner, form);

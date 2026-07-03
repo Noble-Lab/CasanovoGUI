@@ -221,6 +221,12 @@ public class MainApp extends Application {
         Scene scene = new Scene(root,
                 Math.min(940, screen.getWidth()),
                 Math.min(820, screen.getHeight()));
+        // App-wide chrome polish (action bar, command chip, footer). Layered over the
+        // AtlantaFX user-agent stylesheet, using theme tokens so it follows light/dark.
+        java.net.URL appCss = getClass().getResource("/org/casanovo/gui/app.css");
+        if (appCss != null) {
+            scene.getStylesheets().add(appCss.toExternalForm());
+        }
         // Scene-level accelerators so Run/Stop work from anywhere in the window. On the View tab the
         // main run/stop buttons are disabled, so route the shortcut to the mapping's own Run/Stop.
         scene.getAccelerators().put(
@@ -449,6 +455,8 @@ public class MainApp extends Application {
         HBox params = new HBox(8, paramsButton, useGuiParams);
         params.setAlignment(Pos.CENTER_LEFT);
         params.setPadding(new Insets(6, 10, 0, 10));
+        // Hairline above the Parameters row sets the run controls apart from the tab form.
+        params.getStyleClass().add("run-bar-top");
 
         runButton.getStyleClass().add("accent");
         runButton.setTooltip(new javafx.scene.control.Tooltip("Run the current Casanovo command (Ctrl+R)"));
@@ -457,6 +465,8 @@ public class MainApp extends Application {
         commandPreview.setEditable(false);
         // The command preview is read-only; skip it in tab order.
         commandPreview.setFocusTraversable(false);
+        // Read as a generated-command chip (inset background via app.css), not an editable field.
+        commandPreview.getStyleClass().add("command-preview");
         // Match the console output: the app's sans-serif base font (not monospace).
         commandPreview.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif; -fx-font-size: 13px;");
         HBox.setHgrow(commandPreview, Priority.ALWAYS);
@@ -477,7 +487,8 @@ public class MainApp extends Application {
         openOutputLink.setOnAction(e -> openFolder(pendingOutputDir));
         HBox bar = new HBox(8, statusLabel, progressBar, openOutputLink);
         bar.setAlignment(Pos.CENTER_LEFT);
-        bar.setPadding(new Insets(3, 10, 3, 10));
+        bar.setPadding(new Insets(4, 10, 4, 10));
+        bar.getStyleClass().add("status-bar");
         return bar;
     }
 

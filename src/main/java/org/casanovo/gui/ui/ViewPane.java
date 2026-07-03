@@ -312,6 +312,15 @@ public class ViewPane extends BorderPane {
         HBox.setHgrow(fastaField, Priority.ALWAYS);
         mzBrowse.setOnAction(e -> browseMzTab());
         faBrowse.setOnAction(e -> browseFasta());
+        // Hover help on the label and the field, matching the input tooltips on the other tabs.
+        Tooltip mzTip = tip("The Casanovo .mzTab result to view — its de novo peptides are listed and "
+                + "mapped here. Auto-filled after a sequencing run, or browse to load a previous result.");
+        Tooltip.install(mzLabel, mzTip);
+        Tooltip.install(mzTabField, mzTip);
+        Tooltip faTip = tip("Optional. Reference protein database in FASTA format. De novo peptides are "
+                + "mapped against it; leave blank to load every peptide as unmapped.");
+        Tooltip.install(faLabel, faTip);
+        Tooltip.install(fastaField, faTip);
         HBox mzRow = new HBox(8, mzLabel, mzTabField, mzBrowse);
         HBox faRow = new HBox(8, faLabel, fastaField, faBrowse);
         mzRow.setAlignment(Pos.CENTER_LEFT);

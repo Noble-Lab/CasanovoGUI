@@ -29,7 +29,7 @@ class CommonOptions {
     final TextField outputRootField = FxUtils.wideField();
     final ComboBox<String> verbosityCombo = new ComboBox<>();
     final CheckBox forceOverwrite =
-            new CheckBox("Overwrite existing output files (--force_overwrite)");
+            new CheckBox("Overwrite existing output files");
 
     CommonOptions() {
         verbosityCombo.getItems().addAll("(default)", "debug", "info", "warning", "error");
@@ -40,25 +40,35 @@ class CommonOptions {
     }
 
     void addToForm(Window owner, FxUtils.FormGrid form) {
-        form.addRow("Model weights (--model):", modelField,
-                FxUtils.fileButton(owner, modelField, false, "Model weights (*.ckpt)", "*.ckpt"));
+        form.addRow("Model weights:", modelField,
+                FxUtils.fileButton(owner, modelField, false, "Model weights (*.ckpt)", "*.ckpt"))
+                .optional("Model .ckpt (blank = default)");
         java.io.File cachedWeights = CasanovoWeights.findCachedDefault();
         if (cachedWeights != null) {
             modelField.setPromptText(cachedWeights.getAbsolutePath());
-            form.addNote("Optional. Cached default weights found: " + cachedWeights.getName()
-                    + " — leave blank to use them, or pick a different .ckpt.");
+            form.tooltip("Optional. Cached default weights found: " + cachedWeights.getName()
+                    + " — leave blank to use them, or pick a different .ckpt. (--model)");
         } else {
-            form.addNote("Optional. Leave blank to let Casanovo download/cache default weights.");
+            form.tooltip("Optional. Leave blank to let Casanovo download/cache default weights. (--model)");
         }
-        form.addRow("Config file (--config):", configField,
+        form.addRow("Config file:", configField,
                         FxUtils.fileButton(owner, configField, false, "YAML config", "*.yaml", "*.yml"))
-                .addNote("Optional. Overrides the GUI parameters when set.");
-        form.addRow("Output directory (--output_dir):", outputDirField,
-                FxUtils.dirButton(owner, outputDirField));
-        form.addRow("Output root name (--output_root):", outputRootField)
-                .addNote("Optional. Base name for the generated output files.");
-        form.addRow("Verbosity (--verbosity):", verbosityCombo);
-        form.addRow("", forceOverwrite);
+                .optional("YAML config (overrides GUI parameters)")
+                .tooltip("Optional. Overrides the GUI parameters when set. (--config)");
+        form.addRow("Output directory:", outputDirField,
+                        FxUtils.dirButton(owner, outputDirField))
+                .required("Folder for Casanovo output")
+                .tooltip("Required. Folder where Casanovo writes its output files. (--output_dir)");
+        form.addRow("Output root name:", outputRootField)
+                .optional("Base name for output files")
+                .tooltip("Optional. Base name for the generated output files. (--output_root)");
+        form.addRow("Verbosity:", verbosityCombo)
+                .optional("Logging detail")
+                .tooltip("Logging detail for the run. '(default)' uses Casanovo's own setting. (--verbosity)");
+        form.addRow("", forceOverwrite)
+                .optional("Overwrite existing output")
+                .tooltip("When on, re-running into the same output folder overwrites existing "
+                        + "files instead of failing. On by default. (--force_overwrite)");
     }
 
     /**

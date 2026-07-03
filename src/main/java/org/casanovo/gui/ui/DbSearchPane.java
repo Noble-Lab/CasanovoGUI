@@ -27,12 +27,14 @@ public class DbSearchPane extends CommandPane {
                 "MS/MS spectra (*.mzML, *.mzXML, *.mgf, *.raw)", "*.mzML", "*.mzXML", "*.mgf", "*.raw");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
-                .addNote("Required. mzML/mzXML/MGF/raw files. Select multiple in the "
+                .required("mzML / mzXML / MGF / raw spectrum file(s)")
+                .tooltip("Required. mzML/mzXML/MGF/raw files. Select multiple in the "
                         + "browser, or separate paths with '" + File.pathSeparator + "'.");
         form.addRow("Protein database (FASTA):", fastaField,
                         FxUtils.fileButton(owner, fastaField, false,
                                 "FASTA (*.fasta, *.fa)", "*.fasta", "*.fa", "*.gz"))
-                .addNote("Required. Protein sequences in FASTA format. Digestion parameters are set "
+                .required("Protein database in FASTA format")
+                .tooltip("Required. Protein sequences in FASTA format. Digestion parameters are set "
                         + "in the Parameters dialog (default: tryptic).");
         options.addToForm(owner, form);
         form.addNote("Note: database searching is experimental and may run slowly for large databases.");

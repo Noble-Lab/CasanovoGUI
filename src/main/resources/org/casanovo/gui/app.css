@@ -1,0 +1,51 @@
+/*
+ * App-wide chrome polish for the main window. Layered over the AtlantaFX user-agent
+ * stylesheet (attached to the main Scene), so every colour is a theme token and adapts
+ * to the active light/dark theme. Component-scoped styles live in settings.css /
+ * console.css; this file is only the outer frame: action bar, command chip, footer.
+ */
+
+/* Action bar (Parameters row + Command row): a hairline above the Parameters row sets
+   the run controls apart from the tab form, so the bottom of the window reads as a
+   distinct "what will run" band rather than more form. */
+.run-bar-top {
+    -fx-border-color: -color-border-muted transparent transparent transparent;
+    -fx-border-width: 1px 0 0 0;
+}
+
+/* Read-only command preview: an inset, rounded "chip" so it reads as the generated
+   command to be executed, not an editable text field the user should type into. */
+.command-preview {
+    -fx-background-color: -color-bg-inset;
+    -fx-border-color: -color-border-muted;
+    -fx-border-width: 1px;
+    -fx-background-radius: 6px;
+    -fx-border-radius: 6px;
+}
+.command-preview:focused {
+    -fx-background-color: -color-bg-inset;
+}
+
+/* Status bar: a quiet, grounded footer with a hairline top border separating it from
+   the console above. */
+.status-bar {
+    -fx-background-color: -color-bg-subtle;
+    -fx-border-color: -color-border-muted transparent transparent transparent;
+    -fx-border-width: 1px 0 0 0;
+}
+
+/* Field helper text ("Optional. …", "Required. …") under a form field: a small top gap
+   so each note hugs the field it describes and doesn't crowd the next row. */
+.form-note {
+    -fx-padding: 2px 0 4px 0;
+}
+
+/* Colour of the "Required. …" / "Optional. …" placeholder text shown inside empty form
+   fields. JavaFX colours the whole prompt string one colour, so this tints the entire line;
+   theme tokens keep it readable in light and dark. Required = red (danger), Optional = muted. */
+.text-field.prompt-required {
+    -fx-prompt-text-fill: -color-accent-fg;
+}
+.text-field.prompt-optional {
+    -fx-prompt-text-fill: -color-fg-muted;
+}
