@@ -86,6 +86,10 @@ public class MainApp extends Application {
     private ViewPane viewPane;
 
     private final Label settingsLabel = new Label();
+    /** The Casanovo version, in its own readout label so a long executable path can't truncate it away. */
+    private final Label casanovoVersionLabel = new Label();
+    /** Installed Casanovo version shown in the execution readout; resolved off-thread, null until known. */
+    private String installedCasanovoVersion;
     private final TextField commandPreview = new TextField();
     private final Button paramsButton = new Button("Parameters");
     private final CheckBox useGuiParams = new CheckBox("Use GUI parameters (generate --config)");
@@ -209,6 +213,7 @@ public class MainApp extends Application {
 
         wireActions();
         refreshSettingsLabel();
+        fetchCasanovoVersionAsync(); // off-thread; the readout gains the version shortly after the UI shows
         console.setLeftStatus(buildExecutionReadout());
         refreshPreview();
         updateChromeForTab();
@@ -522,7 +527,11 @@ public class MainApp extends Application {
     private Region buildExecutionReadout() {
         settingsLabel.getStyleClass().add("text-muted");
         settingsLabel.setMaxWidth(460);
-        HBox box = new HBox(6, new Label("Execution:"), settingsLabel);
+        // The version sits in its own label with content-width priority, so a long executable path
+        // (which truncates settingsLabel at 460px) can never clip the version off the end.
+        casanovoVersionLabel.getStyleClass().add("text-muted");
+        casanovoVersionLabel.setMinWidth(Region.USE_PREF_SIZE);
+        HBox box = new HBox(6, new Label("Execution:"), settingsLabel, casanovoVersionLabel);
         box.setAlignment(Pos.CENTER_LEFT);
         return box;
     }
@@ -546,6 +555,7 @@ public class MainApp extends Application {
         boolean saved = new SettingsDialog(stage, settings, this::onInstall).showAndApply();
         if (saved) {
             refreshSettingsLabel();
+            fetchCasanovoVersionAsync(); // the executable/env may have changed — re-resolve the version
             refreshPreview();
         }
     }
@@ -675,13 +685,29 @@ public class MainApp extends Application {
     }
 
     private void refreshSettingsLabel() {
-        if (settings.isUseConda() && !settings.getCondaEnv().isEmpty()) {
-            settingsLabel.setText(settings.getCasanovoExecutable()
-                    + "  (conda env: " + settings.getCondaEnv() + ")");
-        } else {
-            settingsLabel.setText(settings.getCasanovoExecutable() + "  (PATH / direct)");
-        }
-        settingsLabel.setTooltip(new javafx.scene.control.Tooltip(settingsLabel.getText()));
+        String base = settings.getCasanovoExecutable();
+        settingsLabel.setText(base);
+        settingsLabel.setTooltip(new javafx.scene.control.Tooltip(base));
+        // Version in its own label so a long path can't truncate it (see buildExecutionReadout).
+        boolean known = installedCasanovoVersion != null && !installedCasanovoVersion.isEmpty();
+        casanovoVersionLabel.setText(known ? "·  Casanovo " + installedCasanovoVersion : "");
+    }
+
+    /**
+     * Resolve the installed Casanovo version on a daemon thread — it may spawn a {@code casanovo
+     * version} subprocess (up to ~25s for PATH/Conda installs) — then update the execution readout on
+     * the FX thread. Never runs on the FX thread, so it cannot delay window loading.
+     */
+    private void fetchCasanovoVersionAsync() {
+        Thread t = new Thread(() -> {
+            String v = UpdateChecker.installedCasanovoVersion(settings).orElse(null);
+            Platform.runLater(() -> {
+                installedCasanovoVersion = v;
+                refreshSettingsLabel();
+            });
+        }, "casanovo-version");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void onRun() {
@@ -1510,8 +1536,11 @@ public class MainApp extends Application {
     }
 
     private void showAbout() {
+        String casa = (installedCasanovoVersion == null || installedCasanovoVersion.isEmpty())
+                ? "not found" : installedCasanovoVersion;
         alert(Alert.AlertType.INFORMATION, "About Casanovo GUI",
-                "Casanovo GUI " + UpdateChecker.guiVersion() + "\n\n"
+                "Casanovo GUI " + UpdateChecker.guiVersion() + "\n"
+                        + "Casanovo " + casa + "\n\n"
                         + "A GUI for Casanovo de novo peptide sequencing.\n"
                         + "Configure inputs, run, and watch the console.\n\n"
                         + "Casanovo: https://github.com/Noble-Lab/casanovo");
