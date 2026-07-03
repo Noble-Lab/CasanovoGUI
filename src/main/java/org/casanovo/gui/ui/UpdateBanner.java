@@ -34,12 +34,14 @@ import java.util.function.Predicate;
  */
 public class UpdateBanner extends VBox {
 
-    // Muted amber so the banner reads as informational, not alarming.
+    // A muted "warning" strip that reads as informational, not alarming. Colours come from the
+    // AtlantaFX warning tokens so the banner (and its link text) adapt to the active light/dark theme
+    // instead of being a fixed bright-amber band with theme-accent links.
     private static final String ROW_STYLE =
-            "-fx-background-color: #FFF4CE;"
-                    + "-fx-border-color: #E0C36A;"
+            "-fx-background-color: -color-warning-subtle;"
+                    + "-fx-border-color: -color-warning-muted;"
                     + "-fx-border-width: 0 0 1 0;";
-    private static final String TEXT_STYLE = "-fx-text-fill: #4E3A00;";
+    private static final String TEXT_STYLE = "-fx-text-fill: -color-warning-fg;";
 
     /** Rows currently shown, keyed by target so they can be removed individually. */
     private final Map<Target, Node> rows = new LinkedHashMap<>();
@@ -122,6 +124,11 @@ public class UpdateBanner extends VBox {
 
         Hyperlink dismiss = new Hyperlink("Dismiss");
         dismiss.setOnAction(e -> removeTarget(info.target));
+
+        // Keep the links readable on the warning surface (the default accent colour can be low-contrast).
+        view.setStyle(TEXT_STYLE);
+        skip.setStyle(TEXT_STYLE);
+        dismiss.setStyle(TEXT_STYLE);
 
         row.getChildren().addAll(view, skip, dismiss);
         return row;

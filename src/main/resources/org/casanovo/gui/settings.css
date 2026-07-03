@@ -37,3 +37,34 @@
 .result-tabs .chart-title {
     -fx-font-size: 13px;
 }
+
+/* ---- Shared component styles (theme-token based, so they adapt to light/dark) ---- */
+
+/* Muted one-line hint text, e.g. "ⓘ Double-click a peptide…". Replaces scattered inline
+   "-fx-font-size: 11px; -fx-opacity: 0.6;" so every hint reads identically and stays legible
+   on dark themes (a token fg, not a blanket opacity). */
+.hint {
+    -fx-font-size: 11px;
+    -fx-text-fill: -color-fg-muted;
+}
+
+/* Overview KPI cards: a quiet inset surface with a token border, one radius, one padding. */
+.stat-card {
+    -fx-padding: 10px 12px 10px 12px;
+    -fx-background-color: -color-bg-subtle;
+    -fx-background-radius: 8px;
+    -fx-border-color: -color-border-muted;
+    -fx-border-radius: 8px;
+}
+.stat-card .stat-caption {
+    -fx-font-size: 11px;
+    -fx-text-fill: -color-fg-muted;
+}
+.stat-card .stat-value {
+    -fx-font-size: 20px;
+    -fx-font-weight: bold;
+}
+.stat-card .stat-sub {
+    -fx-font-size: 10px;
+    -fx-text-fill: -color-fg-muted;
+}

@@ -53,7 +53,7 @@ public class DbSearchPane extends CommandPane {
     @Override
     public String validateInputs() {
         if (PathFields.isEmpty(peakField.field())) {
-            return "Please choose at least one spectrum file (mzML/mzXML/MGF).";
+            return "Please choose at least one spectrum file (mzML/mzXML/MGF/raw).";
         }
         String missing = PathFields.firstMissing(peakField.field());
         if (missing != null) {

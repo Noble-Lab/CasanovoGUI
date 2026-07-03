@@ -127,7 +127,9 @@ public class SettingsDialog {
                 javafx.event.ActionEvent.ACTION, evt -> {
                     String err = validate();
                     if (err != null) {
-                        new Alert(Alert.AlertType.WARNING, err).showAndWait();
+                        Alert a = new Alert(Alert.AlertType.WARNING, err);
+                        a.initOwner(owner);
+                        a.showAndWait();
                         evt.consume();
                     }
                 });

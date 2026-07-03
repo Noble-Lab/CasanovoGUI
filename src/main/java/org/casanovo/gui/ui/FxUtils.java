@@ -95,7 +95,7 @@ final class FxUtils {
     }
 
     /**
-     * A "Browse…" button that opens an <em>existing</em> file chooser (Open) and
+     * A "Browse" button that opens an <em>existing</em> file chooser (Open) and
      * writes the picked path into {@code target}. Use this for input files only;
      * for output files the user creates, use {@link #saveFileButton}.
      */
@@ -129,7 +129,7 @@ final class FxUtils {
     }
 
     /**
-     * A "Browse…" button that opens a <em>Save as</em> file chooser, so the user
+     * A "Browse" button that opens a <em>Save as</em> file chooser, so the user
      * can pick a path for a file that does not exist yet. The chosen path is
      * written into {@code target}. Use this for output files the user creates
      * (e.g. {@code casanovo configure --output ...}).
@@ -176,7 +176,7 @@ final class FxUtils {
                 new FileChooser.ExtensionFilter("All files", "*.*"));
     }
 
-    /** A "Browse…" button that selects a directory into {@code target}. */
+    /** A "Browse" button that selects a directory into {@code target}. */
     static Button dirButton(Window owner, TextField target) {
         Button b = new Button("Browse");
         b.setOnAction(e -> {

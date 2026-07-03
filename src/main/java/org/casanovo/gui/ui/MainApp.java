@@ -11,6 +11,7 @@ import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.CheckMenuItem;
+import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
@@ -92,6 +93,8 @@ public class MainApp extends Application {
     private final Button stopButton = new Button("Stop");
     private final Label statusLabel = new Label("Ready.");
     private final ProgressBar progressBar = new ProgressBar(0);
+    /** Shown in the status bar after a successful run; opens the run's output folder. */
+    private final Hyperlink openOutputLink = new Hyperlink("Open output folder");
     private final SpectrumTrace spectrum = new SpectrumTrace();
     private final UpdateBanner updateBanner = new UpdateBanner();
 
@@ -218,13 +221,26 @@ public class MainApp extends Application {
         Scene scene = new Scene(root,
                 Math.min(940, screen.getWidth()),
                 Math.min(820, screen.getHeight()));
-        // Scene-level accelerators so Run/Stop work from anywhere in the window.
+        // Scene-level accelerators so Run/Stop work from anywhere in the window. On the View tab the
+        // main run/stop buttons are disabled, so route the shortcut to the mapping's own Run/Stop.
         scene.getAccelerators().put(
                 new KeyCodeCombination(KeyCode.R, KeyCombination.SHORTCUT_DOWN),
-                () -> { if (!runButton.isDisabled()) runButton.fire(); });
+                () -> {
+                    if (isViewTab()) {
+                        viewPane.fireRun();
+                    } else if (!runButton.isDisabled()) {
+                        runButton.fire();
+                    }
+                });
         scene.getAccelerators().put(
                 new KeyCodeCombination(KeyCode.ESCAPE),
-                () -> { if (!stopButton.isDisabled()) stopButton.fire(); });
+                () -> {
+                    if (isViewTab()) {
+                        viewPane.fireStop();
+                    } else if (!stopButton.isDisabled()) {
+                        stopButton.fire();
+                    }
+                });
         // Parameters editor shortcut (the File-menu item was removed; the run-bar button remains).
         scene.getAccelerators().put(
                 new KeyCodeCombination(KeyCode.P, KeyCombination.SHORTCUT_DOWN),
@@ -456,10 +472,39 @@ public class MainApp extends Application {
         progressBar.setPrefWidth(220);
         progressBar.setVisible(false);
         statusLabel.getStyleClass().add("text-muted");
-        HBox bar = new HBox(8, statusLabel, progressBar);
+        openOutputLink.setVisible(false);
+        openOutputLink.setManaged(false);
+        openOutputLink.setOnAction(e -> openFolder(pendingOutputDir));
+        HBox bar = new HBox(8, statusLabel, progressBar, openOutputLink);
         bar.setAlignment(Pos.CENTER_LEFT);
         bar.setPadding(new Insets(3, 10, 3, 10));
         return bar;
+    }
+
+    /** Reveal or hide the status-bar "Open output folder" link. */
+    private void showOpenOutputLink(boolean show) {
+        openOutputLink.setVisible(show);
+        openOutputLink.setManaged(show);
+    }
+
+    /** Open {@code dir} in the OS file manager (off the FX thread; Desktop.open can block). */
+    private void openFolder(File dir) {
+        if (dir == null || !dir.isDirectory()) {
+            return;
+        }
+        Thread t = new Thread(() -> {
+            try {
+                if (java.awt.Desktop.isDesktopSupported()) {
+                    java.awt.Desktop.getDesktop().open(dir);
+                    return;
+                }
+            } catch (Exception ignored) {
+                // fall through to the HostServices fallback
+            }
+            Platform.runLater(() -> getHostServices().showDocument(dir.toURI().toString()));
+        }, "open-folder");
+        t.setDaemon(true);
+        t.start();
     }
 
     /** The "Execution: <casanovo>" readout shown at the left of the console's bottom bar. */
@@ -1227,6 +1272,9 @@ public class MainApp extends Application {
             console.appendLine("[done] Casanovo finished successfully (exit 0).");
             statusLabel.setText("Finished successfully.");
             captureResult();
+            if (pendingOutputDir != null && pendingOutputDir.isDirectory()) {
+                showOpenOutputLink(true);
+            }
         } else if (exitCode == 130) {
             console.appendLine("[stopped] Casanovo was cancelled by the user.");
             statusLabel.setText("Stopped.");
@@ -1396,7 +1444,12 @@ public class MainApp extends Application {
     private void updateRunningState(boolean running) {
         runButton.setDisable(running);
         stopButton.setDisable(!running);
-        tabs.setDisable(running);
+        if (running) {
+            showOpenOutputLink(false); // a new run/conversion started — hide last run's link until it succeeds
+        }
+        // Leave the tabs enabled during a run: Run/Parameters are already disabled, so the user can't
+        // launch another job, but they can switch to the View tab to browse a previous mapping or read
+        // results while the current run streams to the console.
         paramsButton.setDisable(running);
         useGuiParams.setDisable(running);
     }

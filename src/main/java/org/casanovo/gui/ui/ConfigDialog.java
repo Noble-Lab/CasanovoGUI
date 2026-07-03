@@ -194,6 +194,7 @@ public class ConfigDialog {
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
                 "Reset all parameters to Casanovo defaults?", ButtonType.OK, ButtonType.CANCEL);
         confirm.setHeaderText(null);
+        confirm.initOwner(owner);
         if (confirm.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK) {
             config.resetAllToDefaults();
             refreshEditorsFromModel();
@@ -212,10 +213,13 @@ public class ConfigDialog {
                 Alert ok = new Alert(Alert.AlertType.INFORMATION,
                         "Saved configuration to:\n" + target.getAbsolutePath(), ButtonType.OK);
                 ok.setHeaderText(null);
+                ok.initOwner(owner);
                 ok.showAndWait();
             } catch (IOException ex) {
-                new Alert(Alert.AlertType.ERROR, "Failed to save: " + ex.getMessage(),
-                        ButtonType.OK).showAndWait();
+                Alert err = new Alert(Alert.AlertType.ERROR, "Failed to save: " + ex.getMessage(),
+                        ButtonType.OK);
+                err.initOwner(owner);
+                err.showAndWait();
             }
         }
     }

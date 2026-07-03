@@ -29,6 +29,7 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Spinner;
+import javafx.scene.control.SpinnerValueFactory;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
@@ -53,6 +54,7 @@ import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import javafx.scene.input.MouseButton;
 import javafx.util.Duration;
+import javafx.util.StringConverter;
 import org.casanovo.gui.core.MzTabScores;
 import org.casanovo.gui.core.PdvController;
 import org.casanovo.gui.core.PepMapLauncher;
@@ -147,7 +149,6 @@ public class ViewPane extends BorderPane {
     private static final String SHARED_HEX = "#E08000"; // orange – shared-peptide coverage
     private static final Color UNIQUE_COLOR = Color.web(UNIQUE_HEX);
     private static final Color SHARED_COLOR = Color.web(SHARED_HEX);
-    private static final Color PLAIN_COLOR = Color.web("#444444");
     private static final String MISMATCH_HEX = "#C0392B"; // red – a de novo↔protein substitution site
     private static final Color MISMATCH_COLOR = Color.web(MISMATCH_HEX);
     private static final Font MONO = Font.font("Monospaced", 13);
@@ -738,8 +739,9 @@ public class ViewPane extends BorderPane {
         proteinFilter.setPromptText("Filter by protein…");
         proteinFilter.setPrefWidth(260);
         proteinFilter.textProperty().addListener((o, a, b) -> proteinPager.setQuery(b));
-        HBox top = new HBox(8, new Label("Filter:"), proteinFilter,
-                new Label("(double-click a row to open it in Protein view)"));
+        Label proteinsHint = new Label("ⓘ Double-click a row to open it in Protein view.");
+        proteinsHint.getStyleClass().add("hint");
+        HBox top = new HBox(8, new Label("Filter:"), proteinFilter, proteinsHint);
         top.setAlignment(Pos.CENTER_LEFT);
         top.setPadding(new Insets(0, 0, 6, 0));
 
@@ -788,9 +790,11 @@ public class ViewPane extends BorderPane {
         top.setPadding(new Insets(0, 0, 6, 0));
 
         BorderPane pepPane = new BorderPane(proteinPeptideTable);
-        Label pepHint = peptideHint();
-        BorderPane.setMargin(pepHint, new Insets(4, 0, 0, 2));
-        pepPane.setBottom(pepHint);
+        // Same single-click→PDV and double-click→PSMs behaviour as the Mapped/Unmapped tables, so
+        // advertise both hints here too (this table previously showed only the double-click hint).
+        VBox pepHints = new VBox(0, peptideHint(), pdvPeptideHint());
+        BorderPane.setMargin(pepHints, new Insets(4, 0, 0, 2));
+        pepPane.setBottom(pepHints);
 
         coverageBox.setPadding(new Insets(4));
         ScrollPane covScroll = new ScrollPane(coverageBox);
@@ -954,7 +958,7 @@ public class ViewPane extends BorderPane {
     /** A muted one-line hint pointing users to the double-click per-residue/PSMs popup. */
     private static Label peptideHint() {
         Label l = new Label("ⓘ Double-click a peptide to see its PSMs and per-residue confidence.");
-        l.setStyle("-fx-font-size: 11px; -fx-opacity: 0.6;");
+        l.getStyleClass().add("hint");
         return l;
     }
 
@@ -964,7 +968,7 @@ public class ViewPane extends BorderPane {
      */
     private Label pdvPeptideHint() {
         Label l = new Label("ⓘ Single-click a peptide to show the annotated spectrum of its best PSM in PDV.");
-        l.setStyle("-fx-font-size: 11px; -fx-opacity: 0.6;");
+        l.getStyleClass().add("hint");
         l.visibleProperty().bind(pdvVizCheck.selectedProperty());
         l.managedProperty().bind(pdvVizCheck.selectedProperty());
         return l;
@@ -1210,12 +1214,17 @@ public class ViewPane extends BorderPane {
                 "Coverage: %.1f%%  (%d / %d residues)%s", 100.0 * covered / seq.length(), covered, seq.length(),
                 subs > 0 ? "  ·  " + subs + " mismatch site" + (subs == 1 ? "" : "s") : ""));
 
+        // Uncovered residues and the position ruler must stay legible on dark themes; pick their
+        // greys from the active theme, mirroring AaScoreChart.paint's posColor/tickColor selection.
+        boolean dark = Themes.isDark();
+        Color plainColor = dark ? Color.web("#b0b0b0") : Color.web("#444444");
+        Color rulerColor = dark ? Color.web("#a0a0a0") : Color.web("#888888");
         for (int start = 0; start < seq.length(); start += COVERAGE_WRAP) {
             int end = Math.min(start + COVERAGE_WRAP, seq.length());
             TextFlow line = new TextFlow();
             Text pos = new Text(String.format("%6d  ", start + 1));
             pos.setFont(MONO);
-            pos.setFill(Color.web("#999999"));
+            pos.setFill(rulerColor);
             line.getChildren().add(pos);
             int i = start;
             while (i < end) {
@@ -1237,7 +1246,7 @@ public class ViewPane extends BorderPane {
                 }
                 Text t = new Text(seq.substring(i, j));
                 t.setFont(c > 0 ? MONO_BOLD : MONO);
-                t.setFill(c == 2 ? UNIQUE_COLOR : c == 1 ? SHARED_COLOR : PLAIN_COLOR);
+                t.setFill(c == 2 ? UNIQUE_COLOR : c == 1 ? SHARED_COLOR : plainColor);
                 line.getChildren().add(t);
                 i = j;
             }
@@ -1719,6 +1728,20 @@ public class ViewPane extends BorderPane {
         return scroll;
     }
 
+    /** Fire the mapping Run button (for the window's Ctrl+R accelerator), if it is enabled. */
+    public void fireRun() {
+        if (!runButton.isDisabled()) {
+            runButton.fire();
+        }
+    }
+
+    /** Fire the mapping Stop button (for the window's Esc accelerator), if it is enabled. */
+    public void fireStop() {
+        if (!stopButton.isDisabled()) {
+            stopButton.fire();
+        }
+    }
+
     /** Distance from this pane's top down to just below the Run row (= inputs + settings content). */
     public double settingsExtent() {
         double inputs = topInputs == null ? 0 : topInputs.prefHeight(-1);
@@ -1732,6 +1755,46 @@ public class ViewPane extends BorderPane {
         s.getEditor().setPrefColumnCount(4);
         s.getEditor().setAlignment(Pos.CENTER_RIGHT);
         s.setMaxWidth(Region.USE_PREF_SIZE);
+        // Spinner.setEditable(true) does NOT commit typed text to the value on focus loss, so a value
+        // typed but not confirmed with Enter would be silently ignored when the spinner is read at Run
+        // time. Commit (and clamp) the editor text through the value factory whenever focus leaves.
+        s.focusedProperty().addListener((obs, was, focused) -> {
+            if (!focused) {
+                commitSpinner(s);
+            }
+        });
+    }
+
+    /** Parse the spinner editor's current text into its value factory, clamped to range (JavaFX does
+        not commit editable-spinner text on focus loss). Unparseable text keeps the last valid value. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void commitSpinner(Spinner<?> s) {
+        SpinnerValueFactory factory = s.getValueFactory();
+        if (!s.isEditable() || factory == null || factory.getConverter() == null) {
+            return;
+        }
+        StringConverter converter = factory.getConverter();
+        try {
+            Object parsed = converter.fromString(s.getEditor().getText());
+            if (parsed != null) {
+                factory.setValue(clampSpinnerValue(factory, parsed));
+            }
+        } catch (RuntimeException ignored) {
+            // keep the last valid value
+        }
+        // Normalize the editor text back to the committed (possibly clamped) value.
+        s.getEditor().setText(converter.toString(factory.getValue()));
+    }
+
+    /** Clamp a parsed value to the Integer/Double factory's [min, max]; other factory types unchanged. */
+    private static Object clampSpinnerValue(SpinnerValueFactory<?> factory, Object value) {
+        if (factory instanceof SpinnerValueFactory.IntegerSpinnerValueFactory f && value instanceof Integer v) {
+            return Math.max(f.getMin(), Math.min(f.getMax(), v));
+        }
+        if (factory instanceof SpinnerValueFactory.DoubleSpinnerValueFactory f && value instanceof Double v) {
+            return Math.max(f.getMin(), Math.min(f.getMax(), v));
+        }
+        return value;
     }
 
     /** Total physical RAM in whole GB (floored), for capping the max-memory spinner. */
@@ -2515,19 +2578,16 @@ public class ViewPane extends BorderPane {
     private static javafx.scene.Node statCard(String caption, String value, String sub, Double progress,
                                               List<String> extra) {
         Label cap = new Label(caption);
-        cap.getStyleClass().add("text-muted");
-        cap.setStyle("-fx-font-size: 11px;");
+        cap.getStyleClass().add("stat-caption");
         Label val = new Label(value);
-        val.setStyle("-fx-font-size: 19px; -fx-font-weight: bold;");
+        val.getStyleClass().add("stat-value");
         VBox card = new VBox(2, cap, val);
         card.setAlignment(Pos.CENTER_LEFT); // centre content vertically when the tile is stretched to fill
         card.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE); // fill the grid cell so the block meets the plots' edges
-        card.setStyle("-fx-padding: 8 10 8 10; -fx-background-radius: 8; -fx-border-radius: 8; "
-                + "-fx-background-color: rgba(128,128,128,0.06); -fx-border-color: rgba(128,128,128,0.35);");
+        card.getStyleClass().add("stat-card");
         if (sub != null) {
             Label s = new Label(sub);
-            s.getStyleClass().add("text-muted");
-            s.setStyle("-fx-font-size: 10px;");
+            s.getStyleClass().add("stat-sub");
             card.getChildren().add(s);
         }
         if (progress != null) {
@@ -2539,8 +2599,7 @@ public class ViewPane extends BorderPane {
         if (extra != null) {
             for (String line : extra) {
                 Label e = new Label(line);
-                e.getStyleClass().add("text-muted");
-                e.setStyle("-fx-font-size: 10px;");
+                e.getStyleClass().add("stat-sub");
                 card.getChildren().add(e);
             }
         }

@@ -45,7 +45,7 @@ public class SequencePane extends CommandPane {
     @Override
     public String validateInputs() {
         if (PathFields.isEmpty(peakField.field())) {
-            return "Please choose at least one spectrum file (mzML/mzXML/MGF) to sequence.";
+            return "Please choose at least one spectrum file (mzML/mzXML/MGF/raw) to sequence.";
         }
         return PathFields.firstMissing(peakField.field());
     }

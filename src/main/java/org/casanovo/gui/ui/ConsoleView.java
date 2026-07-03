@@ -36,6 +36,10 @@ import javafx.scene.layout.Region;
  */
 public class ConsoleView extends BorderPane implements ConsoleOutput {
 
+    /** Oldest lines are trimmed once the committed text grows past this many, bounding memory
+        for long/chatty runs (mirrors {@code RichConsoleView.MAX_PARAGRAPHS}). */
+    private static final int MAX_LINES = 5000;
+
     private final TextArea textArea = new TextArea();
     /** Length of text that is permanent; anything after it is the transient progress line. */
     private int committedLen = 0;
@@ -132,7 +136,36 @@ public class ConsoleView extends BorderPane implements ConsoleOutput {
         // having the last refresh concatenated onto the previous one.
         textArea.replaceText(committedLen, end, batch);
         committedLen = textArea.getLength();
+        trimIfNeeded();
         textArea.positionCaret(textArea.getLength());
+    }
+
+    /** Delete the oldest committed lines once the document exceeds {@link #MAX_LINES}. Only the
+        committed region is trimmed, never the trailing transient progress line. */
+    private void trimIfNeeded() {
+        String text = textArea.getText();
+        int lines = 0;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\n') {
+                lines++;
+            }
+        }
+        if (lines <= MAX_LINES) {
+            return;
+        }
+        int drop = lines - MAX_LINES;
+        int cut = 0;
+        int seen = 0;
+        for (int i = 0; i < text.length() && seen < drop; i++) {
+            if (text.charAt(i) == '\n') {
+                seen++;
+                cut = i + 1;
+            }
+        }
+        if (cut > 0 && cut <= committedLen) {
+            textArea.deleteText(0, cut);
+            committedLen -= cut;
+        }
     }
 
     /**
