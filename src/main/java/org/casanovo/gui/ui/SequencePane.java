@@ -11,7 +11,7 @@ import java.util.List;
 
 /**
  * Tab for {@code casanovo sequence} &mdash; de novo peptide sequencing of MS/MS
- * spectra in mzML, mzXML or MGF files.
+ * spectra in mzML, mzXML, MGF or raw files.
  */
 public class SequencePane extends CommandPane {
 

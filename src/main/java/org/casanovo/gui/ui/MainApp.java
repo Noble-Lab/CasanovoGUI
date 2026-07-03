@@ -570,7 +570,7 @@ public class MainApp extends Application {
     /** Tooltip text for a command tab, keyed by its title. */
     private static String tabTooltip(String title) {
         return switch (title) {
-            case "De novo" -> "De novo peptide sequencing of an MS/MS spectrum file (mzML/mzXML/MGF) "
+            case "De novo" -> "De novo peptide sequencing of an MS/MS spectrum file (mzML/mzXML/MGF/raw) "
                     + "with a trained model; produces an mzTab of predicted peptides.";
             case "DB Search" -> "Score spectra against a protein/peptide database (casanovo db-search) "
                     + "instead of pure de novo sequencing.";
