@@ -19,7 +19,6 @@ public class DbSearchPane extends CommandPane {
 
     private final MultiFileField peakField;
     private final TextField fastaField = FxUtils.wideField();
-    private final CommonOptions options = new CommonOptions();
     private final ScrollPane content;
 
     public DbSearchPane(Window owner) {
@@ -28,7 +27,7 @@ public class DbSearchPane extends CommandPane {
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
                 .required("mzML / mzXML / MGF / raw spectrum file(s)")
-                .tooltip("Required. mzML/mzXML/MGF/raw files. Select multiple in the "
+                .tooltip("Required. One or more mzML/mzXML/MGF/raw files. Select multiple in the "
                         + "browser, or separate paths with '" + File.pathSeparator + "'.");
         form.addRow("Protein database (FASTA):", fastaField,
                         FxUtils.fileButton(owner, fastaField, false,
@@ -38,6 +37,7 @@ public class DbSearchPane extends CommandPane {
                         + "in the Parameters dialog (default: tryptic).");
         options.addToForm(owner, form);
         form.addNote("Note: database searching is experimental and may run slowly for large databases.");
+        options.addConfigRow(owner, form);
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);
     }
@@ -53,11 +53,13 @@ public class DbSearchPane extends CommandPane {
     }
 
     @Override
-    public String validateInputs() {
+    protected ValidationError validatePaneInputs() {
         if (PathFields.isEmpty(peakField.field())) {
-            return "Please choose at least one spectrum file (mzML/mzXML/MGF/raw).";
+            return new ValidationError(
+                    "Please choose at least one spectrum file (mzML/mzXML/MGF/raw).",
+                    peakField.field());
         }
-        String missing = PathFields.firstMissing(peakField.field());
+        ValidationError missing = PathFields.firstMissing(peakField.field());
         if (missing != null) {
             return missing;
         }

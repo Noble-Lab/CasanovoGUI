@@ -1,5 +1,7 @@
 package org.casanovo.gui.ui;
 
+import javafx.collections.SetChangeListener;
+import javafx.css.PseudoClass;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
@@ -28,6 +30,9 @@ import java.util.List;
  * building / validation) keeps working against it unchanged.</p>
  */
 final class MultiFileField {
+
+    /** AtlantaFX's danger (validation-error) state, mirrored onto the collapsed summary box. */
+    private static final PseudoClass DANGER = PseudoClass.getPseudoClass("danger");
 
     private final TextField field = FxUtils.wideField();
     private final Hyperlink link = new Hyperlink();
@@ -69,6 +74,9 @@ final class MultiFileField {
                 refreshDisplay();
             }
         });
+        // Mirror the field's danger (validation-error) state onto the collapsed summary box, since
+        // the backing field's own :danger border isn't visible while it's hidden.
+        field.getPseudoClassStates().addListener((SetChangeListener<PseudoClass>) c -> refreshDisplay());
     }
 
     /** The backing field that holds the path-separator-joined paths. */
@@ -121,10 +129,13 @@ final class MultiFileField {
         link.setVisible(multi);
         field.setManaged(!multi);
         field.setVisible(!multi);
-        // The hidden field takes its border with it, so in summary mode draw a
-        // matching (theme-aware) box around the link to keep the input outlined.
+        // The hidden field takes its border with it, so in summary mode draw a matching
+        // (theme-aware) box around the link to keep the input outlined — in the danger colour when
+        // the field is flagged invalid, since the field's own :danger border isn't visible then.
+        boolean invalid = field.getPseudoClassStates().contains(DANGER);
+        String border = invalid ? "-color-danger-emphasis" : "-color-border-default";
         node.setStyle(multi
-                ? "-fx-border-color: -color-border-default;"
+                ? "-fx-border-color: " + border + ";"
                 + "-fx-border-width: 1px;"
                 + "-fx-border-radius: 4px;"
                 + "-fx-min-height: 30px;"

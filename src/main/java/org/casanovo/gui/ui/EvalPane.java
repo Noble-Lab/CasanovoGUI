@@ -20,7 +20,6 @@ import java.util.List;
 public class EvalPane extends CommandPane {
 
     private final MultiFileField peakField;
-    private final CommonOptions options = new CommonOptions();
     private final ScrollPane content;
 
     public EvalPane(Window owner) {
@@ -32,6 +31,7 @@ public class EvalPane extends CommandPane {
                         + "top_match: 1 (the default) is recommended; evaluation metrics are "
                         + "undefined when top_match > 1.");
         options.addToForm(owner, form);
+        options.addConfigRow(owner, form);
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);
     }
@@ -47,9 +47,11 @@ public class EvalPane extends CommandPane {
     }
 
     @Override
-    public String validateInputs() {
+    protected ValidationError validatePaneInputs() {
         if (PathFields.isEmpty(peakField.field())) {
-            return "Please choose at least one annotated MGF file to evaluate against.";
+            return new ValidationError(
+                    "Please choose at least one annotated MGF file to evaluate against.",
+                    peakField.field());
         }
         return PathFields.firstMissing(peakField.field());
     }

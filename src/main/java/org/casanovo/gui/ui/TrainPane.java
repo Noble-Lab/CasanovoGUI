@@ -19,7 +19,6 @@ public class TrainPane extends CommandPane {
 
     private final MultiFileField trainField;
     private final TextField validationField = FxUtils.wideField();
-    private final CommonOptions options = new CommonOptions();
     private final ScrollPane content;
 
     public TrainPane(Window owner) {
@@ -37,6 +36,7 @@ public class TrainPane extends CommandPane {
         options.addToForm(owner, form);
         form.addNote("Tip: set a 'Model weights' file to fine-tune from existing weights instead of "
                 + "training from scratch.");
+        options.addConfigRow(owner, form);
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);
     }
@@ -52,11 +52,12 @@ public class TrainPane extends CommandPane {
     }
 
     @Override
-    public String validateInputs() {
+    protected ValidationError validatePaneInputs() {
         if (PathFields.isEmpty(trainField.field())) {
-            return "Please choose at least one training spectra file.";
+            return new ValidationError("Please choose at least one training spectra file.",
+                    trainField.field());
         }
-        String missing = PathFields.firstMissing(trainField.field());
+        ValidationError missing = PathFields.firstMissing(trainField.field());
         if (missing != null) {
             return missing;
         }

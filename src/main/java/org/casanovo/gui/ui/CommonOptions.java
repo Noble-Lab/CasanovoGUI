@@ -1,5 +1,7 @@
 package org.casanovo.gui.ui;
 
+import javafx.scene.Node;
+import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.TextField;
@@ -30,6 +32,9 @@ class CommonOptions {
     final ComboBox<String> verbosityCombo = new ComboBox<>();
     final CheckBox forceOverwrite =
             new CheckBox("Overwrite existing output files");
+    /** The "Config file" row nodes, toggled together when GUI parameters are (de)selected. */
+    private Node configLabel;
+    private Button configBrowseButton;
 
     CommonOptions() {
         verbosityCombo.getItems().addAll("(default)", "debug", "info", "warning", "error");
@@ -51,10 +56,6 @@ class CommonOptions {
         } else {
             form.tooltip("Optional. Leave blank to let Casanovo download/cache default weights. (--model)");
         }
-        form.addRow("Config file:", configField,
-                        FxUtils.fileButton(owner, configField, false, "YAML config", "*.yaml", "*.yml"))
-                .optional("YAML config (overrides GUI parameters)")
-                .tooltip("Optional. Overrides the GUI parameters when set. (--config)");
         form.addRow("Output directory:", outputDirField,
                         FxUtils.dirButton(owner, outputDirField))
                 .required("Folder for Casanovo output")
@@ -64,11 +65,61 @@ class CommonOptions {
                 .tooltip("Optional. Base name for the generated output files. (--output_root)");
         form.addRow("Verbosity:", verbosityCombo)
                 .optional("Logging detail")
-                .tooltip("Logging detail for the run. '(default)' uses Casanovo's own setting. (--verbosity)");
+                .tooltip("Optional. Logging detail for the run. '(default)' uses Casanovo's own setting. (--verbosity)");
         form.addRow("", forceOverwrite)
                 .optional("Overwrite existing output")
                 .tooltip("When on, re-running into the same output folder overwrites existing "
                         + "files instead of failing. On by default. (--force_overwrite)");
+    }
+
+    /**
+     * Add the external "Config file" row. Call this LAST when building a pane's form (after any
+     * notes): a GridPane drops a trailing all-hidden row cleanly, but keeps the vgap around a
+     * hidden middle row — so making this the final row lets it collapse without leaving a gap. The
+     * row is shown only when "Use GUI parameters" is off, where the config file is then required.
+     */
+    void addConfigRow(Window owner, FxUtils.FormGrid form) {
+        Button configBrowse = FxUtils.fileButton(owner, configField, false, "YAML config", "*.yaml", "*.yml");
+        form.addRow("Config file:", configField, configBrowse)
+                .required("YAML config file for Casanovo")
+                .tooltip("Required when 'Use GUI parameters' is off. A YAML config file passed to "
+                        + "Casanovo. (--config)");
+        configLabel = form.lastLabel();
+        configBrowseButton = configBrowse;
+    }
+
+    /**
+     * Show or hide the "Config file" row. Hidden while the GUI generates the config from the
+     * Parameters dialog; shown when the user unticks "Use GUI parameters" to supply a YAML file.
+     * The field's value is preserved across toggles; {@link #appendArgs} ignores it while the row
+     * is hidden, so a previously-typed path can't silently apply in GUI mode.
+     */
+    void setConfigFileVisible(boolean visible) {
+        if (configLabel == null) {
+            return; // addConfigRow was never called — no config row on this form
+        }
+        for (Node n : new Node[]{configLabel, configField, configBrowseButton}) {
+            n.setVisible(visible);
+            n.setManaged(visible);
+        }
+    }
+
+    /** The config file is required when the user opts out of GUI parameters. */
+    ValidationError validateConfigFile() {
+        return PathFields.validateSingleFile(configField, "a YAML config file");
+    }
+
+    /**
+     * Validate the shared required option (the output directory). Returns an inline
+     * {@link ValidationError} pointing at the field, or {@code null} when it is set.
+     */
+    ValidationError validateOutputDir() {
+        if (PathFields.isEmpty(outputDirField)) {
+            return new ValidationError(
+                    "Please set an \"Output directory\" before running, so the results are "
+                            + "written where you expect.", outputDirField);
+        }
+        return null;
     }
 
     /**
@@ -89,7 +140,11 @@ class CommonOptions {
             args.add("--model");
             args.add(model);
         }
-        addFileArg(args, "--config", configField.getText());
+        // Only in config-file mode (the row is shown); in GUI-parameters mode the field is hidden,
+        // its value preserved but ignored — the GUI generates the config instead.
+        if (configField.isVisible()) {
+            addFileArg(args, "--config", configField.getText());
+        }
         // Pass an ABSOLUTE output dir. The runner sets the process working directory to this
         // folder, so a relative --output_dir would resolve against it and nest (e.g. ok\ok) —
         // which also breaks "Open in PDV" (the GUI looks for the mzTab in the un-nested folder).

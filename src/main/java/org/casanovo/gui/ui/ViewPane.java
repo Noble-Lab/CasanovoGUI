@@ -255,6 +255,7 @@ public class ViewPane extends BorderPane {
 
     private final Label sharedStatus;          // the window's shared bottom status label (same as de novo)
     private final ProgressBar sharedProgress;  // the window's shared bottom progress bar
+    private final InlineValidation validation; // shared inline validation feedback (same instance as de novo)
 
     private volatile Process proc;
     private volatile boolean running;
@@ -265,13 +266,14 @@ public class ViewPane extends BorderPane {
     private Set<String> emptyPsmColumns = Set.of(); // PSM columns null for every PSM — hidden from the popup table
 
     public ViewPane(Window owner, Settings settings, Label sharedStatus, ProgressBar sharedProgress,
-                    Consumer<String> consoleOut, PdvController pdvController) {
+                    Consumer<String> consoleOut, PdvController pdvController, InlineValidation validation) {
         this.owner = owner;
         this.settings = settings;
         this.sharedStatus = sharedStatus;
         this.sharedProgress = sharedProgress;
         this.consoleOut = consoleOut;
         this.pdvController = pdvController;
+        this.validation = validation;
         setPadding(new Insets(10));
         java.net.URL css = getClass().getResource("/org/casanovo/gui/settings.css");
         if (css != null) {
@@ -315,8 +317,8 @@ public class ViewPane extends BorderPane {
         mzBrowse.setOnAction(e -> browseMzTab());
         faBrowse.setOnAction(e -> browseFasta());
         // Hover help on the label and the field, matching the input tooltips on the other tabs.
-        Tooltip mzTip = tip("The Casanovo .mzTab result to view — its de novo peptides are listed and "
-                + "mapped here. Auto-filled after a sequencing run, or browse to load a previous result.");
+        Tooltip mzTip = tip("Required. The Casanovo .mzTab result to view — its de novo peptides are listed "
+                + "and mapped here. Auto-filled after a sequencing run, or browse to load a previous result.");
         Tooltip.install(mzLabel, mzTip);
         Tooltip.install(mzTabField, mzTip);
         Tooltip faTip = tip("Optional. Reference protein database in FASTA format. De novo peptides are "
@@ -1954,15 +1956,17 @@ public class ViewPane extends BorderPane {
         if (running) {
             return;
         }
+        validation.clear();
         File mzTab = new File(mzTabField.getText().trim());
         String fastaText = fastaField.getText().trim();
         File fasta = fastaText.isEmpty() ? null : new File(fastaText); // optional: no FASTA -> all unmapped
         if (mzTabField.getText().trim().isEmpty() || !mzTab.isFile()) {
-            status("Choose a valid mzTab file first.");
+            validation.show(mzTabField, "Choose a valid mzTab file first.");
             return;
         }
         if (fasta != null && !fasta.isFile()) {
-            status("Reference FASTA not found. Clear it to load all peptides as unmapped, or pick a valid file.");
+            validation.show(fastaField,
+                    "Reference FASTA not found. Clear it to load all peptides as unmapped, or pick a valid file.");
             return;
         }
 

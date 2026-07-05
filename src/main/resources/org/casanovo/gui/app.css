@@ -44,8 +44,14 @@
    fields. JavaFX colours the whole prompt string one colour, so this tints the entire line;
    theme tokens keep it readable in light and dark. Required = red (danger), Optional = muted. */
 .text-field.prompt-required {
-    -fx-prompt-text-fill: -color-accent-fg;
+    -fx-prompt-text-fill: -color-danger-fg;
 }
 .text-field.prompt-optional {
     -fx-prompt-text-fill: -color-fg-muted;
+}
+
+/* Status-bar text while an inline validation error is shown: danger-coloured so it reads as a
+   problem to fix, not a neutral status. Toggled alongside the offending field's danger border. */
+.status-error {
+    -fx-text-fill: -color-danger-fg;
 }

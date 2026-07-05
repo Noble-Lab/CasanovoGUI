@@ -34,22 +34,22 @@ final class PathFields {
         return out;
     }
 
-    static String firstMissing(TextField field) {
+    static ValidationError firstMissing(TextField field) {
         for (String p : split(field)) {
             if (!new File(p).exists()) {
-                return "File not found: " + p;
+                return new ValidationError("File not found: " + p, field);
             }
         }
         return null;
     }
 
-    static String validateSingleFile(TextField field, String label) {
+    static ValidationError validateSingleFile(TextField field, String label) {
         if (isEmpty(field)) {
-            return "Please choose " + label + ".";
+            return new ValidationError("Please choose " + label + ".", field);
         }
         String path = field.getText().trim();
         if (!new File(path).exists()) {
-            return "File not found: " + path;
+            return new ValidationError("File not found: " + path, field);
         }
         return null;
     }

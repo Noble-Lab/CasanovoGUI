@@ -81,9 +81,13 @@ public class MainApp extends Application {
     private Region paramsRow;
     private Region cmdRow;
     private Region consoleView;
+    /** The console wrapper that draws the dynamic border; also referenced (as a {@link Region}) via {@link #consoleView}. */
+    private ConsoleFrame consoleFrame;
     private final List<CommandPane> panes = new ArrayList<>();
     /** The View tab (peptide-to-protein mapping); auto-populated with the result mzTab after a successful run. */
     private ViewPane viewPane;
+    /** The View tab header; kept as a field so tab-locking can treat it specially (its mapping Run/Stop live inside it). */
+    private Tab viewTab;
 
     private final Label settingsLabel = new Label();
     /** The Casanovo version, in its own readout label so a long executable path can't truncate it away. */
@@ -92,7 +96,7 @@ public class MainApp extends Application {
     private String installedCasanovoVersion;
     private final TextField commandPreview = new TextField();
     private final Button paramsButton = new Button("Parameters");
-    private final CheckBox useGuiParams = new CheckBox("Use GUI parameters (generate --config)");
+    private final CheckBox useGuiParams = new CheckBox("Use GUI parameters");
     private final Button runButton = new Button("Run Casanovo");
     private final Button stopButton = new Button("Stop");
     private final Label statusLabel = new Label("Ready.");
@@ -147,6 +151,9 @@ public class MainApp extends Application {
     private final org.casanovo.gui.core.PdvController pdvController = new org.casanovo.gui.core.PdvController();
     private Stage stage;
 
+    /** Shared inline validation feedback (danger border + focus + red status); also used by the View tab. */
+    private final InlineValidation validation = new InlineValidation(statusLabel);
+
     @Override
     public void start(Stage primaryStage) {
         this.stage = primaryStage;
@@ -165,6 +172,7 @@ public class MainApp extends Application {
         panes.add(new DbSearchPane(primaryStage));
         panes.add(new EvalPane(primaryStage));
         panes.add(new TrainPane(primaryStage));
+        applyConfigVisibility(); // hide the Config-file row while GUI parameters are used (the default)
 
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         for (CommandPane p : panes) {
@@ -172,13 +180,21 @@ public class MainApp extends Application {
             tab.setTooltip(tabTip(tabTooltip(p.getTitle())));
             tabs.getTabs().add(tab);
         }
-        viewPane = new ViewPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s), pdvController);
-        viewPane.runningProperty().addListener((o, a, b) -> updateChromeForTab());
-        Tab viewTab = new Tab("View", viewPane);
+        viewPane = new ViewPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s),
+                pdvController, validation);
+        viewPane.runningProperty().addListener((o, a, b) -> {
+            updateChromeForTab();
+            refreshPreview(); // one job per window: enable/disable the Casanovo Run button as a mapping starts/ends
+            refreshTabLock(runner.isRunning() || convertingRaw); // lock the command tabs while the mapping runs
+            // The View tab streams its mapping to the shared console; animate the border while it runs.
+            consoleFrame.setState(b ? ConsoleBorderEffect.State.RUNNING : ConsoleBorderEffect.State.IDLE);
+        });
+        viewTab = new Tab("View", viewPane);
         viewTab.setTooltip(tabTip("Map the de novo peptides in an mzTab back to proteins in a reference "
                 + "FASTA, with coverage and per-protein views."));
         tabs.getTabs().add(viewTab);
         tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
+            clearValidationError();
             refreshPreview();
             updateChromeForTab();
         });
@@ -197,7 +213,9 @@ public class MainApp extends Application {
         VBox topArea = new VBox(topStack, cmdRow);
         VBox.setVgrow(topStack, Priority.ALWAYS);
 
-        consoleView = console.getView();
+        consoleFrame = new ConsoleFrame(console.getView());
+        consoleFrame.setMotionEnabled(settings.isShowRunningAnimation()); // respect the "Show running animation" toggle
+        consoleView = consoleFrame;
         split = new SplitPane(topArea, consoleView);
         split.setOrientation(javafx.geometry.Orientation.VERTICAL);
         split.setDividerPositions(0.62);
@@ -374,6 +392,7 @@ public class MainApp extends Application {
             settings.setShowRunningAnimation(animationItem.isSelected());
             settings.save();
             updateAnimation();
+            consoleFrame.setMotionEnabled(animationItem.isSelected()); // gate the border motion too
         });
         viewMenu.getItems().add(animationItem);
 
@@ -421,7 +440,10 @@ public class MainApp extends Application {
     }
 
     private void updateAnimation() {
-        boolean show = runner.isRunning() && settings.isShowRunningAnimation();
+        // The raw→mzML conversion runs before the Casanovo process, so runner.isRunning() is still
+        // false then; treat it as a running state too, so a raw-file run shows the overlay (and covers
+        // the form) from the first click rather than only once Casanovo starts.
+        boolean show = (runner.isRunning() || convertingRaw) && settings.isShowRunningAnimation();
         spectrum.setVisible(show);
         if (show) {
             spectrum.start();
@@ -440,20 +462,11 @@ public class MainApp extends Application {
      * left-status readout. The previous console's text is not carried over.
      */
     private void swapConsole(boolean colored) {
-        ConsoleOutput previous = console;
         console = makeConsole(colored);
         console.setLeftStatus(buildExecutionReadout());
-        Region old = consoleView;
-        consoleView = console.getView();
-        int idx = split.getItems().indexOf(old);
-        if (idx >= 0) {
-            double[] dividers = split.getDividerPositions();
-            split.getItems().set(idx, consoleView);
-            split.setDividerPositions(dividers);
-        } else {
-            // The old view may be hosted in the View pane; re-place the new one there.
-            updateChromeForTab();
-        }
+        // The wrapper (consoleFrame == consoleView) stays put in the layout; only its inner
+        // console view is replaced, so the split divider and the border overlay both persist.
+        consoleFrame.setContent(console.getView());
     }
 
     private void buildRunBar() {
@@ -462,6 +475,16 @@ public class MainApp extends Application {
         params.setPadding(new Insets(6, 10, 0, 10));
         // Hairline above the Parameters row sets the run controls apart from the tab form.
         params.getStyleClass().add("run-bar-top");
+
+        // Keep the label plain ("Use GUI parameters"); the --config mechanism lives on hover.
+        // Use the shared help-tooltip helper (wraps, 30s show duration) so this matches the form-field
+        // tooltips in the panel rather than vanishing after JavaFX's default 5s.
+        useGuiParams.setTooltip(FxUtils.helpTooltip(
+                "Check to set Casanovo's parameters in the Parameters dialog; the GUI generates the "
+                + "config and passes it as --config.\n"
+                + "Uncheck to supply your own YAML config file instead."));
+        paramsButton.setTooltip(FxUtils.helpTooltip(
+                "Edit Casanovo's run parameters; the GUI writes them to the generated --config (Ctrl+P)."));
 
         runButton.getStyleClass().add("accent");
         runButton.setTooltip(new javafx.scene.control.Tooltip("Run the current Casanovo command (Ctrl+R)"));
@@ -540,13 +563,28 @@ public class MainApp extends Application {
         runButton.setOnAction(e -> onRun());
         stopButton.setOnAction(e -> onStop());
         paramsButton.setOnAction(e -> openParameters());
-        useGuiParams.setOnAction(e -> refreshPreview());
+        useGuiParams.setOnAction(e -> {
+            applyConfigVisibility();
+            refreshPreview();
+        });
+    }
+
+    /** Reveal the external Config-file row only when the user opts out of GUI-generated parameters. */
+    private void applyConfigVisibility() {
+        // Switching modes drops any pending inline error (e.g. a "config required" error on a field
+        // that's about to be hidden), so it can't linger as a stuck red status + dangling border.
+        clearValidationError();
+        boolean showConfig = !useGuiParams.isSelected();
+        for (CommandPane p : panes) {
+            p.setConfigFileVisible(showConfig);
+        }
     }
 
     private void openParameters() {
         boolean saved = new ConfigDialog(stage, config).showAndApply();
         if (saved) {
             useGuiParams.setSelected(true);
+            applyConfigVisibility();
             refreshPreview();
         }
     }
@@ -580,9 +618,9 @@ public class MainApp extends Application {
     /** Tooltip text for a command tab, keyed by its title. */
     private static String tabTooltip(String title) {
         return switch (title) {
-            case "De novo" -> "De novo peptide sequencing of an MS/MS spectrum file (mzML/mzXML/MGF/raw) "
+            case "De novo" -> "De novo peptide sequencing of MS/MS spectrum file(s) (mzML/mzXML/MGF/raw) "
                     + "with a trained model; produces an mzTab of predicted peptides.";
-            case "DB Search" -> "Score spectra against a protein/peptide database (casanovo db-search) "
+            case "DB Search" -> "Score spectra against a protein database in FASTA format (casanovo db-search) "
                     + "instead of pure de novo sequencing.";
             case "Evaluate" -> "Sequence a spectrum file with known/annotated peptides and report "
                     + "accuracy metrics for the predictions.";
@@ -599,7 +637,7 @@ public class MainApp extends Application {
             runButton.setDisable(true);
             return;
         }
-        runButton.setDisable(runner.isRunning() || installing);
+        runButton.setDisable(runner.isRunning() || installing || viewPane.runningProperty().get());
         try {
             CasanovoCommand cmd = effectiveCommand(pane, false);
             commandPreview.setText(cmd.toDisplayString(settings));
@@ -711,24 +749,26 @@ public class MainApp extends Application {
     }
 
     private void onRun() {
-        if (runner.isRunning() || installing || convertingRaw) {
-            return;
+        if (runner.isRunning() || installing || convertingRaw || viewPane.runningProperty().get()) {
+            return; // one job per window: also bail while a pepmap mapping is in progress
         }
         CommandPane pane = currentPane();
         if (pane == null) {
             return; // not a command tab (e.g. Plot) — nothing to run
         }
-        String error = pane.validateInputs();
+        clearValidationError();
+        ValidationError error = pane.validateInputs();
         if (error != null) {
-            alert(Alert.AlertType.WARNING, "Cannot run", error);
+            showValidationError(error);
             return;
         }
-        // Require an output directory so results don't scatter into the process working directory.
-        if (!pane.buildCommand().getArguments().contains("--output_dir")) {
-            alert(Alert.AlertType.WARNING, "Output directory not set",
-                    "Please set an \"Output directory (--output_dir)\" before running, so the results "
-                            + "are written where you expect.");
-            return;
+        // With GUI parameters off, the run relies on an external config file — require it.
+        if (!useGuiParams.isSelected()) {
+            ValidationError cfgError = pane.validateConfigFile();
+            if (cfgError != null) {
+                showValidationError(cfgError);
+                return;
+            }
         }
         // Casanovo missing? Offer to install it now and then run the analysis automatically.
         if (!casanovoAvailable()) {
@@ -831,6 +871,8 @@ public class MainApp extends Application {
         rawConvertCancelled = false;
         convertingRaw = true;
         updateRunningState(true);
+        consoleFrame.setState(ConsoleBorderEffect.State.RUNNING);
+        updateAnimation(); // the conversion is a running state too — show the overlay now
         progressBar.setVisible(true);
         progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
         statusLabel.setText("Preparing ThermoRawFileParser…");
@@ -974,6 +1016,10 @@ public class MainApp extends Application {
         rawConvertProc = null;
         rawConvertThread = null;
         updateRunningState(false);
+        updateAnimation(); // conversion ended (failed/cancelled) — hide the overlay
+        consoleFrame.setState("Stopped.".equals(message)
+                ? ConsoleBorderEffect.State.IDLE
+                : ConsoleBorderEffect.State.ERROR);
         progressBar.setVisible(false);
         statusLabel.setText(message);
         if ("Stopped.".equals(message)) {
@@ -1030,6 +1076,7 @@ public class MainApp extends Application {
         predictTotalBatches = 0;
         predictBatchSize = readPredictBatchSize(command);
         updateRunningState(true);
+        consoleFrame.setState(ConsoleBorderEffect.State.RUNNING);
         progressBar.setVisible(true);
         progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
         lastProgressMs = 0L;
@@ -1302,10 +1349,12 @@ public class MainApp extends Application {
         progressBar.setProgress(exitCode == 0 ? 1.0 : 0.0);
         progressBar.setVisible(false);
         if (error != null) {
+            consoleFrame.setState(ConsoleBorderEffect.State.ERROR);
             console.appendLine("[error] " + error.getMessage());
             statusLabel.setText("Failed to start.");
             alert(Alert.AlertType.ERROR, "Execution error", error.getMessage());
         } else if (exitCode == 0) {
+            consoleFrame.setState(ConsoleBorderEffect.State.SUCCESS);
             console.appendLine("[done] Casanovo finished successfully (exit 0).");
             statusLabel.setText("Finished successfully.");
             captureResult();
@@ -1313,9 +1362,11 @@ public class MainApp extends Application {
                 showOpenOutputLink(true);
             }
         } else if (exitCode == 130) {
+            consoleFrame.setState(ConsoleBorderEffect.State.IDLE);
             console.appendLine("[stopped] Casanovo was cancelled by the user.");
             statusLabel.setText("Stopped.");
         } else {
+            consoleFrame.setState(ConsoleBorderEffect.State.ERROR);
             console.appendLine("[error] Casanovo exited with code " + exitCode + ".");
             statusLabel.setText("Exited with code " + exitCode + ".");
             if (checkpointErrorSeen) {
@@ -1484,11 +1535,49 @@ public class MainApp extends Application {
         if (running) {
             showOpenOutputLink(false); // a new run/conversion started — hide last run's link until it succeeds
         }
-        // Leave the tabs enabled during a run: Run/Parameters are already disabled, so the user can't
-        // launch another job, but they can switch to the View tab to browse a previous mapping or read
-        // results while the current run streams to the console.
         paramsButton.setDisable(running);
         useGuiParams.setDisable(running);
+        refreshTabLock(running);
+    }
+
+    /**
+     * Lock the tabs while <em>any</em> job runs — a Casanovo run or a View mapping — so no other panel can
+     * be selected or edited (one job per window; to browse results during a run, launch a second CasanovoGUI).
+     * A run's Run/Stop live in the command row outside the tabs, so a run locks the whole tab strip (headers
+     * unselectable and the shown form grayed). A pepmap mapping's Run/Stop live inside the View tab, so a
+     * mapping locks the command tabs but leaves the View tab operable (so its own Stop still works). The Stop
+     * button, console and status bar stay live in both cases.
+     */
+    private void refreshTabLock(boolean casanovoRunning) {
+        if (casanovoRunning) {
+            tabs.setDisable(true);
+            return;
+        }
+        tabs.setDisable(false);
+        boolean mapping = viewPane.runningProperty().get();
+        for (Tab t : tabs.getTabs()) {
+            if (t != viewTab) {
+                t.setDisable(mapping); // lock the command tabs while a mapping runs
+            }
+        }
+    }
+
+    /**
+     * Report a failed input validation inline: highlight the offending field with a danger
+     * border, focus it, and show the message in the status bar — no modal to dismiss. Falls
+     * back to a modal only when the error names no specific field.
+     */
+    private void showValidationError(ValidationError error) {
+        if (error.field() == null) {
+            alert(Alert.AlertType.WARNING, "Cannot run", error.message());
+            return;
+        }
+        validation.show(error.field(), error.message());
+    }
+
+    /** Remove any inline validation decoration (danger border + error status message). */
+    private void clearValidationError() {
+        validation.clear();
     }
 
     private void alert(Alert.AlertType type, String title, String msg) {

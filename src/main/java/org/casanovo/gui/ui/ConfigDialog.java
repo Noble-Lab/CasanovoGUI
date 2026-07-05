@@ -15,7 +15,6 @@ import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
-import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
@@ -110,13 +109,12 @@ public class ConfigDialog {
     }
 
     private Control createEditor(ConfigField f) {
-        Tooltip tip = (f.getDescription() == null || f.getDescription().isEmpty())
-                ? null : new Tooltip(f.getDescription());
+        // The field's description is already shown as an always-visible note (see buildGroupContent),
+        // so no hover tooltip is added here — it would just duplicate that text.
         switch (f.getType()) {
             case BOOL: {
                 CheckBox cb = new CheckBox();
                 cb.setSelected(f.getValue().trim().equalsIgnoreCase("true"));
-                cb.setTooltip(tip);
                 return cb;
             }
             case CHOICE: {
@@ -125,19 +123,16 @@ public class ConfigDialog {
                     combo.getItems().addAll(f.getChoices());
                 }
                 combo.getSelectionModel().select(f.getValue());
-                combo.setTooltip(tip);
                 return combo;
             }
             case TEXT_BLOCK: {
                 TextArea area = new TextArea(f.getValue());
                 area.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', 'Courier New', monospace; -fx-font-size: 13px;");
                 area.setPrefRowCount(14);
-                area.setTooltip(tip);
                 return area;
             }
             default: {
                 TextField tf = new TextField(f.getValue());
-                tf.setTooltip(tip);
                 return tf;
             }
         }

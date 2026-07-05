@@ -22,3 +22,65 @@
 .console-area .text.console-muted    { -fx-fill: -color-fg-muted; }
 .console-area .text.console-progress { -fx-fill: -color-fg-muted; }
 .console-area .text.console-default  { -fx-fill: -color-fg-default; }
+
+/*
+ * Dynamic console border (CometBorderEffect): a glow orbits the console while a run
+ * is in progress, settling to a solid green/red edge on finish. The motion and dash
+ * geometry are set in Java; only the colours + glow live here, as theme tokens, so
+ * the border follows the active light/dark theme. Node visibility is driven from Java.
+ */
+.console-comet .track,
+.console-comet .comet,
+.console-comet .core { -fx-fill: transparent; }
+
+/* Running: a faint accent outline (track) with the bright comet + white-hot core over it. */
+.console-comet.state-running .track {
+    -fx-stroke: -color-accent-fg;
+    -fx-stroke-width: 2;
+    -fx-opacity: 0.22;
+}
+.console-comet.state-running .comet {
+    -fx-stroke: -color-accent-fg;
+    -fx-stroke-width: 3;
+    -fx-effect: dropshadow(gaussian, -color-accent-fg, 9, 0.45, 0, 0);
+}
+/* A lightened accent (not literal white) so the hot core reads on both light and dark themes. */
+.console-comet.state-running .core {
+    -fx-stroke: derive(-color-accent-fg, 65%);
+    -fx-stroke-width: 1.4;
+}
+
+/* Success / error: a solid, softly-glowing edge that persists until the next run. */
+.console-comet.state-success .track {
+    -fx-stroke: -color-success-fg;
+    -fx-stroke-width: 2;
+    -fx-effect: dropshadow(gaussian, -color-success-fg, 8, 0.35, 0, 0);
+}
+.console-comet.state-error .track {
+    -fx-stroke: -color-danger-fg;
+    -fx-stroke-width: 2;
+    -fx-effect: dropshadow(gaussian, -color-danger-fg, 8, 0.35, 0, 0);
+}
+
+/*
+ * Option 1 (PulseBorderEffect): a soft accent glow that breathes while a run is in
+ * progress and shows nothing otherwise. The breathing (overlay opacity) is animated
+ * in Java; only the running colour + glow live here, as theme tokens.
+ */
+.console-pulse .edge { -fx-fill: transparent; }
+.console-pulse.state-running .edge {
+    -fx-stroke: -color-accent-fg;
+    -fx-stroke-width: 2.5;
+    -fx-effect: dropshadow(gaussian, -color-accent-fg, 12, 0.3, 0, 0);
+}
+/* Settle to a solid, softly-glowing outcome edge that persists until the next run. */
+.console-pulse.state-success .edge {
+    -fx-stroke: -color-success-fg;
+    -fx-stroke-width: 2.5;
+    -fx-effect: dropshadow(gaussian, -color-success-fg, 10, 0.3, 0, 0);
+}
+.console-pulse.state-error .edge {
+    -fx-stroke: -color-danger-fg;
+    -fx-stroke-width: 2.5;
+    -fx-effect: dropshadow(gaussian, -color-danger-fg, 10, 0.3, 0, 0);
+}

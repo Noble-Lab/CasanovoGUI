@@ -16,7 +16,6 @@ import java.util.List;
 public class SequencePane extends CommandPane {
 
     private final MultiFileField peakField;
-    private final CommonOptions options = new CommonOptions();
     private final ScrollPane content;
 
     public SequencePane(Window owner) {
@@ -29,6 +28,7 @@ public class SequencePane extends CommandPane {
                         + "Select multiple in the browser, or separate paths with '"
                         + File.pathSeparator + "'.");
         options.addToForm(owner, form);
+        options.addConfigRow(owner, form);
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);
     }
@@ -44,9 +44,11 @@ public class SequencePane extends CommandPane {
     }
 
     @Override
-    public String validateInputs() {
+    protected ValidationError validatePaneInputs() {
         if (PathFields.isEmpty(peakField.field())) {
-            return "Please choose at least one spectrum file (mzML/mzXML/MGF/raw) to sequence.";
+            return new ValidationError(
+                    "Please choose at least one spectrum file (mzML/mzXML/MGF/raw) to sequence.",
+                    peakField.field());
         }
         return PathFields.firstMissing(peakField.field());
     }

@@ -94,7 +94,7 @@ final class FxUtils {
             return this;
         }
 
-        /** Mark the field required, shown as an accent "Required. {hint}" placeholder inside it. */
+        /** Mark the field required, shown as a danger "Required. {hint}" placeholder inside it. */
         FormGrid required(String hint) {
             return promptMark("Required. " + hint, "prompt-required");
         }
@@ -168,6 +168,11 @@ final class FxUtils {
                 return;
             }
             Tooltip.install(node, tip);
+        }
+
+        /** The label of the most-recently-added row, so callers can toggle that row's visibility. */
+        Label lastLabel() {
+            return lastLabel;
         }
 
         GridPane getGrid() {
