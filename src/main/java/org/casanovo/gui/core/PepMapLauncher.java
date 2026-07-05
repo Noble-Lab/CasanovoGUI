@@ -128,9 +128,13 @@ public final class PepMapLauncher {
         Files.createDirectories(dir);
 
         Release rel = fetchLatestRelease();
-        if (rel == null || rel.jarUrl == null) {
-            throw new IOException("Could not find a pepmap jar in the latest wenbostar/pepmap release. "
-                    + "Set a local pepmap jar in Settings, or publish a release with a .jar asset.");
+        if (rel.jarUrl == null) {
+            // Distinguish "couldn't reach/parse GitHub" (rate limit, offline, HTTP error) from the
+            // rare genuine case where the release truly has no .jar asset — the old message wrongly
+            // blamed the release even when the real cause was a failed fetch.
+            throw new IOException(rel.error != null ? rel.error
+                    : "The latest wenbostar/pepmap release has no .jar asset. "
+                            + "Set a local pepmap jar in Settings.");
         }
         String ver = (rel.version == null || rel.version.isEmpty()) ? "0" : rel.version;
         Path jar = dir.resolve("pepmap-" + ver + ".jar");
@@ -173,15 +177,18 @@ public final class PepMapLauncher {
     /** Latest pepmap version on GitHub (leading {@code v} stripped), or empty when offline. */
     public static Optional<String> latestUsableVersion() {
         Release rel = fetchLatestRelease();
-        return (rel == null || rel.version == null) ? Optional.empty() : Optional.of(rel.version);
+        return (rel.version == null) ? Optional.empty() : Optional.of(rel.version);
     }
 
     private static final class Release {
         String version;
         String jarUrl;
+        String error; // user-facing reason the lookup failed; null on success
     }
 
+    /** Never returns null: on failure the returned {@link Release} has {@code error} set and no data. */
     private static Release fetchLatestRelease() {
+        Release r = new Release();
         try {
             HttpClient http = HttpClient.newBuilder()
                     .followRedirects(HttpClient.Redirect.NORMAL)
@@ -193,9 +200,9 @@ public final class PepMapLauncher {
                             .timeout(Duration.ofSeconds(15)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() != 200) {
-                return null;
+                r.error = describeGithubHttpError(resp);
+                return r;
             }
-            Release r = new Release();
             Matcher tag = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"").matcher(resp.body());
             if (tag.find()) {
                 r.version = tag.group(1).trim();
@@ -207,11 +214,30 @@ public final class PepMapLauncher {
             }
             return r;
         } catch (IOException e) {
-            return null;
+            r.error = "Could not reach GitHub to check for pepmap (offline?). Retry, or set a "
+                    + "local pepmap jar in Settings.";
+            return r;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return null;
+            r.error = "The pepmap release check was interrupted.";
+            return r;
         }
+    }
+
+    /** Turn a non-200 GitHub API response into an actionable message — notably GitHub's 60/hour
+        unauthenticated rate limit, which the app can hit after many release/version checks. */
+    private static String describeGithubHttpError(HttpResponse<String> resp) {
+        int code = resp.statusCode();
+        String remaining = resp.headers().firstValue("x-ratelimit-remaining").orElse("");
+        if ((code == 403 || code == 429) && "0".equals(remaining)) {
+            long reset = resp.headers().firstValueAsLong("x-ratelimit-reset").orElse(0L);
+            long mins = reset > 0 ? Math.max(1, (reset * 1000L - System.currentTimeMillis()) / 60_000L) : 0;
+            return "GitHub's API rate limit was reached (60 requests/hour for unauthenticated access)"
+                    + (mins > 0 ? "; it resets in about " + mins + " min" : "")
+                    + ". Wait and retry, or set a local pepmap jar in Settings.";
+        }
+        return "GitHub returned HTTP " + code + " while checking for the pepmap release. "
+                + "Retry later, or set a local pepmap jar in Settings.";
     }
 
     /** Mapping options, mirroring pepmap's CLI flags. */
