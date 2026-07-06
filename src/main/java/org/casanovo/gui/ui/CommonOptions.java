@@ -46,7 +46,7 @@ class CommonOptions {
 
     void addToForm(Window owner, FxUtils.FormGrid form) {
         form.addRow("Model weights:", modelField,
-                FxUtils.fileButton(owner, modelField, false, "Model weights (*.ckpt)", "*.ckpt"))
+                FxUtils.fileButton(owner, modelField, "model", false, "Model weights (*.ckpt)", "*.ckpt"))
                 .optional("Model .ckpt (blank = default)");
         java.io.File cachedWeights = CasanovoWeights.findCachedDefault();
         if (cachedWeights != null) {
@@ -57,7 +57,7 @@ class CommonOptions {
             form.tooltip("Optional. Leave blank to let Casanovo download/cache default weights. (--model)");
         }
         form.addRow("Output directory:", outputDirField,
-                        FxUtils.dirButton(owner, outputDirField))
+                        FxUtils.dirButton(owner, outputDirField, "output"))
                 .required("Folder for Casanovo output")
                 .tooltip("Required. Folder where Casanovo writes its output files. (--output_dir)");
         form.addRow("Output root name:", outputRootField)
@@ -79,7 +79,7 @@ class CommonOptions {
      * row is shown only when "Use GUI parameters" is off, where the config file is then required.
      */
     void addConfigRow(Window owner, FxUtils.FormGrid form) {
-        Button configBrowse = FxUtils.fileButton(owner, configField, false, "YAML config", "*.yaml", "*.yml");
+        Button configBrowse = FxUtils.fileButton(owner, configField, "config", false, "YAML config", "*.yaml", "*.yml");
         form.addRow("Config file:", configField, configBrowse)
                 .required("YAML config file for Casanovo")
                 .tooltip("Required when 'Use GUI parameters' is off. A YAML config file passed to "

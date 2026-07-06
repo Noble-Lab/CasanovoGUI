@@ -504,7 +504,10 @@ public class ViewPane extends BorderPane {
         fc.setTitle("Save overview image");
         fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("PNG image", "*.png"));
         fc.setInitialFileName("overview.png");
-        initialDir(fc, mzTabField.getText());
+        File start = FxUtils.initialDir(mzTabField.getText());
+        if (start != null) {
+            fc.setInitialDirectory(start);
+        }
         File chosen = fc.showSaveDialog(owner);
         if (chosen == null) {
             return;
@@ -1920,10 +1923,14 @@ public class ViewPane extends BorderPane {
         fc.getExtensionFilters().addAll(
                 new FileChooser.ExtensionFilter("mzTab", FxUtils.caseVariants("*.mzTab")),
                 new FileChooser.ExtensionFilter("All files", "*.*"));
-        initialDir(fc, mzTabField.getText());
+        File start = FxUtils.startDir(mzTabField.getText(), "mzTab");
+        if (start != null) {
+            fc.setInitialDirectory(start);
+        }
         File f = fc.showOpenDialog(owner);
         if (f != null) {
             mzTabField.setText(f.getAbsolutePath());
+            FxUtils.rememberBrowseDir("mzTab", f);
         }
     }
 
@@ -1933,20 +1940,14 @@ public class ViewPane extends BorderPane {
         fc.getExtensionFilters().addAll(
                 new FileChooser.ExtensionFilter("FASTA", FxUtils.caseVariants("*.fasta", "*.fa", "*.fas", "*.faa")),
                 new FileChooser.ExtensionFilter("All files", "*.*"));
-        initialDir(fc, fastaField.getText());
+        File start = FxUtils.startDir(fastaField.getText(), "fasta");
+        if (start != null) {
+            fc.setInitialDirectory(start);
+        }
         File f = fc.showOpenDialog(owner);
         if (f != null) {
             fastaField.setText(f.getAbsolutePath());
-        }
-    }
-
-    private static void initialDir(FileChooser fc, String currentPath) {
-        String cur = currentPath == null ? "" : currentPath.trim();
-        if (!cur.isEmpty()) {
-            File parent = new File(cur).getParentFile();
-            if (parent != null && parent.isDirectory()) {
-                fc.setInitialDirectory(parent);
-            }
+            FxUtils.rememberBrowseDir("fasta", f);
         }
     }
 
@@ -2033,11 +2034,16 @@ public class ViewPane extends BorderPane {
         fc.getExtensionFilters().add(
                 new FileChooser.ExtensionFilter("Spectra (*.mzML, *.mzXML, *.mgf)",
                         FxUtils.caseVariants("*.mzML", "*.mzXML", "*.mgf")));
-        File parent = mzTab.getParentFile();
-        if (parent != null && parent.isDirectory()) {
-            fc.setInitialDirectory(parent);
+        // Spectra usually sit beside the mzTab, so start in its folder. (The pick is still saved under
+        // "spectra" below so the Sequence/DB Search tabs reopen here.)
+        File start = FxUtils.startDir(mzTab.getAbsolutePath(), "spectra");
+        if (start != null) {
+            fc.setInitialDirectory(start);
         }
         List<File> picked = fc.showOpenMultipleDialog(owner);
+        if (picked != null && !picked.isEmpty()) {
+            FxUtils.rememberBrowseDir("spectra", picked.get(0));
+        }
         return (picked == null || picked.isEmpty()) ? null : picked;
     }
 

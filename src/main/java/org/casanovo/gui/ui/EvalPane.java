@@ -23,7 +23,7 @@ public class EvalPane extends CommandPane {
     private final ScrollPane content;
 
     public EvalPane(Window owner) {
-        peakField = new MultiFileField(owner, "annotated MGF files", "Annotated MGF (*.mgf)", "*.mgf");
+        peakField = new MultiFileField(owner, "annotatedSpectra", "annotated MGF files", "Annotated MGF (*.mgf)", "*.mgf");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Annotated spectra:", peakField.node(), peakField.browseButton())
                 .required("Annotated MGF (peptide in SEQ field)")

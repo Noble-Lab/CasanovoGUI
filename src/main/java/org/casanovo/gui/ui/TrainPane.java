@@ -22,14 +22,14 @@ public class TrainPane extends CommandPane {
     private final ScrollPane content;
 
     public TrainPane(Window owner) {
-        trainField = new MultiFileField(owner, "training spectra files",
+        trainField = new MultiFileField(owner, "annotatedSpectra", "training spectra files",
                 "Annotated MGF / Lance (*.mgf, *.lance)", "*.mgf", "*.lance");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Training spectra:", trainField.node(), trainField.browseButton())
                 .required("Annotated MGF or .lance file")
                 .tooltip("Required. Annotated MGF (peptide in SEQ field) or a prebuilt .lance file.");
         form.addRow("Validation spectra:", validationField,
-                        FxUtils.fileButton(owner, validationField, false,
+                        FxUtils.fileButton(owner, validationField, "annotatedSpectra", false,
                                 "Annotated MGF / Lance (*.mgf, *.lance)", "*.mgf", "*.lance"))
                 .required("Held-out annotated spectra")
                 .tooltip("Required. Held-out annotated spectra for validation. (--validation_peak_path)");

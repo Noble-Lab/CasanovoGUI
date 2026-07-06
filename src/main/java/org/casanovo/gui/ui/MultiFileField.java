@@ -43,10 +43,13 @@ final class MultiFileField {
     private final String pluralNoun;
     private final String filterDesc;
     private final String[] extensions;
+    /** Browse-memory key: reopens the chooser at the folder last used for this kind of file. */
+    private final String key;
     private boolean syncing;
 
-    MultiFileField(Window owner, String pluralNoun, String filterDesc, String... extensions) {
+    MultiFileField(Window owner, String key, String pluralNoun, String filterDesc, String... extensions) {
         this.owner = owner;
+        this.key = key;
         this.pluralNoun = pluralNoun;
         this.filterDesc = filterDesc;
         this.extensions = extensions;
@@ -97,7 +100,7 @@ final class MultiFileField {
     private void chooseFiles() {
         FileChooser chooser = new FileChooser();
         FxUtils.applyExtFilter(chooser, filterDesc, extensions);
-        File dir = FxUtils.initialDir(field.getText());
+        File dir = FxUtils.startDir(field.getText(), key);
         if (dir != null) {
             chooser.setInitialDirectory(dir);
         }
@@ -108,6 +111,7 @@ final class MultiFileField {
                 paths.add(f.getAbsolutePath());
             }
             setPaths(paths);
+            FxUtils.rememberBrowseDir(key, files.get(0));
         }
     }
 

@@ -94,7 +94,7 @@ public class SettingsDialog {
         // Each path field shares its row with a right-aligned Browse button (the executable row also
         // carries Install). The executable row is grayed out under Conda, where the configured path is
         // bypassed (conda run resolves "casanovo" inside the env).
-        execRow = browseRow(executableField, FxUtils.fileButton(owner, executableField, false, null), installButton);
+        execRow = browseRow(executableField, FxUtils.fileButton(owner, executableField, "casanovoExe", false, null), installButton);
 
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Casanovo executable:", execRow)
@@ -103,22 +103,22 @@ public class SettingsDialog {
         form.addRow("", useCondaCheck)
                 .addNote("When enabled, runs: conda run --no-capture-output -n <env> casanovo …");
         form.addRow("Conda executable:",
-                        browseRow(condaExecField, FxUtils.fileButton(owner, condaExecField, false, null)))
+                        browseRow(condaExecField, FxUtils.fileButton(owner, condaExecField, "condaExe", false, null)))
                 .addNote("Path to 'conda' (or 'mamba'), or just 'conda' if on your PATH.");
         form.addRow("Conda environment name:", condaEnvField);
         form.addFullWidth(sectionDivider("PDV"));
         form.addRow("Jar (optional):",
-                        browseRow(pdvField, FxUtils.fileButton(owner, pdvField, false, "PDV jar (*.jar)", "*.jar")))
+                        browseRow(pdvField, FxUtils.fileButton(owner, pdvField, "pdvJar", false, "PDV jar (*.jar)", "*.jar")))
                 .addNote("Path to a PDV jar for \"Open in PDV\". Leave blank to auto-download the latest PDV.")
                 .addFullWidth(buildPdvStatusRow());
         form.addFullWidth(sectionDivider("pepmap"));
         form.addRow("Jar (optional):",
-                        browseRow(pepmapField, FxUtils.fileButton(owner, pepmapField, false, "pepmap jar (*.jar)", "*.jar")))
+                        browseRow(pepmapField, FxUtils.fileButton(owner, pepmapField, "pepmapJar", false, "pepmap jar (*.jar)", "*.jar")))
                 .addNote("Path to a pepmap jar for the View tab. Leave blank to auto-download the latest pepmap.")
                 .addFullWidth(buildPepmapStatusRow());
         form.addFullWidth(sectionDivider("ThermoRawFileParser"));
         form.addRow("Executable (optional):",
-                        browseRow(rawParserField, FxUtils.fileButton(owner, rawParserField, false, null)))
+                        browseRow(rawParserField, FxUtils.fileButton(owner, rawParserField, "rawParser", false, null)))
                 .addNote("Path to a ThermoRawFileParser executable, used to convert Thermo .raw files to "
                         + "mzML before Sequence/DB Search runs. Leave blank to auto-download the latest release.")
                 .addFullWidth(buildRawParserStatusRow());

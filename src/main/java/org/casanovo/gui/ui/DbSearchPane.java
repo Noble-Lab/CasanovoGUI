@@ -22,7 +22,7 @@ public class DbSearchPane extends CommandPane {
     private final ScrollPane content;
 
     public DbSearchPane(Window owner) {
-        peakField = new MultiFileField(owner, "MS/MS files",
+        peakField = new MultiFileField(owner, "spectra", "MS/MS files",
                 "MS/MS spectra (*.mzML, *.mzXML, *.mgf, *.raw)", "*.mzML", "*.mzXML", "*.mgf", "*.raw");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
@@ -30,7 +30,7 @@ public class DbSearchPane extends CommandPane {
                 .tooltip("Required. One or more mzML/mzXML/MGF/raw files. Select multiple in the "
                         + "browser, or separate paths with '" + File.pathSeparator + "'.");
         form.addRow("Protein database (FASTA):", fastaField,
-                        FxUtils.fileButton(owner, fastaField, false,
+                        FxUtils.fileButton(owner, fastaField, "fasta", false,
                                 "FASTA (*.fasta, *.fa)", "*.fasta", "*.fa", "*.gz"))
                 .required("Protein database in FASTA format")
                 .tooltip("Required. Protein sequences in FASTA format. Digestion parameters are set "

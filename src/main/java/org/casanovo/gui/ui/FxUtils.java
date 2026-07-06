@@ -203,13 +203,13 @@ final class FxUtils {
      * writes the picked path into {@code target}. Use this for input files only;
      * for output files the user creates, use {@link #saveFileButton}.
      */
-    static Button fileButton(Window owner, TextField target, boolean multiple,
+    static Button fileButton(Window owner, TextField target, String key, boolean multiple,
                              String filterDesc, String... extensions) {
         Button b = new Button("Browse");
         b.setOnAction(e -> {
             FileChooser chooser = new FileChooser();
             applyExtFilter(chooser, filterDesc, extensions);
-            File dir = initialDir(target.getText());
+            File dir = startDir(target.getText(), key);
             if (dir != null) {
                 chooser.setInitialDirectory(dir);
             }
@@ -221,11 +221,13 @@ final class FxUtils {
                         paths.add(f.getAbsolutePath());
                     }
                     target.setText(String.join(File.pathSeparator, paths));
+                    rememberBrowseDir(key, files.get(0));
                 }
             } else {
                 File f = chooser.showOpenDialog(owner);
                 if (f != null) {
                     target.setText(f.getAbsolutePath());
+                    rememberBrowseDir(key, f);
                 }
             }
         });
@@ -298,30 +300,52 @@ final class FxUtils {
     }
 
     /** A "Browse" button that selects a directory into {@code target}. */
-    static Button dirButton(Window owner, TextField target) {
+    static Button dirButton(Window owner, TextField target, String key) {
         Button b = new Button("Browse");
         b.setOnAction(e -> {
             DirectoryChooser chooser = new DirectoryChooser();
-            File dir = initialDir(target.getText());
+            File dir = startDir(target.getText(), key); // always a directory (or null)
             if (dir != null) {
-                chooser.setInitialDirectory(dir.isDirectory() ? dir : dir.getParentFile());
+                chooser.setInitialDirectory(dir);
             }
             File f = chooser.showDialog(owner);
             if (f != null) {
                 target.setText(f.getAbsolutePath());
+                rememberBrowseDir(key, f);
             }
         });
         return b;
+    }
+
+    /**
+     * Starting folder for a Browse chooser: the field's current value's folder (a set field always
+     * wins), else the folder last used for {@code key} ({@link BrowseMemory}), else {@code null} (OS
+     * default). Always returns an existing directory or null.
+     */
+    static File startDir(String fieldText, String key) {
+        File fromField = initialDir(fieldText);
+        return fromField != null ? fromField : BrowseMemory.dirFor(key);
+    }
+
+    /** Remember {@code picked}'s folder as the last-used directory for {@code key}. */
+    static void rememberBrowseDir(String key, File picked) {
+        BrowseMemory.remember(key, picked);
     }
 
     static File initialDir(String current) {
         if (current == null || current.trim().isEmpty()) {
             return null;
         }
-        String first = current.trim();
-        int idx = first.indexOf(File.pathSeparatorChar);
-        if (idx >= 0) {
-            first = first.substring(0, idx);
+        String text = current.trim();
+        // A field may hold several paths joined by File.pathSeparator (MultiFileField) — use the first.
+        // Only split when the whole text isn't itself a real path, so a single path whose folder name
+        // legally contains the separator (';' on Windows, ':' on Unix) isn't corrupted.
+        String first = text;
+        if (!new File(text).exists()) {
+            int idx = text.indexOf(File.pathSeparatorChar);
+            if (idx >= 0) {
+                first = text.substring(0, idx);
+            }
         }
         File f = new File(first);
         File parent = f.getParentFile();

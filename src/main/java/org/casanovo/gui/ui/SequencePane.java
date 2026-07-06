@@ -19,7 +19,7 @@ public class SequencePane extends CommandPane {
     private final ScrollPane content;
 
     public SequencePane(Window owner) {
-        peakField = new MultiFileField(owner, "MS/MS files",
+        peakField = new MultiFileField(owner, "spectra", "MS/MS files",
                 "MS/MS spectra (*.mzML, *.mzXML, *.mgf, *.raw)", "*.mzML", "*.mzXML", "*.mgf", "*.raw");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
