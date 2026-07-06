@@ -99,6 +99,19 @@ public class LimelightDialog {
                     }
                 });
 
+        // Center on the main window — JavaFX's default owner-centering can land off-centre; mirrors
+        // SettingsDialog. Deferred one pulse so the dialog's final size is settled before centring.
+        if (owner != null) {
+            dialog.setOnShown(e -> {
+                if (dialog.getDialogPane().getScene().getWindow() instanceof javafx.stage.Stage st) {
+                    javafx.application.Platform.runLater(() -> {
+                        st.setX(owner.getX() + (owner.getWidth() - st.getWidth()) / 2);
+                        st.setY(owner.getY() + (owner.getHeight() - st.getHeight()) / 2);
+                    });
+                }
+            });
+        }
+
         ButtonType result = dialog.showAndWait().orElse(ButtonType.CANCEL);
         if (result != uploadType) {
             return false;
