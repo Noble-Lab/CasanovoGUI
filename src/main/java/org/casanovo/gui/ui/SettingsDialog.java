@@ -1,6 +1,7 @@
 package org.casanovo.gui.ui;
 
 import javafx.application.Platform;
+import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -10,11 +11,14 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.ScrollPane;
+import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.stage.Stage;
 import javafx.stage.Window;
 import org.casanovo.gui.core.PdvLauncher;
 import org.casanovo.gui.core.PepMapLauncher;
@@ -60,6 +64,11 @@ public class SettingsDialog {
     private final ProgressBar rawParserProgressBar = new ProgressBar();
     private String rawParserTargetVersion;
 
+    /** Each tool's status row, styled as an amber "update available" callout while a download is offered. */
+    private HBox pdvStatusRow;
+    private HBox pepmapStatusRow;
+    private HBox rawParserStatusRow;
+
     public SettingsDialog(Window owner, Settings settings, Runnable onInstall) {
         this.owner = owner;
         this.settings = settings;
@@ -97,15 +106,18 @@ public class SettingsDialog {
                         browseRow(condaExecField, FxUtils.fileButton(owner, condaExecField, false, null)))
                 .addNote("Path to 'conda' (or 'mamba'), or just 'conda' if on your PATH.");
         form.addRow("Conda environment name:", condaEnvField);
-        form.addRow("PDV jar (optional):",
+        form.addFullWidth(sectionDivider("PDV"));
+        form.addRow("Jar (optional):",
                         browseRow(pdvField, FxUtils.fileButton(owner, pdvField, false, "PDV jar (*.jar)", "*.jar")))
                 .addNote("Path to a PDV jar for \"Open in PDV\". Leave blank to auto-download the latest PDV.")
                 .addFullWidth(buildPdvStatusRow());
-        form.addRow("pepmap jar (optional):",
+        form.addFullWidth(sectionDivider("pepmap"));
+        form.addRow("Jar (optional):",
                         browseRow(pepmapField, FxUtils.fileButton(owner, pepmapField, false, "pepmap jar (*.jar)", "*.jar")))
                 .addNote("Path to a pepmap jar for the View tab. Leave blank to auto-download the latest pepmap.")
                 .addFullWidth(buildPepmapStatusRow());
-        form.addRow("ThermoRawFileParser (optional):",
+        form.addFullWidth(sectionDivider("ThermoRawFileParser"));
+        form.addRow("Executable (optional):",
                         browseRow(rawParserField, FxUtils.fileButton(owner, rawParserField, false, null)))
                 .addNote("Path to a ThermoRawFileParser executable, used to convert Thermo .raw files to "
                         + "mzML before Sequence/DB Search runs. Leave blank to auto-download the latest release.")
@@ -118,10 +130,36 @@ public class SettingsDialog {
         }
         dialog.setTitle("Casanovo Settings");
         dialog.setHeaderText("How should the GUI run Casanovo?");
+        dialog.setResizable(true);
         ButtonType saveType = new ButtonType("Save", ButtonBar.ButtonData.OK_DONE);
         dialog.getDialogPane().getButtonTypes().addAll(saveType, ButtonType.CANCEL);
-        dialog.getDialogPane().setContent(form.getGrid());
+        // Scroll the form when the dialog is shorter than its content, so capping the height
+        // (below) can never hide a row or the Save/Cancel bar.
+        ScrollPane formScroll = new ScrollPane(form.getGrid());
+        formScroll.setFitToWidth(true);
+        formScroll.setStyle("-fx-background-color: transparent;");
+        dialog.getDialogPane().setContent(formScroll);
         dialog.getDialogPane().setMinWidth(700); // a bit wider, with room for the executable + Install row
+        // Resizable, but never taller than the main window: once shown, cap the dialog to the
+        // owner's height (as both the max drag height and the initial height). The dialog is modal,
+        // so the owner can't resize underneath it and the captured height stays valid.
+        if (owner != null) {
+            dialog.setOnShown(e -> {
+                if (dialog.getDialogPane().getScene().getWindow() instanceof Stage stage) {
+                    stage.setMaxHeight(owner.getHeight());
+                    if (stage.getHeight() > owner.getHeight()) {
+                        stage.setHeight(owner.getHeight());
+                    }
+                    // Center on the main window. Defer one pulse so the resizable dialog's width/height
+                    // are final — at onShown they can still be mid-layout, which centers against a stale
+                    // size and lands off-centre.
+                    Platform.runLater(() -> {
+                        stage.setX(owner.getX() + (owner.getWidth() - stage.getWidth()) / 2);
+                        stage.setY(owner.getY() + (owner.getHeight() - stage.getHeight()) / 2);
+                    });
+                }
+            });
+        }
 
         dialog.getDialogPane().lookupButton(saveType).addEventFilter(
                 javafx.event.ActionEvent.ACTION, evt -> {
@@ -183,6 +221,53 @@ public class SettingsDialog {
         return box;
     }
 
+    /** A centered section title flanked by rules, e.g. "──── PDV ────", labelling each optional
+     *  download-backed helper tool (PDV / pepmap / ThermoRawFileParser) below the Casanovo/Conda setup. */
+    private static HBox sectionDivider(String title) {
+        Label t = new Label(title);
+        t.getStyleClass().add("text-muted");
+        t.setStyle("-fx-font-weight: bold;");
+        Separator left = new Separator();
+        Separator right = new Separator();
+        left.setMaxWidth(Double.MAX_VALUE);
+        right.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(left, Priority.ALWAYS);
+        HBox.setHgrow(right, Priority.ALWAYS);
+        HBox box = new HBox(10, left, t, right);
+        box.setAlignment(Pos.CENTER);
+        box.setPadding(new Insets(8, 0, 2, 0));
+        return box;
+    }
+
+    /** Amber callout style for a tool's status row when a download/upgrade is on offer — the same
+     *  warning tokens as the main {@link UpdateBanner}, so "update available" looks the same app-wide. */
+    private static final String UPDATE_ROW_STYLE =
+            "-fx-background-color: -color-warning-subtle;"
+                    + "-fx-border-color: -color-warning-muted;"
+                    + "-fx-border-width: 0 0 0 3;"
+                    + "-fx-background-radius: 6; -fx-border-radius: 6;"
+                    + "-fx-padding: 6 10 6 10;";
+
+    /**
+     * Toggle the amber "update available" highlight on a tool's status row: an accent button, amber
+     * status text, and the callout background. Off restores the quiet muted-italic status line. Called
+     * from each tool's show/hide-upgrade pair, so the highlight tracks exactly when a download is offered.
+     */
+    private static void highlightUpdate(HBox row, Label label, Button button, boolean on) {
+        if (row != null) {
+            row.setStyle(on ? UPDATE_ROW_STYLE : "");
+        }
+        label.setStyle(on ? "-fx-font-style: italic; -fx-text-fill: -color-warning-fg;"
+                : "-fx-font-style: italic;");
+        if (on) {
+            if (!button.getStyleClass().contains("accent")) {
+                button.getStyleClass().add("accent");
+            }
+        } else {
+            button.getStyleClass().remove("accent");
+        }
+    }
+
     // ---- PDV version status + one-click upgrade ----------------------------
 
     private HBox buildPdvStatusRow() {
@@ -194,10 +279,11 @@ public class SettingsDialog {
         pdvProgressBar.setVisible(false);
         pdvProgressBar.setManaged(false);
         pdvUpgradeButton.setOnAction(e -> upgradePdv());
-        hideUpgrade();
         HBox row = new HBox(8, pdvStatusLabel, pdvProgressBar, pdvUpgradeButton);
         row.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(pdvStatusLabel, Priority.ALWAYS);
+        pdvStatusRow = row;
+        hideUpgrade();
         return row;
     }
 
@@ -302,11 +388,13 @@ public class SettingsDialog {
         pdvUpgradeButton.setDisable(false);
         pdvUpgradeButton.setVisible(true);
         pdvUpgradeButton.setManaged(true);
+        highlightUpdate(pdvStatusRow, pdvStatusLabel, pdvUpgradeButton, true);
     }
 
     private void hideUpgrade() {
         pdvUpgradeButton.setVisible(false);
         pdvUpgradeButton.setManaged(false);
+        highlightUpdate(pdvStatusRow, pdvStatusLabel, pdvUpgradeButton, false);
     }
 
     // ---- pepmap version status + one-click download ------------------------
@@ -320,10 +408,11 @@ public class SettingsDialog {
         pepmapProgressBar.setVisible(false);
         pepmapProgressBar.setManaged(false);
         pepmapUpgradeButton.setOnAction(e -> upgradePepmap());
-        hidePepmapUpgrade();
         HBox row = new HBox(8, pepmapStatusLabel, pepmapProgressBar, pepmapUpgradeButton);
         row.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(pepmapStatusLabel, Priority.ALWAYS);
+        pepmapStatusRow = row;
+        hidePepmapUpgrade();
         return row;
     }
 
@@ -429,11 +518,13 @@ public class SettingsDialog {
         pepmapUpgradeButton.setDisable(false);
         pepmapUpgradeButton.setVisible(true);
         pepmapUpgradeButton.setManaged(true);
+        highlightUpdate(pepmapStatusRow, pepmapStatusLabel, pepmapUpgradeButton, true);
     }
 
     private void hidePepmapUpgrade() {
         pepmapUpgradeButton.setVisible(false);
         pepmapUpgradeButton.setManaged(false);
+        highlightUpdate(pepmapStatusRow, pepmapStatusLabel, pepmapUpgradeButton, false);
     }
 
     // ---- ThermoRawFileParser version status + one-click download -----------
@@ -447,10 +538,11 @@ public class SettingsDialog {
         rawParserProgressBar.setVisible(false);
         rawParserProgressBar.setManaged(false);
         rawParserUpgradeButton.setOnAction(e -> upgradeRawParser());
-        hideRawParserUpgrade();
         HBox row = new HBox(8, rawParserStatusLabel, rawParserProgressBar, rawParserUpgradeButton);
         row.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(rawParserStatusLabel, Priority.ALWAYS);
+        rawParserStatusRow = row;
+        hideRawParserUpgrade();
         return row;
     }
 
@@ -557,11 +649,13 @@ public class SettingsDialog {
         rawParserUpgradeButton.setDisable(false);
         rawParserUpgradeButton.setVisible(true);
         rawParserUpgradeButton.setManaged(true);
+        highlightUpdate(rawParserStatusRow, rawParserStatusLabel, rawParserUpgradeButton, true);
     }
 
     private void hideRawParserUpgrade() {
         rawParserUpgradeButton.setVisible(false);
         rawParserUpgradeButton.setManaged(false);
+        highlightUpdate(rawParserStatusRow, rawParserStatusLabel, rawParserUpgradeButton, false);
     }
 
     private String validate() {
