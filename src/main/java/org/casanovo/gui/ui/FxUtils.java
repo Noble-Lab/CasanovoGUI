@@ -20,7 +20,9 @@ import javafx.util.Duration;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Shared JavaFX helpers: a small form-grid builder and file/directory chooser
@@ -272,10 +274,27 @@ final class FxUtils {
     static void applyExtFilter(FileChooser chooser, String filterDesc, String... extensions) {
         if (filterDesc != null && extensions != null && extensions.length > 0) {
             chooser.getExtensionFilters().add(
-                    new FileChooser.ExtensionFilter(filterDesc, extensions));
+                    new FileChooser.ExtensionFilter(filterDesc, caseVariants(extensions)));
         }
         chooser.getExtensionFilters().add(
                 new FileChooser.ExtensionFilter("All files", "*.*"));
+    }
+
+    /**
+     * Expand each glob pattern to its lower- and upper-case variants. JavaFX
+     * matches {@link FileChooser.ExtensionFilter} patterns case-sensitively on
+     * macOS and Linux (but case-insensitively on Windows), so a lone
+     * {@code *.mgf} greys out {@code sample.MGF} on a Mac. Listing the case
+     * variants restores the Windows-like behaviour everywhere.
+     */
+    static String[] caseVariants(String... patterns) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        for (String p : patterns) {
+            out.add(p);
+            out.add(p.toLowerCase(Locale.ROOT));
+            out.add(p.toUpperCase(Locale.ROOT));
+        }
+        return out.toArray(new String[0]);
     }
 
     /** A "Browse" button that selects a directory into {@code target}. */

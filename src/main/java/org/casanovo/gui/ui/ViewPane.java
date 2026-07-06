@@ -1918,7 +1918,7 @@ public class ViewPane extends BorderPane {
         FileChooser fc = new FileChooser();
         fc.setTitle("Select Casanovo result (mzTab)");
         fc.getExtensionFilters().addAll(
-                new FileChooser.ExtensionFilter("mzTab", "*.mztab", "*.mzTab"),
+                new FileChooser.ExtensionFilter("mzTab", FxUtils.caseVariants("*.mzTab")),
                 new FileChooser.ExtensionFilter("All files", "*.*"));
         initialDir(fc, mzTabField.getText());
         File f = fc.showOpenDialog(owner);
@@ -1931,7 +1931,7 @@ public class ViewPane extends BorderPane {
         FileChooser fc = new FileChooser();
         fc.setTitle("Select reference protein database (FASTA)");
         fc.getExtensionFilters().addAll(
-                new FileChooser.ExtensionFilter("FASTA", "*.fasta", "*.fa", "*.fas", "*.faa"),
+                new FileChooser.ExtensionFilter("FASTA", FxUtils.caseVariants("*.fasta", "*.fa", "*.fas", "*.faa")),
                 new FileChooser.ExtensionFilter("All files", "*.*"));
         initialDir(fc, fastaField.getText());
         File f = fc.showOpenDialog(owner);
@@ -2031,7 +2031,8 @@ public class ViewPane extends BorderPane {
                 ? "Select spectrum file(s) for PDV"
                 : "Locate spectrum file(s) for PDV — not found: " + missingName);
         fc.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter("Spectra (*.mzML, *.mzXML, *.mgf)", "*.mzML", "*.mzXML", "*.mgf"));
+                new FileChooser.ExtensionFilter("Spectra (*.mzML, *.mzXML, *.mgf)",
+                        FxUtils.caseVariants("*.mzML", "*.mzXML", "*.mgf")));
         File parent = mzTab.getParentFile();
         if (parent != null && parent.isDirectory()) {
             fc.setInitialDirectory(parent);
