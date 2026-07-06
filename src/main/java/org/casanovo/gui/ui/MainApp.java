@@ -150,6 +150,7 @@ public class MainApp extends Application {
     /** Drives open PDV windows (e.g. peptide-click -> select PSM) over their control port. */
     private final org.casanovo.gui.core.PdvController pdvController = new org.casanovo.gui.core.PdvController();
     private Stage stage;
+    private LimelightController limelight; // limelight
 
     /** Shared inline validation feedback (danger border + focus + red status); also used by the View tab. */
     private final InlineValidation validation = new InlineValidation(statusLabel);
@@ -157,6 +158,7 @@ public class MainApp extends Application {
     @Override
     public void start(Stage primaryStage) {
         this.stage = primaryStage;
+        limelight = new LimelightController(stage, settings, () -> console, config, () -> runner.isRunning() || installing || convertingRaw || viewPane.runningProperty().get(), b -> { installing = b; setBusy(b); }); // limelight
         Themes.apply(settings.getTheme());
         console = makeConsole(settings.isColoredConsole());
         try (java.io.InputStream icon = getClass().getResourceAsStream("/org/casanovo/gui/icon.png")) {
@@ -327,7 +329,7 @@ public class MainApp extends Application {
         MenuItem exitItem = new MenuItem("Exit");
         exitItem.setAccelerator(new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN));
         exitItem.setOnAction(e -> stage.close());
-        fileMenu.getItems().addAll(settingsItem,
+        fileMenu.getItems().addAll(settingsItem, limelight.menuItem(), // limelight
                 new javafx.scene.control.SeparatorMenuItem(), exitItem);
 
         Menu helpMenu = new Menu("Help");
@@ -1065,6 +1067,7 @@ public class MainApp extends Application {
         // Remember the inputs + where the result will land so "Open in PDV" can load it directly.
         pendingSpectra = spectra;
         pendingOutputDir = (workingDir != null) ? workingDir : new File(System.getProperty("user.dir"));
+        limelight.onRunStarted(command, spectra); // limelight
         pendingRunStartMs = System.currentTimeMillis() - 3000L; // small clock-skew buffer
         console.append(System.lineSeparator() + "$ " + command.toDisplayString(settings)
                 + System.lineSeparator());
@@ -1599,6 +1602,7 @@ public class MainApp extends Application {
             return;
         }
         File mztab = findNewestMzTab(pendingOutputDir, pendingRunStartMs);
+        limelight.onResultReady(mztab); // limelight
         if (mztab != null) {
             // Auto-fill the View tab's peptides field (mapping is run on demand).
             viewPane.setPeptides(mztab);
