@@ -230,8 +230,8 @@ public final class AaScorePopup {
         pdvHint = new Label("ⓘ Select a row, single-click it, or use ↑/↓ to navigate PSMs and show the "
                 + "selected PSM's annotated spectrum in PDV.");
         pdvHint.setStyle("-fx-font-size: 11px; -fx-opacity: 0.6;");
-        // 55/45 split with the mapping (below); the table can still be dragged down to a 5-row minimum.
-        table.setMinHeight(5 * 26 + 40);
+        // 55/45 split with the mapping (below); the table can still be dragged down to a 3-row minimum.
+        table.setMinHeight(3 * 26 + 40);
         tableBox = new VBox(4, tableTitle, pdvHint, table);
         tableBox.setPadding(new Insets(2, 10, 10, 10));
         tableBox.getStyleClass().add("result-tabs"); // compact column headers via settings.css
