@@ -111,7 +111,12 @@ jobs:
           echo "VER=$V" >> "$GITHUB_ENV"
       - name: Install Linux packaging tools
         if: matrix.name == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils
+        run: |
+          # A preinstalled packages.microsoft.com apt repo intermittently serves an invalid
+          # signature, which makes `apt-get update` fail (exit 100); we don't use it, so drop it first.
+          sudo grep -rlE 'packages\.microsoft\.com' /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -r rm -f || true
+          sudo apt-get update
+          sudo apt-get install -y fakeroot binutils
       - name: Package (Windows app-image)
         if: matrix.name == 'windows'
         run: pwsh ./packaging/package.ps1
