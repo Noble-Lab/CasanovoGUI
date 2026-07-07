@@ -22,13 +22,14 @@ public class DbSearchPane extends CommandPane {
     private final ScrollPane content;
 
     public DbSearchPane(Window owner) {
-        peakField = new MultiFileField(owner, "spectra", "MS/MS files",
+        peakField = new MultiFileField(owner, "spectra", true, "MS/MS files",
                 "MS/MS spectra (*.mzML, *.mzXML, *.mgf, *.raw)", "*.mzML", "*.mzXML", "*.mgf", "*.raw");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
-                .required("mzML / mzXML / MGF / raw spectrum file(s)")
-                .tooltip("Required. One or more mzML/mzXML/MGF/raw files. Select multiple in the "
-                        + "browser, or separate paths with '" + File.pathSeparator + "'.");
+                .required("mzML / mzXML / MGF / raw file(s) or timsTOF .d folder(s)")
+                .tooltip("Required. One input type per run: spectrum files (mzML/mzXML/MGF/raw) OR Bruker "
+                        + "timsTOF .d folders. Browse asks the type first; a .d input auto-selects the timsTOF "
+                        + "model. Switching type replaces the current selection.");
         form.addRow("Protein database (FASTA):", fastaField,
                         FxUtils.fileButton(owner, fastaField, "fasta", false,
                                 "FASTA (*.fasta, *.fa)", "*.fasta", "*.fa", "*.gz"))
@@ -36,6 +37,7 @@ public class DbSearchPane extends CommandPane {
                 .tooltip("Required. Protein sequences in FASTA format. Digestion parameters are set "
                         + "in the Parameters dialog (default: tryptic).");
         options.addToForm(owner, form);
+        options.trackModelInput(peakField); // Model-weights placeholder follows the input type (.d -> timsTOF)
         form.addNote("Note: database searching is experimental and may run slowly for large databases.");
         options.addConfigRow(owner, form);
         content = new ScrollPane(form.getGrid());
@@ -59,6 +61,10 @@ public class DbSearchPane extends CommandPane {
                     "Please choose at least one spectrum file (mzML/mzXML/MGF/raw).",
                     peakField.field());
         }
+        ValidationError mixed = PathFields.validateSingleSpectrumType(peakField.field());
+        if (mixed != null) {
+            return mixed;
+        }
         ValidationError missing = PathFields.firstMissing(peakField.field());
         if (missing != null) {
             return missing;
@@ -69,8 +75,9 @@ public class DbSearchPane extends CommandPane {
     @Override
     public CasanovoCommand buildCommand() {
         List<String> args = new ArrayList<>();
-        options.appendArgs(args, true);
-        args.addAll(PathFields.split(peakField.field()));
+        List<String> peaks = PathFields.split(peakField.field());
+        options.appendArgs(args, true, peaks);
+        args.addAll(peaks);
         args.add(fastaField.getText().trim());
         return new CasanovoCommand("db-search", args);
     }

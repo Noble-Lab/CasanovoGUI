@@ -7,6 +7,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.TextField;
 import javafx.stage.Window;
 import org.casanovo.gui.core.CasanovoWeights;
+import org.casanovo.gui.core.TimsTof;
 
 import java.util.List;
 
@@ -35,6 +36,8 @@ class CommonOptions {
     /** The "Config file" row nodes, toggled together when GUI parameters are (de)selected. */
     private Node configLabel;
     private Button configBrowseButton;
+    /** The input model id the placeholder currently reflects; lets refreshModelPrompt skip a redundant cache walk. */
+    private String promptModelId;
 
     CommonOptions() {
         verbosityCombo.getItems().addAll("(default)", "debug", "info", "warning", "error");
@@ -47,15 +50,11 @@ class CommonOptions {
     void addToForm(Window owner, FxUtils.FormGrid form) {
         form.addRow("Model weights:", modelField,
                 FxUtils.fileButton(owner, modelField, "model", false, "Model weights (*.ckpt)", "*.ckpt"))
-                .optional("Model .ckpt (blank = default)");
-        java.io.File cachedWeights = CasanovoWeights.findCachedDefault();
-        if (cachedWeights != null) {
-            modelField.setPromptText(cachedWeights.getAbsolutePath());
-            form.tooltip("Optional. Cached default weights found: " + cachedWeights.getName()
-                    + " — leave blank to use them, or pick a different .ckpt. (--model)");
-        } else {
-            form.tooltip("Optional. Leave blank to let Casanovo download/cache default weights. (--model)");
-        }
+                .optional("Model .ckpt (blank = auto by input format)");
+        form.tooltip("Optional. Blank auto-selects the model from the input format — timsTOF for .d "
+                + "folders, otherwise orbitrap — and Casanovo downloads/caches its weights. The "
+                + "placeholder shows the checkpoint that will be used; or pick a specific .ckpt. (--model)");
+        refreshModelPrompt(List.of()); // initial: no input yet -> the default (orbitrap) model
         form.addRow("Output directory:", outputDirField,
                         FxUtils.dirButton(owner, outputDirField, "output"))
                 .required("Folder for Casanovo output")
@@ -123,19 +122,61 @@ class CommonOptions {
     }
 
     /**
+     * Update the Model-weights placeholder to reflect the model that will be auto-selected for the
+     * current input (timsTOF for a Bruker {@code .d} folder, otherwise orbitrap): the cached checkpoint
+     * path when present, else a short "will download" hint. The placeholder shows only while the field
+     * is blank, so a user-typed model is unaffected. Panes that allow {@code .d} call this when the
+     * spectrum input changes, so switching between files and {@code .d} keeps the hint honest.
+     */
+    void refreshModelPrompt(List<String> peakPaths) {
+        String modelId = TimsTof.anyDotD(peakPaths) ? "timstof" : DEFAULT_MODEL;
+        if (modelId.equals(promptModelId)) {
+            return; // input's .d-ness unchanged -> placeholder unchanged; skip the weights-cache walk
+        }
+        promptModelId = modelId;
+        java.io.File cached = CasanovoWeights.findCachedFor(modelId);
+        modelField.setPromptText(cached != null
+                ? cached.getAbsolutePath()
+                : modelId + " (blank = auto-select; Casanovo will download & cache the weights)");
+    }
+
+    /**
+     * Keep the Model-weights placeholder following {@code peakField}'s input type ({@code .d} -> timsTOF,
+     * else orbitrap). Shared by the panes that accept spectrum input so the wiring lives in one place.
+     */
+    void trackModelInput(MultiFileField peakField) {
+        peakField.field().textProperty().addListener((o, a, b) ->
+                refreshModelPrompt(PathFields.split(peakField.field())));
+        refreshModelPrompt(PathFields.split(peakField.field()));
+    }
+
+    /**
+     * The model id this pane passes to {@code --model} for {@code peakPaths}: the user's typed model if
+     * set, otherwise auto-selected from the input format ({@code timstof} for a Bruker {@code .d} folder,
+     * else {@code orbitrap}). Returns {@code ""} when the field is blank and {@code defaultModel} is false
+     * (training from scratch). Single source of truth for the model, used by {@link #appendArgs}; the run
+     * and Parameters dialog read the resulting {@code --model} so their timsTOF decisions can't diverge.
+     */
+    String resolveModelId(List<String> peakPaths, boolean defaultModel) {
+        String model = modelField.getText() == null ? "" : modelField.getText().trim();
+        if (!model.isEmpty()) {
+            return model;
+        }
+        return defaultModel ? (TimsTof.anyDotD(peakPaths) ? "timstof" : DEFAULT_MODEL) : "";
+    }
+
+    /**
      * Append the shared options to {@code args}.
      *
-     * @param defaultModel when {@code true} and the model field is blank, an explicit
-     *                     {@code --model orbitrap} is added so Casanovo does not emit its
-     *                     "No model was specified" warning. Training passes {@code false}:
-     *                     a blank model there means "train from scratch" and must not be
-     *                     pinned to the default model.
+     * @param defaultModel when {@code true} and the model field is blank, a model is auto-selected
+     *                     from the input format ({@code timstof} for a Bruker {@code .d} folder, else
+     *                     {@code orbitrap}) and added explicitly so Casanovo doesn't emit its "No model
+     *                     was specified" warning. Training passes {@code false}: a blank model there
+     *                     means "train from scratch" and must not be pinned to a default model.
+     * @param peakPaths    the run's spectrum paths, used to detect timsTOF {@code .d} input
      */
-    void appendArgs(List<String> args, boolean defaultModel) {
-        String model = modelField.getText() == null ? "" : modelField.getText().trim();
-        if (model.isEmpty() && defaultModel) {
-            model = DEFAULT_MODEL;
-        }
+    void appendArgs(List<String> args, boolean defaultModel, List<String> peakPaths) {
+        String model = resolveModelId(peakPaths, defaultModel);
         if (!model.isEmpty()) {
             args.add("--model");
             args.add(model);

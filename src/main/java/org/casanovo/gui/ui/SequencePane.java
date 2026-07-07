@@ -19,15 +19,16 @@ public class SequencePane extends CommandPane {
     private final ScrollPane content;
 
     public SequencePane(Window owner) {
-        peakField = new MultiFileField(owner, "spectra", "MS/MS files",
+        peakField = new MultiFileField(owner, "spectra", true, "MS/MS files",
                 "MS/MS spectra (*.mzML, *.mzXML, *.mgf, *.raw)", "*.mzML", "*.mzXML", "*.mgf", "*.raw");
         FxUtils.FormGrid form = new FxUtils.FormGrid();
         form.addRow("Spectrum file(s):", peakField.node(), peakField.browseButton())
-                .required("mzML / mzXML / MGF / raw spectrum file(s)")
-                .tooltip("Required. One or more mzML/mzXML/MGF/raw files. "
-                        + "Select multiple in the browser, or separate paths with '"
-                        + File.pathSeparator + "'.");
+                .required("mzML / mzXML / MGF / raw file(s) or timsTOF .d folder(s)")
+                .tooltip("Required. One input type per run: spectrum files (mzML/mzXML/MGF/raw) OR Bruker "
+                        + "timsTOF .d folders. Browse asks the type first; a .d input auto-selects the timsTOF "
+                        + "model. Switching type replaces the current selection.");
         options.addToForm(owner, form);
+        options.trackModelInput(peakField); // Model-weights placeholder follows the input type (.d -> timsTOF)
         options.addConfigRow(owner, form);
         content = new ScrollPane(form.getGrid());
         content.setFitToWidth(true);
@@ -50,14 +51,19 @@ public class SequencePane extends CommandPane {
                     "Please choose at least one spectrum file (mzML/mzXML/MGF/raw) to sequence.",
                     peakField.field());
         }
+        ValidationError mixed = PathFields.validateSingleSpectrumType(peakField.field());
+        if (mixed != null) {
+            return mixed;
+        }
         return PathFields.firstMissing(peakField.field());
     }
 
     @Override
     public CasanovoCommand buildCommand() {
         List<String> args = new ArrayList<>();
-        options.appendArgs(args, true);
-        args.addAll(PathFields.split(peakField.field()));
+        List<String> peaks = PathFields.split(peakField.field());
+        options.appendArgs(args, true, peaks);
+        args.addAll(peaks);
         return new CasanovoCommand("sequence", args);
     }
 

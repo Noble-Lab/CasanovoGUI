@@ -47,19 +47,24 @@ public final class CasanovoWeights {
     }
 
     /**
-     * The most recently modified cached {@code *.ckpt} weights file, or
-     * {@code null} if none is cached yet.
+     * The most recently modified cached {@code *.ckpt} whose filename contains {@code modelId} (e.g.
+     * {@code "orbitrap"} or {@code "timstof"} — Casanovo names them {@code casanovo_<id>_v<ver>.ckpt}),
+     * or {@code null} if that model isn't cached yet.
      */
-    public static File findCachedDefault() {
+    public static File findCachedFor(String modelId) {
         Path dir = cacheDir();
-        if (dir == null || !Files.isDirectory(dir)) {
+        if (dir == null || !Files.isDirectory(dir) || modelId == null || modelId.isEmpty()) {
             return null;
         }
+        String needle = modelId.toLowerCase(Locale.ROOT);
         try (var walk = Files.walk(dir)) {
             return walk.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".ckpt"))
-                    .max(Comparator.comparingLong(p -> p.toFile().lastModified()))
                     .map(Path::toFile)
+                    .filter(f -> {
+                        String n = f.getName().toLowerCase(Locale.ROOT);
+                        return n.endsWith(".ckpt") && n.contains(needle);
+                    })
+                    .max(Comparator.comparingLong(File::lastModified))
                     .orElse(null);
         } catch (Exception e) {
             return null;

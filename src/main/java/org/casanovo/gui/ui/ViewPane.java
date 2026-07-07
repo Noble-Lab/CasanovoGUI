@@ -56,6 +56,7 @@ import javafx.scene.input.MouseButton;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
 import org.casanovo.gui.core.MzTabScores;
+import org.casanovo.gui.core.TimsTof;
 import org.casanovo.gui.core.PdvController;
 import org.casanovo.gui.core.PepMapLauncher;
 import org.casanovo.gui.core.Peptides;
@@ -2015,6 +2016,11 @@ public class ViewPane extends BorderPane {
             recorded = MzTabScores.readMsRunLocations(mzTab);
         } catch (IOException e) {
             recorded = List.of();
+        }
+        // PDV can't read Bruker timsTOF .d data yet, so skip PDV for a .d run (and don't prompt for files).
+        if (recorded.stream().anyMatch(f -> TimsTof.looksLikeDotD(f.getPath()))) {
+            consoleOut.accept("PDV does not support Bruker timsTOF .d data yet — skipping PDV visualization.");
+            return null;
         }
         boolean allPresent = !recorded.isEmpty();
         for (File f : recorded) {

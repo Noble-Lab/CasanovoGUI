@@ -69,9 +69,10 @@ public class TrainPane extends CommandPane {
         List<String> args = new ArrayList<>();
         args.add("--validation_peak_path");
         args.add(validationField.getText().trim());
-        // false: a blank model here means "train from scratch" — do not pin to orbitrap.
-        options.appendArgs(args, false);
-        args.addAll(PathFields.split(trainField.field()));
+        // false: a blank model here means "train from scratch" — do not pin to a default model.
+        List<String> peaks = PathFields.split(trainField.field());
+        options.appendArgs(args, false, peaks);
+        args.addAll(peaks);
         return new CasanovoCommand("train", args);
     }
 }

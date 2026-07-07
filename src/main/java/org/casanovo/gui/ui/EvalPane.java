@@ -59,9 +59,10 @@ public class EvalPane extends CommandPane {
     @Override
     public CasanovoCommand buildCommand() {
         List<String> args = new ArrayList<>();
-        options.appendArgs(args, true);
+        List<String> peaks = PathFields.split(peakField.field());
+        options.appendArgs(args, true, peaks);
         args.add("--evaluate");
-        args.addAll(PathFields.split(peakField.field()));
+        args.addAll(peaks);
         return new CasanovoCommand("sequence", args);
     }
 

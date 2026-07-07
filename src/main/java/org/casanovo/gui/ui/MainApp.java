@@ -44,6 +44,7 @@ import org.casanovo.gui.core.Os;
 import org.casanovo.gui.core.PyVenv;
 import org.casanovo.gui.core.RawFileParserLauncher;
 import org.casanovo.gui.core.Settings;
+import org.casanovo.gui.core.TimsTof;
 import org.casanovo.gui.core.UpdateChecker;
 
 import java.io.BufferedReader;
@@ -72,6 +73,12 @@ public class MainApp extends Application {
 
     private final Settings settings = new Settings();
     private final CasanovoConfig config = new CasanovoConfig();
+    // timsTOF profile: for a .d run the config's `residues` + `max_peaks` are swapped to the timsTOF
+    // values (from the installed config_timstof.yaml) so the generated config passes Casanovo's vocab
+    // check and the Parameters dialog reflects them; the prior values are restored for non-.d runs.
+    private boolean timstofProfileActive;
+    private String savedResidues;
+    private String savedMaxPeaks;
     private final CasanovoRunner runner = new CasanovoRunner();
 
     private final TabPane tabs = new TabPane();
@@ -583,6 +590,12 @@ public class MainApp extends Application {
     }
 
     private void openParameters() {
+        // Same criterion as the run (the resolved --model), so the dialog shows exactly the residues the
+        // run will use — even when the user typed a model that overrides the .d auto-selection. currentPane()
+        // is null on a non-command tab (the Parameters shortcut is scene-wide) — then it's simply not a
+        // timsTOF run.
+        CommandPane pane = currentPane();
+        applyTimstofProfile(pane != null && isTimstofCommand(pane.buildCommand()));
         boolean saved = new ConfigDialog(stage, config).showAndApply();
         if (saved) {
             useGuiParams.setSelected(true);
@@ -709,6 +722,12 @@ public class MainApp extends Application {
         }
         String configPath;
         if (forRun) {
+            if (!applyTimstofProfile(isTimstofCommand(base))) { // .d run -> timsTOF residues + max_peaks
+                throw new RuntimeException("The timsTOF model is selected, but config_timstof.yaml could "
+                        + "not be read from the Casanovo install, so a valid timsTOF config can't be built. "
+                        + "Check the Casanovo installation, or turn off \"Use GUI parameters\" and supply a "
+                        + "config file manually.");
+            }
             try {
                 configPath = writeEffectiveConfig(resolveOutputDir(base)).getAbsolutePath();
             } catch (IOException e) {
@@ -722,6 +741,42 @@ public class MainApp extends Application {
         args.add(configPath);
         args.addAll(base.getArguments());
         return new CasanovoCommand(base.getSubcommand(), args);
+    }
+
+    /**
+     * Keep the config's timsTOF profile in sync with whether this is a timsTOF ({@code .d}) run.
+     * On the first transition into timsTOF, save the current {@code residues} + {@code max_peaks}
+     * and replace them with the timsTOF values (from the installed {@code config_timstof.yaml}); on
+     * the way back, restore them. Idempotent — only acts on transitions. Called just before the
+     * config is consumed (the Parameters dialog and run-config generation), so the timsTOF
+     * checkpoint's vocabulary check passes and the dialog reflects the timsTOF parameters.
+     */
+    private boolean applyTimstofProfile(boolean timsTof) {
+        if (timsTof && !timstofProfileActive) {
+            Optional<TimsTof.Profile> prof = TimsTof.profile(settings);
+            if (prof.isEmpty()) {
+                console.appendLine("[timstof] Could not read config_timstof.yaml from the Casanovo "
+                        + "install; timsTOF residues were not applied.");
+                return false;
+            }
+            savedResidues = config.get("residues").getValue();
+            savedMaxPeaks = config.get("max_peaks").getValue();
+            config.get("residues").setValue(prof.get().residues());
+            config.get("max_peaks").setValue(prof.get().maxPeaks());
+            timstofProfileActive = true;
+        } else if (!timsTof && timstofProfileActive) {
+            config.get("residues").setValue(savedResidues);
+            config.get("max_peaks").setValue(savedMaxPeaks);
+            timstofProfileActive = false;
+        }
+        return true;
+    }
+
+    /** True when {@code cmd} runs the timsTOF model (auto-selected for {@code .d} input, or set by hand). */
+    private static boolean isTimstofCommand(CasanovoCommand cmd) {
+        List<String> a = cmd.getArguments();
+        int i = a.indexOf("--model");
+        return i >= 0 && i + 1 < a.size() && "timstof".equals(a.get(i + 1));
     }
 
     private void refreshSettingsLabel() {
@@ -1906,6 +1961,8 @@ public class MainApp extends Application {
      */
     private File writeEffectiveConfig(File outputDir) throws IOException {
         Optional<String> base = ConfigCache.cachedBase(settings);
+        // overlayOnto/toYaml derive new_token_init from the (possibly timsTOF) residues, so the config
+        // already bridges the aliased token for a .d run — no post-processing needed here.
         String yaml = base.isPresent() ? config.overlayOnto(base.get()) : config.toYaml();
         if (outputDir != null && outputDir.isDirectory()) {
             File dest = new File(outputDir, "casanovo-gui-config-" + runStamp() + ".yaml");

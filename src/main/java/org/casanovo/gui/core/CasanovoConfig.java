@@ -245,15 +245,12 @@ public class CasanovoConfig {
                 appendScalar(sb, f);
             }
         }
-        // new_token_init was added in Casanovo 5.2.0: a fine-tuning-only option (map new
-        // vocabulary tokens to existing ones for weight initialization) that the GUI does
-        // not expose. Emit its empty-map default so this file passes Casanovo's "all
-        // expected options present" validation. This path is the FALLBACK used when the
-        // version-correct base from `casanovo configure` isn't available (see
-        // overlayOnto); the primary path inherits every key from Casanovo itself.
-        if (byKey.get("new_token_init") == null) {
-            sb.append("new_token_init: {}\n");
-        }
+        // new_token_init (Casanovo 5.2.0+) maps new vocabulary tokens to existing ones for weight
+        // initialization. The GUI doesn't expose it directly; it is DERIVED from the current residues
+        // (see newTokenInitYaml) so a timsTOF residue set — which aliases a token the checkpoint lacks —
+        // is bridged automatically, while default residues emit `{}`. This keeps the vocabulary check
+        // happy for a self-generated config (this path) and for an overlaid one (see overlayOnto).
+        sb.append(newTokenInitYaml(get("residues").getValue())).append('\n');
         return sb.toString();
     }
 
@@ -275,7 +272,75 @@ public class CasanovoConfig {
                     ? replaceBlock(result, f)
                     : replaceScalar(result, f);
         }
-        return result;
+        // Keep new_token_init consistent with the (possibly timsTOF) residues we just overlaid.
+        return injectNewTokenInit(result);
+    }
+
+    /**
+     * When the current residues need a {@code new_token_init} bridge, apply it to the base config;
+     * otherwise leave the base's own {@code new_token_init} untouched. This only fires for a residue set
+     * with a same-mass alias pair (i.e. a timsTOF run), so an ordinary run never rewrites — or adds — the
+     * key Casanovo authored (important on a Casanovo whose base has no {@code new_token_init} at all).
+     */
+    private String injectNewTokenInit(String yaml) {
+        String snippet = newTokenInitYaml(get("residues").getValue());
+        if ("new_token_init: {}".equals(snippet)) {
+            return yaml; // no bridge needed
+        }
+        String regex = "(?m)^new_token_init:[^\\n]*(?:\\n[ \\t]+[^\\n]*)*";
+        if (Pattern.compile(regex).matcher(yaml).find()) {
+            return yaml.replaceFirst(regex, Matcher.quoteReplacement(snippet));
+        }
+        return appendKey(yaml, snippet);
+    }
+
+    private static final Pattern RESIDUE_LINE = Pattern.compile("\"([^\"]+)\"\\s*:\\s*(-?[0-9.]+).*");
+    private static final Pattern NUMERIC_DELTA_TOKEN = Pattern.compile("\\[[+-]?[0-9.]+\\]-");
+
+    /**
+     * Derive the {@code new_token_init} YAML from the current {@code residues}. Casanovo's timsTOF
+     * residues carry same-mass alias pairs — a numeric-delta token (e.g. {@code "[+25.980265]-"}) and a
+     * named token (e.g. {@code "[Carbamyl][Ammonia-loss]-"}) of identical mass. A pretrained checkpoint
+     * only knows the numeric form, so the named alias must be initialised from it via
+     * {@code new_token_init} or Casanovo rejects the config with "New tokens ... have no initialization
+     * source". Each named token that shares a mass with a numeric-delta token is mapped to that numeric
+     * token; when no such pair exists (e.g. the default orbitrap residues) this returns
+     * {@code "new_token_init: {}"} so the key is always present. Deriving from the residues keeps the
+     * bridge correct across Casanovo versions without hard-coding token names.
+     */
+    static String newTokenInitYaml(String residues) {
+        LinkedHashMap<String, String> massByToken = new LinkedHashMap<>();
+        for (String line : residues.split("\\R")) {
+            Matcher m = RESIDUE_LINE.matcher(line.trim());
+            if (m.matches()) {
+                massByToken.put(m.group(1), m.group(2));
+            }
+        }
+        StringBuilder body = new StringBuilder();
+        for (Map.Entry<String, String> named : massByToken.entrySet()) {
+            if (NUMERIC_DELTA_TOKEN.matcher(named.getKey()).matches()) {
+                continue; // numeric-delta tokens are the init sources, not targets
+            }
+            for (Map.Entry<String, String> src : massByToken.entrySet()) {
+                if (NUMERIC_DELTA_TOKEN.matcher(src.getKey()).matches()
+                        && sameMass(named.getValue(), src.getValue())) {
+                    body.append("  \"").append(named.getKey()).append("\": \"")
+                            .append(src.getKey()).append("\"\n");
+                    break;
+                }
+            }
+        }
+        return body.length() == 0
+                ? "new_token_init: {}"
+                : "new_token_init:\n" + body.toString().stripTrailing();
+    }
+
+    private static boolean sameMass(String a, String b) {
+        try {
+            return Double.parseDouble(a) == Double.parseDouble(b);
+        } catch (NumberFormatException e) {
+            return a.equals(b);
+        }
     }
 
     /** The YAML this field serialises to (a scalar line, or a multi-line block), no trailing newline. */

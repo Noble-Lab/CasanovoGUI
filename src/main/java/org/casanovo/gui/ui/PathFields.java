@@ -2,6 +2,8 @@ package org.casanovo.gui.ui;
 
 import javafx.scene.control.TextField;
 
+import org.casanovo.gui.core.TimsTof;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,6 +52,20 @@ final class PathFields {
         String path = field.getText().trim();
         if (!new File(path).exists()) {
             return new ValidationError("File not found: " + path, field);
+        }
+        return null;
+    }
+
+    /**
+     * A run's spectrum inputs must all be one type (all mzML, all mzXML, all MGF, all raw, or all
+     * {@code .d}) — a mix confuses the model choice and downstream PDV visualization. Returns an
+     * inline error pointing at {@code field}, or {@code null} when the inputs are a single type.
+     */
+    static ValidationError validateSingleSpectrumType(TextField field) {
+        if (TimsTof.hasMixedSpectrumTypes(split(field))) {
+            return new ValidationError(
+                    "All spectrum inputs must be the same type — all mzML, all mzXML, all MGF, all raw, "
+                            + "or all .d — not a mix.", field);
         }
         return null;
     }
