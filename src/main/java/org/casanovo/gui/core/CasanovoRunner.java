@@ -2,10 +2,6 @@ package org.casanovo.gui.core;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.PushbackReader;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.function.BiConsumer;
 
@@ -78,7 +74,7 @@ public class CasanovoRunner {
                     pb.directory(workingDir);
                 }
                 process = pb.start();
-                readStream(process.getInputStream(), onOutput);
+                OutputPump.pump(process.getInputStream(), onOutput);
                 exitCode = process.waitFor();
             } catch (IOException e) {
                 error = new IOException("Failed to start Casanovo. Check the executable path "
@@ -102,42 +98,6 @@ public class CasanovoRunner {
         }, "casanovo-runner");
         worker.setDaemon(true);
         worker.start();
-    }
-
-    /**
-     * Read the process output, splitting on {@code \n}, {@code \r\n} and bare
-     * {@code \r}. Bare-{@code \r} chunks are emitted as transient (progress)
-     * updates; everything else as committed lines.
-     */
-    private static void readStream(InputStream in, BiConsumer<String, Boolean> onOutput) throws IOException {
-        try (PushbackReader r = new PushbackReader(
-                new InputStreamReader(in, StandardCharsets.UTF_8), 1)) {
-            StringBuilder sb = new StringBuilder();
-            int c;
-            while ((c = r.read()) != -1) {
-                char ch = (char) c;
-                if (ch == '\n') {
-                    onOutput.accept(sb.toString(), false);
-                    sb.setLength(0);
-                } else if (ch == '\r') {
-                    int next = r.read();
-                    if (next == '\n') {
-                        onOutput.accept(sb.toString(), false); // \r\n => committed line
-                    } else {
-                        onOutput.accept(sb.toString(), true);   // bare \r => progress refresh
-                        if (next != -1) {
-                            r.unread(next);
-                        }
-                    }
-                    sb.setLength(0);
-                } else {
-                    sb.append(ch);
-                }
-            }
-            if (sb.length() > 0) {
-                onOutput.accept(sb.toString(), false);
-            }
-        }
     }
 
     /** Forcibly terminate the running process, if any. */

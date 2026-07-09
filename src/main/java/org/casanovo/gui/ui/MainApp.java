@@ -37,7 +37,10 @@ import javafx.stage.Stage;
 import org.casanovo.gui.core.CasanovoCommand;
 import org.casanovo.gui.core.CasanovoConfig;
 import org.casanovo.gui.core.CasanovoInstaller;
-import org.casanovo.gui.core.CasanovoRunner;
+import org.casanovo.gui.core.exec.ExecutionBackend;
+import org.casanovo.gui.core.exec.JobHandle;
+import org.casanovo.gui.core.exec.JobRequest;
+import org.casanovo.gui.core.exec.LocalBackend;
 import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
 import org.casanovo.gui.core.Os;
@@ -79,7 +82,8 @@ public class MainApp extends Application {
     private boolean timstofProfileActive;
     private String savedResidues;
     private String savedMaxPeaks;
-    private final CasanovoRunner runner = new CasanovoRunner();
+    /** Handle to the current run (local today; a remote SSH job later). Null until the first run. */
+    private JobHandle currentJob;
 
     private final TabPane tabs = new TabPane();
     private ConsoleOutput console;
@@ -165,7 +169,7 @@ public class MainApp extends Application {
     @Override
     public void start(Stage primaryStage) {
         this.stage = primaryStage;
-        limelight = new LimelightController(stage, settings, () -> console, config, () -> runner.isRunning() || installing || convertingRaw || viewPane.runningProperty().get(), b -> { installing = b; setBusy(b); }); // limelight
+        limelight = new LimelightController(stage, settings, () -> console, config, () -> isJobRunning() || installing || convertingRaw || viewPane.runningProperty().get(), b -> { installing = b; setBusy(b); }); // limelight
         Themes.apply(settings.getTheme());
         console = makeConsole(settings.isColoredConsole());
         try (java.io.InputStream icon = getClass().getResourceAsStream("/org/casanovo/gui/icon.png")) {
@@ -194,7 +198,7 @@ public class MainApp extends Application {
         viewPane.runningProperty().addListener((o, a, b) -> {
             updateChromeForTab();
             refreshPreview(); // one job per window: enable/disable the Casanovo Run button as a mapping starts/ends
-            refreshTabLock(runner.isRunning() || convertingRaw); // lock the command tabs while the mapping runs
+            refreshTabLock(isJobRunning() || convertingRaw); // lock the command tabs while the mapping runs
             // The View tab streams its mapping to the shared console; animate the border while it runs.
             consoleFrame.setState(b ? ConsoleBorderEffect.State.RUNNING : ConsoleBorderEffect.State.IDLE);
         });
@@ -299,7 +303,7 @@ public class MainApp extends Application {
 
     @Override
     public void stop() {
-        runner.cancel();
+        cancelJob();
     }
 
     /** Ensure the realized window fits within the primary screen's usable (taskbar-excluded) area. */
@@ -449,10 +453,10 @@ public class MainApp extends Application {
     }
 
     private void updateAnimation() {
-        // The raw→mzML conversion runs before the Casanovo process, so runner.isRunning() is still
+        // The raw→mzML conversion runs before the Casanovo process, so isJobRunning() is still
         // false then; treat it as a running state too, so a raw-file run shows the overlay (and covers
         // the form) from the first click rather than only once Casanovo starts.
-        boolean show = (runner.isRunning() || convertingRaw) && settings.isShowRunningAnimation();
+        boolean show = (isJobRunning() || convertingRaw) && settings.isShowRunningAnimation();
         spectrum.setVisible(show);
         if (show) {
             spectrum.start();
@@ -652,7 +656,7 @@ public class MainApp extends Application {
             runButton.setDisable(true);
             return;
         }
-        runButton.setDisable(runner.isRunning() || installing || viewPane.runningProperty().get());
+        runButton.setDisable(isJobRunning() || installing || viewPane.runningProperty().get());
         try {
             CasanovoCommand cmd = effectiveCommand(pane, false);
             commandPreview.setText(cmd.toDisplayString(settings));
@@ -806,7 +810,7 @@ public class MainApp extends Application {
     }
 
     private void onRun() {
-        if (runner.isRunning() || installing || convertingRaw || viewPane.runningProperty().get()) {
+        if (isJobRunning() || installing || convertingRaw || viewPane.runningProperty().get()) {
             return; // one job per window: also bail while a pepmap mapping is in progress
         }
         CommandPane pane = currentPane();
@@ -1116,6 +1120,23 @@ public class MainApp extends Application {
         return dot > 0 ? fileName.substring(0, dot) : fileName;
     }
 
+    /** The execution backend for a run: local today; a remote (SSH) backend when remote exec is enabled. */
+    private ExecutionBackend backendFor() {
+        return new LocalBackend();
+    }
+
+    /** True while a Casanovo job is running (local or remote). */
+    private boolean isJobRunning() {
+        return currentJob != null && currentJob.isRunning();
+    }
+
+    /** Cancel the current job, if any (safe when nothing is running). */
+    private void cancelJob() {
+        if (currentJob != null) {
+            currentJob.cancel();
+        }
+    }
+
     /** The rest of a run, once the command's inputs are all in their final (non-{@code .raw}) form. */
     private void proceedWithRun(CommandPane pane, CasanovoCommand command, List<File> spectra) {
         File workingDir = inferWorkingDir(command);
@@ -1141,10 +1162,12 @@ public class MainApp extends Application {
         lastBarMs = 0L;
         checkpointErrorSeen = false;
 
-        runner.start(command, settings, workingDir,
+        JobRequest request = new JobRequest(command, settings, workingDir, List.of(), pendingOutputDir);
+        currentJob = backendFor().start(request,
                 this::onOutput,
-                (exit, err) -> Platform.runLater(() -> onFinished(exit, err)));
-        // After start(): runner.isRunning() is now true, so the overlay shows.
+                (exit, err) -> Platform.runLater(() -> onFinished(exit, err)),
+                msg -> {}); // staging progress: unused locally, wired for the remote backend later
+        // After start(): the job's isRunning() is now true, so the overlay shows.
         updateAnimation();
     }
 
@@ -1485,9 +1508,9 @@ public class MainApp extends Application {
     }
 
     private void onStop() {
-        if (runner.isRunning()) {
+        if (isJobRunning()) {
             statusLabel.setText("Stopping…");
-            runner.cancel();
+            cancelJob();
         } else if (convertingRaw) {
             statusLabel.setText("Stopping…");
             rawConvertCancelled = true;
@@ -1507,7 +1530,7 @@ public class MainApp extends Application {
 
     /** Download + install Python and Casanovo in the background. */
     private void onInstall() {
-        if (installing || runner.isRunning()) {
+        if (installing || isJobRunning()) {
             return;
         }
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
@@ -1534,7 +1557,7 @@ public class MainApp extends Application {
      * is shown.
      */
     private void runInstall(Runnable afterSuccess) {
-        if (installing || runner.isRunning()) {
+        if (installing || isJobRunning()) {
             return;
         }
         installing = true;
@@ -1803,7 +1826,7 @@ public class MainApp extends Application {
 
     /** Upgrade the GUI-managed Casanovo in place via {@code uv pip install -U casanovo}. */
     private void onUpdateCasanovo(UpdateChecker.UpdateInfo info) {
-        if (installing || runner.isRunning()) {
+        if (installing || isJobRunning()) {
             return;
         }
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
@@ -1894,7 +1917,7 @@ public class MainApp extends Application {
     }
 
     private void promptPyArrowRepair() {
-        if (installing || runner.isRunning()) {
+        if (installing || isJobRunning()) {
             return;
         }
         ButtonType repairBtn = new ButtonType("Repair now", ButtonBar.ButtonData.OK_DONE);
