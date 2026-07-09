@@ -11,11 +11,13 @@ import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.CheckMenuItem;
+import javafx.scene.control.Dialog;
 import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
+import javafx.scene.control.PasswordField;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.RadioMenuItem;
 import javafx.scene.control.SplitPane;
@@ -41,6 +43,8 @@ import org.casanovo.gui.core.exec.ExecutionBackend;
 import org.casanovo.gui.core.exec.JobHandle;
 import org.casanovo.gui.core.exec.JobRequest;
 import org.casanovo.gui.core.exec.LocalBackend;
+import org.casanovo.gui.core.remote.RemoteBackend;
+import org.casanovo.gui.core.remote.RemoteSettings;
 import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
 import org.casanovo.gui.core.Os;
@@ -84,6 +88,8 @@ public class MainApp extends Application {
     private String savedMaxPeaks;
     /** Handle to the current run (local today; a remote SSH job later). Null until the first run. */
     private JobHandle currentJob;
+    /** Persisted remote-execution config; selects the backend and drives the Remote settings dialog. */
+    private final RemoteSettings remoteSettings = new RemoteSettings();
 
     private final TabPane tabs = new TabPane();
     private ConsoleOutput console;
@@ -337,10 +343,12 @@ public class MainApp extends Application {
         MenuItem settingsItem = new MenuItem("Settings");
         settingsItem.setAccelerator(new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN));
         settingsItem.setOnAction(e -> openSettings());
+        MenuItem remoteItem = new MenuItem("Remote execution…");
+        remoteItem.setOnAction(e -> openRemoteSettings());
         MenuItem exitItem = new MenuItem("Exit");
         exitItem.setAccelerator(new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN));
         exitItem.setOnAction(e -> stage.close());
-        fileMenu.getItems().addAll(settingsItem, limelight.menuItem(), // limelight
+        fileMenu.getItems().addAll(settingsItem, remoteItem, limelight.menuItem(), // limelight
                 new javafx.scene.control.SeparatorMenuItem(), exitItem);
 
         Menu helpMenu = new Menu("Help");
@@ -1120,9 +1128,25 @@ public class MainApp extends Application {
         return dot > 0 ? fileName.substring(0, dot) : fileName;
     }
 
-    /** The execution backend for a run: local today; a remote (SSH) backend when remote exec is enabled. */
+    /** The execution backend for a run: local, or a remote (SSH) backend when remote execution is enabled. */
     private ExecutionBackend backendFor() {
+        if (remoteSettings.isEnabled() && remoteSettings.isConfigured()) {
+            return new RemoteBackend(remoteSettings, this::promptHostKey,
+                    passwordSupplierFor(remoteSettings.getUser(), remoteSettings.getHost()),
+                    passphraseSupplierFor(remoteSettings.getKeyPath()),
+                    MainApp::runStamp);
+        }
         return new LocalBackend();
+    }
+
+    /** A supplier that prompts (on the FX thread) for the SSH password for {@code user@host}; null if cancelled. */
+    private java.util.function.Supplier<char[]> passwordSupplierFor(String user, String host) {
+        return () -> promptSecret("SSH password", "Password for " + user + "@" + host + ":");
+    }
+
+    /** A supplier that prompts (on the FX thread) for the passphrase of {@code keyPath}; null if cancelled. */
+    private java.util.function.Supplier<char[]> passphraseSupplierFor(String keyPath) {
+        return () -> promptSecret("Key passphrase", "Passphrase for " + keyPath + ":");
     }
 
     /** True while a Casanovo job is running (local or remote). */
@@ -1134,6 +1158,101 @@ public class MainApp extends Application {
     private void cancelJob() {
         if (currentJob != null) {
             currentJob.cancel();
+        }
+    }
+
+    /**
+     * The local inputs a remote backend must upload: the spectra, plus any config / model-ckpt / FASTA that
+     * appears in the command as an existing local file. The {@code --output_dir}/{@code --output_root}/
+     * {@code --verbosity} values are excluded (a destination and plain names, not files to stage).
+     */
+    private static List<File> collectInputs(CasanovoCommand command, List<File> spectra) {
+        java.util.LinkedHashSet<File> inputs = new java.util.LinkedHashSet<>();
+        for (File s : spectra) {
+            inputs.add(s.getAbsoluteFile());
+        }
+        List<String> args = command.getArguments();
+        for (int i = 0; i < args.size(); i++) {
+            String a = args.get(i);
+            if ("--output_dir".equals(a) || "--output_root".equals(a) || "--verbosity".equals(a)) {
+                i++; // skip these flag values — a destination / plain name, not a file to stage
+                continue;
+            }
+            if (a.startsWith("--")) {
+                continue; // a flag itself; a path value (config/model/FASTA) is a plain token, picked up below
+            }
+            File f = new File(a);
+            if (f.exists()) {
+                inputs.add(f.getAbsoluteFile());
+            }
+        }
+        return new java.util.ArrayList<>(inputs);
+    }
+
+    /** Open the Remote-execution settings dialog; its "Test connection" probes with the current fields. */
+    private void openRemoteSettings() {
+        RemoteSettingsDialog dlg = new RemoteSettingsDialog(stage, remoteSettings,
+                (host, port, user, auth, keyPath, knownHosts) -> RemoteBackend.testConnection(
+                        host, port, user, auth, keyPath, knownHosts, this::promptHostKey,
+                        passwordSupplierFor(user, host),
+                        passphraseSupplierFor(keyPath)));
+        if (dlg.showAndApply()) {
+            refreshPreview();
+        }
+    }
+
+    /** Blockingly ask the user (on the FX thread) to trust an unknown host key. Invoked from a backend thread. */
+    private boolean promptHostKey(String fingerprint) {
+        Boolean ok = blockingFx(() -> {
+            Alert a = new Alert(Alert.AlertType.CONFIRMATION,
+                    "The server presented an unrecognized host key:\n\n" + fingerprint
+                            + "\n\nTrust this host and continue connecting?",
+                    ButtonType.YES, ButtonType.NO);
+            a.setHeaderText("Unknown SSH host key");
+            a.initOwner(stage);
+            return a.showAndWait().orElse(ButtonType.NO) == ButtonType.YES;
+        });
+        return Boolean.TRUE.equals(ok);
+    }
+
+    /** Blockingly prompt for a secret (password/passphrase) on the FX thread; never stored. Null if cancelled. */
+    private char[] promptSecret(String title, String prompt) {
+        return blockingFx(() -> {
+            Dialog<char[]> d = new Dialog<>();
+            d.setTitle(title);
+            d.initOwner(stage);
+            PasswordField pf = new PasswordField();
+            pf.setPrefColumnCount(26);
+            VBox box = new VBox(8, new Label(prompt), pf);
+            box.setPadding(new Insets(8));
+            d.getDialogPane().setContent(box);
+            d.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+            d.setResultConverter(bt -> bt == ButtonType.OK ? pf.getText().toCharArray() : null);
+            Platform.runLater(pf::requestFocus);
+            return d.showAndWait().orElse(null);
+        });
+    }
+
+    /** Run {@code onFx} on the FX thread and block until it returns — for prompts invoked from a backend thread. */
+    private static <T> T blockingFx(java.util.concurrent.Callable<T> onFx) {
+        if (Platform.isFxApplicationThread()) {
+            try {
+                return onFx.call();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        java.util.concurrent.FutureTask<T> task = new java.util.concurrent.FutureTask<>(onFx);
+        Platform.runLater(task);
+        try {
+            // Bounded wait so a gone/wedged FX runtime can't block a backend thread forever.
+            return task.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception e) {
+            // a timeout, or the task itself threw — either way, don't wedge the caller
+            return null;
         }
     }
 
@@ -1162,11 +1281,12 @@ public class MainApp extends Application {
         lastBarMs = 0L;
         checkpointErrorSeen = false;
 
-        JobRequest request = new JobRequest(command, settings, workingDir, List.of(), pendingOutputDir);
+        JobRequest request = new JobRequest(command, settings, workingDir,
+                collectInputs(command, spectra), pendingOutputDir);
         currentJob = backendFor().start(request,
                 this::onOutput,
                 (exit, err) -> Platform.runLater(() -> onFinished(exit, err)),
-                msg -> {}); // staging progress: unused locally, wired for the remote backend later
+                msg -> Platform.runLater(() -> console.appendLine("[remote] " + msg)));
         // After start(): the job's isRunning() is now true, so the overlay shows.
         updateAnimation();
     }

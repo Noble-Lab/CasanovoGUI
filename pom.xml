@@ -46,6 +46,19 @@
             <artifactId>richtextfx</artifactId>
             <version>0.11.7</version>
         </dependency>
+        <!-- Remote (SSH) execution backend: connect + SFTP staging + streamed exec. Apache-2.0.
+             Pulls slf4j-api (bind slf4j-nop to silence the "no providers" warning) and BouncyCastle;
+             the shade filters above already drop jar signatures so the non-FIPS bcprov shades cleanly. -->
+        <dependency>
+            <groupId>com.hierynomus</groupId>
+            <artifactId>sshj</artifactId>
+            <version>0.38.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>1.7.36</version>
+        </dependency>
     </dependencies>
 
     <build>
