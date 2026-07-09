@@ -46,7 +46,8 @@ public final class RemoteBackend implements ExecutionBackend {
     private volatile boolean cancelled;
     private volatile SSHClient client;
     private volatile String remoteOut;      // absolute remote output dir of the running job
-    private volatile Thread killer;         // in-flight cancel's kill thread, joined before we disconnect
+    private volatile String jobPid;         // the launched group's pid, for the finally to kill
+    private volatile boolean launched;      // true once the detached job (+watchdog) exists on the server
 
     /**
      * @param settings           connection coordinates and non-secret paths
@@ -235,17 +236,18 @@ public final class RemoteBackend implements ExecutionBackend {
 
                 launchDetached(ssh, remoteOutDir, activate,
                         request.command().getSubcommand(), remoteArgs);
-                if (cancelled) {
-                    return;
-                }
+                // The detached group (and its watchdog) now exist: mark it launched so the finally always
+                // enforces a cancel via run.cancel, even if Stop lands before we read the PID below.
+                this.launched = true;
 
                 // Wait for the detached group to record its PID before streaming; a null pid means the
                 // launch itself failed (nothing to tail or kill), so report a failure and stop here.
                 String pid = readPid(ssh, remoteOutDir);
+                this.jobPid = pid;
                 if (pid == null) {
                     onOutput.accept("Remote launch failed: the job did not start (no run.pid).", false);
                     exit = -1;
-                } else {
+                } else if (!cancelled) {
                     exit = streamUntilExit(sftp, ssh, remoteOutDir, pid, onOutput);
                 }
                 if (cancelled) {
@@ -269,19 +271,17 @@ public final class RemoteBackend implements ExecutionBackend {
         } finally {
             boolean wasCancelled = cancelled;
             active = false;
-            // If a cancel is in flight, let its killer finish TERM/KILL on the still-connected client
-            // before we disconnect it out from under it — otherwise only the early TERM would ever land.
-            Thread k = this.killer;
-            if (k != null) {
-                try {
-                    k.join(6000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
+            String pid = this.jobPid;
+            String out = this.remoteOut;
+            // Enforce cancel here, on the worker thread, while we still hold the client exclusively (no
+            // killer-thread race): trip the server-side watchdog first (it survives even if we disconnect
+            // right after), then kill the group directly for immediacy, then verify.
+            if (wasCancelled && launched && out != null && ssh != null && ssh.isConnected()) {
+                requestRemoteCancel(ssh, out, pid, msg -> onOutput.accept(msg, false));
             }
             this.client = null;
             this.remoteOut = null;
-            this.killer = null;
+            this.jobPid = null;
             if (ssh != null) {
                 try {
                     ssh.disconnect();
@@ -309,19 +309,30 @@ public final class RemoteBackend implements ExecutionBackend {
      * sees a half-written marker. Because the group is backgrounded in a new, controlling-terminal-less
      * session, it keeps running after this launching channel closes. {@code run.log} is created up front so
      * the SFTP reader can open it immediately, before the run has produced any output.
+     *
+     * <p>A server-side watchdog subshell makes cancellation self-enforcing: it waits for {@code run.cancel}
+     * to appear, then TERMs the whole process group ({@code $$} in the subshell is the parent leader's PID,
+     * i.e. the group id) and escalates to KILL after a grace &mdash; {@code trap '' TERM} lets it survive its
+     * own broadcast. On normal completion the leader KILLs the watchdog by its specific (positive) PID.</p>
      */
     private void launchDetached(SSHClient ssh, String out, String activate,
                                 String subcommand, List<String> remoteArgs) throws IOException {
         StringBuilder inner = new StringBuilder();
         inner.append("echo $$ > ").append(RemoteShell.shq(out + "/run.pid")).append('\n');
+        inner.append("( trap '' TERM; while [ ! -e ").append(RemoteShell.shq(out + "/run.cancel"))
+                .append(" ]; do sleep 1; done; kill -TERM -$$ 2>/dev/null; sleep 3;")
+                .append(" kill -KILL -$$ 2>/dev/null ) &\n");
+        inner.append("__wd=$!\n");
         inner.append("source ").append(RemoteShell.shq(activate)).append('\n');
         inner.append("casanovo ").append(subcommand);
         for (String arg : remoteArgs) {
             inner.append(' ').append(RemoteShell.shq(arg));
         }
         inner.append(" > ").append(RemoteShell.shq(out + "/run.log")).append(" 2>&1").append('\n');
+        inner.append("__code=$?\n");
+        inner.append("kill -KILL \"$__wd\" 2>/dev/null\n");
         // Atomic marker: never expose a half-written (empty) run.exit that would read as a false failure.
-        inner.append("echo $? > ").append(RemoteShell.shq(out + "/run.exit.tmp"))
+        inner.append("echo $__code > ").append(RemoteShell.shq(out + "/run.exit.tmp"))
                 .append(" && mv ").append(RemoteShell.shq(out + "/run.exit.tmp"))
                 .append(' ').append(RemoteShell.shq(out + "/run.exit")).append('\n');
 
@@ -426,36 +437,47 @@ public final class RemoteBackend implements ExecutionBackend {
     // ------------------------------------------------------------------ cancel
 
     private void cancel() {
+        // Raise the flag only. The worker thread (which owns the SSH client exclusively) performs the remote
+        // cancel in its finally — no cross-thread use of the client, so the kill can't be lost to a race.
         cancelled = true;
-        final SSHClient ssh = this.client;
-        final String out = this.remoteOut;
-        if (ssh == null || out == null || !ssh.isConnected()) {
-            return;
-        }
-        // The kill (retrying run.pid, TERM, a grace sleep, then KILL) must not run on the FX thread — a slow
-        // or unreachable host would freeze the UI (and app exit). Do it on a short-lived daemon thread.
-        Thread killer = new Thread(() -> {
-            try {
-                String pid = readPid(ssh, out);
-                if (pid == null) {
-                    return;
-                }
-                // Negative PID targets the whole process group: TERM first, then KILL after a grace period.
-                RemoteShell.capture(ssh, RemoteShell.bashLogin("kill -TERM -" + pid + " 2>/dev/null || true"));
-                try {
-                    Thread.sleep(3000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-                RemoteShell.capture(ssh, RemoteShell.bashLogin("kill -KILL -" + pid + " 2>/dev/null || true"));
-            } catch (IOException ignore) {
-                // the worker's finally will still disconnect and report cancellation
+    }
+
+    /**
+     * Enforce a cancel on the still-connected client. Creates run.cancel (tripping the server-side watchdog,
+     * which enforces the kill even if the connection drops immediately after), then TERMs the process group
+     * directly, polls for it to die, and KILLs if it outlives the grace. Best-effort and logged; the watchdog
+     * is the backstop.
+     */
+    private static void requestRemoteCancel(SSHClient ssh, String out, String pid,
+                                            Consumer<String> log) {
+        try {
+            RemoteShell.capture(ssh, RemoteShell.bashLogin("touch " + RemoteShell.shq(out + "/run.cancel")));
+            if (pid == null) {
+                // No PID captured (Stop landed right after launch): the watchdog picks up run.cancel.
+                log.accept("Cancel signalled; the remote watchdog will stop the job shortly.");
+                return;
             }
-        }, "casanovo-remote-cancel");
-        killer.setDaemon(true);
-        this.killer = killer;
-        killer.start();
+            RemoteShell.capture(ssh, RemoteShell.bashLogin("kill -TERM -" + pid + " 2>/dev/null || true"));
+            boolean dead = false;
+            for (int i = 0; i < 20; i++) {          // ~5s grace for a clean TERM shutdown
+                if (!groupAlive(ssh, pid)) {
+                    dead = true;
+                    break;
+                }
+                Thread.sleep(250);
+            }
+            if (!dead) {
+                RemoteShell.capture(ssh, RemoteShell.bashLogin("kill -KILL -" + pid + " 2>/dev/null || true"));
+                Thread.sleep(500);
+                dead = !groupAlive(ssh, pid);
+            }
+            log.accept(dead ? "Remote job stopped."
+                    : "Cancel signalled; the remote watchdog will stop the job shortly.");
+        } catch (IOException e) {
+            log.accept("Cancel signalled to the remote host (watchdog will enforce it).");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static int parseExit(String s) {
