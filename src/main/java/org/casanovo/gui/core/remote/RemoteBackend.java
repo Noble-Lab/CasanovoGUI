@@ -5,6 +5,8 @@ import net.schmizz.sshj.DefaultConfig;
 import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.sftp.SFTPClient;
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider;
+import net.schmizz.sshj.userauth.password.PasswordFinder;
+import net.schmizz.sshj.userauth.password.Resource;
 import org.casanovo.gui.core.OutputPump;
 import org.casanovo.gui.core.exec.ExecutionBackend;
 import org.casanovo.gui.core.exec.JobHandle;
@@ -77,6 +79,9 @@ public final class RemoteBackend implements ExecutionBackend {
             throw new IllegalStateException("A Casanovo job is already running.");
         }
         cancelled = false;
+        launched = false;
+        jobPid = null;
+        remoteOut = null;
         active = true;
         Thread worker = new Thread(() -> runJob(request, onOutput, onFinished, onStage), "casanovo-remote");
         worker.setDaemon(true);
@@ -171,10 +176,20 @@ public final class RemoteBackend implements ExecutionBackend {
                 if (keyPath == null || keyPath.isBlank()) {
                     throw new IOException("Key authentication selected but no key file is configured.");
                 }
-                char[] passphrase = passphraseSupplier == null ? null : passphraseSupplier.get();
-                KeyProvider keys = (passphrase == null || passphrase.length == 0)
-                        ? ssh.loadKeys(keyPath)
-                        : ssh.loadKeys(keyPath, passphrase);
+                // Lazy passphrase: sshj calls the finder only when the key is actually encrypted, so a
+                // passphrase-less key (e.g. a bare id_ed25519) never pops a passphrase dialog. One shot,
+                // no retry loop.
+                KeyProvider keys = ssh.loadKeys(keyPath, new PasswordFinder() {
+                    @Override
+                    public char[] reqPassword(Resource<?> resource) {
+                        return passphraseSupplier == null ? null : passphraseSupplier.get();
+                    }
+
+                    @Override
+                    public boolean shouldRetry(Resource<?> resource) {
+                        return false;
+                    }
+                });
                 ssh.authPublickey(user, keys);
             }
             case AGENT -> ssh.authPublickey(user); // default identity files + a running ssh-agent
@@ -240,24 +255,29 @@ public final class RemoteBackend implements ExecutionBackend {
                 // enforces a cancel via run.cancel, even if Stop lands before we read the PID below.
                 this.launched = true;
 
-                // Wait for the detached group to record its PID before streaming; a null pid means the
-                // launch itself failed (nothing to tail or kill), so report a failure and stop here.
+                // Wait for the detached group to record its PID before streaming (readPid bails early on a
+                // cancel). If we were cancelled meanwhile, stop here and let the finally enforce it via
+                // run.cancel — don't misreport a cancel as a launch failure.
                 String pid = readPid(ssh, remoteOutDir);
                 this.jobPid = pid;
-                if (pid == null) {
-                    onOutput.accept("Remote launch failed: the job did not start (no run.pid).", false);
-                    exit = -1;
-                } else if (!cancelled) {
-                    exit = streamUntilExit(sftp, ssh, remoteOutDir, pid, onOutput);
-                }
                 if (cancelled) {
                     return;
                 }
+                if (pid == null) {
+                    onOutput.accept("Remote launch failed: the job did not start (no run.pid).", false);
+                    exit = -1;
+                } else {
+                    exit = streamUntilExit(sftp, ssh, remoteOutDir, pid, onOutput);
+                }
 
+                // The run has finished. If it succeeded, fetch results even if a Stop just landed — the job
+                // is already done, so discarding its output would throw away a completed result.
                 if (exit == 0) {
                     onStage.accept("Downloading results …");
                     stager.download(remoteOutDir, request.outputDir(), onStage);
                     rewriteMzTabs(request.outputDir(), pathMap);
+                } else if (cancelled) {
+                    return;
                 }
             } finally {
                 try {
@@ -269,14 +289,16 @@ public final class RemoteBackend implements ExecutionBackend {
         } catch (Throwable t) {
             error = t;
         } finally {
-            boolean wasCancelled = cancelled;
             active = false;
+            // A clean success (exit 0) that raced a late Stop is a completed run, not a cancel: its results
+            // were already downloaded above, so don't kill an already-dead group or report 130.
+            boolean enforceCancel = cancelled && exit != 0;
             String pid = this.jobPid;
             String out = this.remoteOut;
             // Enforce cancel here, on the worker thread, while we still hold the client exclusively (no
             // killer-thread race): trip the server-side watchdog first (it survives even if we disconnect
             // right after), then kill the group directly for immediacy, then verify.
-            if (wasCancelled && launched && out != null && ssh != null && ssh.isConnected()) {
+            if (enforceCancel && launched && out != null && ssh != null && ssh.isConnected()) {
                 requestRemoteCancel(ssh, out, pid, msg -> onOutput.accept(msg, false));
             }
             this.client = null;
@@ -294,7 +316,7 @@ public final class RemoteBackend implements ExecutionBackend {
                     // ignore
                 }
             }
-            if (wasCancelled) {
+            if (enforceCancel) {
                 onFinished.accept(130, null);
             } else {
                 onFinished.accept(error == null ? exit : -1, error);
@@ -311,16 +333,17 @@ public final class RemoteBackend implements ExecutionBackend {
      * the SFTP reader can open it immediately, before the run has produced any output.
      *
      * <p>A server-side watchdog subshell makes cancellation self-enforcing: it waits for {@code run.cancel}
-     * to appear, then TERMs the whole process group ({@code $$} in the subshell is the parent leader's PID,
-     * i.e. the group id) and escalates to KILL after a grace &mdash; {@code trap '' TERM} lets it survive its
-     * own broadcast. On normal completion the leader KILLs the watchdog by its specific (positive) PID.</p>
+     * to appear (or the leader to vanish, so it never orphans a poll loop), then TERMs the whole process
+     * group ({@code $$} in the subshell is the parent leader's PID, i.e. the group id) and escalates to KILL
+     * after a grace &mdash; {@code trap '' TERM} lets it survive its own broadcast. On normal completion the
+     * leader KILLs the watchdog by its specific (positive) PID.</p>
      */
     private void launchDetached(SSHClient ssh, String out, String activate,
                                 String subcommand, List<String> remoteArgs) throws IOException {
         StringBuilder inner = new StringBuilder();
         inner.append("echo $$ > ").append(RemoteShell.shq(out + "/run.pid")).append('\n');
         inner.append("( trap '' TERM; while [ ! -e ").append(RemoteShell.shq(out + "/run.cancel"))
-                .append(" ]; do sleep 1; done; kill -TERM -$$ 2>/dev/null; sleep 3;")
+                .append(" ] && kill -0 $$ 2>/dev/null; do sleep 1; done; kill -TERM -$$ 2>/dev/null; sleep 3;")
                 .append(" kill -KILL -$$ 2>/dev/null ) &\n");
         inner.append("__wd=$!\n");
         inner.append("source ").append(RemoteShell.shq(activate)).append('\n');
@@ -341,20 +364,27 @@ public final class RemoteBackend implements ExecutionBackend {
         String launch = "touch " + RemoteShell.shq(out + "/run.log") + "\n"
                 + "setsid bash -lc " + RemoteShell.shq(inner.toString())
                 + " >/dev/null 2>&1 </dev/null &";
-        RemoteShell.runStreamed(ssh, launch, null); // the launching shell exits at once; the group runs on
+        // Run the launch through bash: its redirections and backgrounding are bash syntax, so a non-POSIX
+        // login shell (csh/tcsh) would otherwise fail to parse them — bashLogin nests them in `bash -lc '…'`.
+        RemoteShell.runStreamed(ssh, RemoteShell.bashLogin(launch), null); // launching shell exits at once
     }
 
     /**
      * Poll {@code run.pid} until the detached group has recorded its PGID (~5s), returning the PID or
      * {@code null} if it never appears (the launch failed).
      */
-    private static String readPid(SSHClient ssh, String out) throws IOException {
+    private String readPid(SSHClient ssh, String out) throws IOException {
         String pidPath = out + "/run.pid";
         for (int i = 0; i < 20; i++) {
             String pid = RemoteShell.lastLine(RemoteShell.capture(ssh, RemoteShell.bashLogin(
                     "cat " + RemoteShell.shq(pidPath) + " 2>/dev/null || true")));
             if (pid != null && pid.matches("\\d+")) {
                 return pid;
+            }
+            // Take the pid whenever it is there (we want it for the direct kill), but stop waiting the moment
+            // a cancel lands — the finally still enforces via run.cancel even without a pid.
+            if (cancelled) {
+                return null;
             }
             try {
                 Thread.sleep(250);
@@ -473,10 +503,12 @@ public final class RemoteBackend implements ExecutionBackend {
             }
             log.accept(dead ? "Remote job stopped."
                     : "Cancel signalled; the remote watchdog will stop the job shortly.");
-        } catch (IOException e) {
-            log.accept("Cancel signalled to the remote host (watchdog will enforce it).");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            // Best-effort and self-contained: never let a cancel-time failure (checked or unchecked) escape
+            // into runJob's finally, where it would skip disconnect + onFinished. The watchdog still enforces.
+            log.accept("Cancel signalled to the remote host (watchdog will enforce it).");
         }
     }
 

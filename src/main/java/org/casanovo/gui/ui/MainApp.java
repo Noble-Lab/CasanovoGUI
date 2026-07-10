@@ -1243,15 +1243,18 @@ public class MainApp extends Application {
             }
         }
         java.util.concurrent.FutureTask<T> task = new java.util.concurrent.FutureTask<>(onFx);
-        Platform.runLater(task);
         try {
-            // Bounded wait so a gone/wedged FX runtime can't block a backend thread forever.
-            return task.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            // Throws if the FX runtime is gone — then no one can answer the prompt, so bail.
+            Platform.runLater(task);
+            // No wall-clock cap: the modal dialog is the real bound, and a human may take a while to read a
+            // host key or type a passphrase. The caller is a daemon thread, so an unanswered prompt can't
+            // keep the JVM alive.
+            return task.get();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return null;
         } catch (Exception e) {
-            // a timeout, or the task itself threw — either way, don't wedge the caller
+            // FX toolkit not running, or the task itself threw — either way, don't wedge the caller.
             return null;
         }
     }
