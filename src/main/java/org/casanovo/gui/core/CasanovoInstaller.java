@@ -37,15 +37,15 @@ import java.util.zip.ZipInputStream;
 public final class CasanovoInstaller {
 
     /** Python version uv will fetch for the venv (Casanovo supports 3.10-3.13). */
-    private static final String PYTHON_VERSION = "3.11";
+    public static final String PYTHON_VERSION = "3.11";
 
     /**
      * PyArrow range compatible with the {@code pylance} version Casanovo pins. pylance's
      * native extension links an older PyArrow C++ ABI, so a too-new PyArrow crashes
      * Casanovo with a hard access violation (exit {@code 0xC0000005}). Single source of
-     * truth for the pin used at install, update and repair time.
+     * truth for the pin used at install, update and repair time (local and remote).
      */
-    private static final String PYARROW_PIN = "pyarrow>=14,<17";
+    public static final String PYARROW_PIN = "pyarrow>=14,<17";
 
     /** PyArrow major version at/above which the ABI clash occurs (the pin's {@code <17} ceiling). */
     private static final int PYARROW_BAD_MAJOR = 17;
@@ -339,27 +339,38 @@ public final class CasanovoInstaller {
                                               Runner cmd, Logger log)
             throws IOException, InterruptedException {
         String driverVersion = detectNvidiaDriver(cmd, workDir, isWindows, log);
-        String torchIndexUrl;
-        if (driverVersion != null && versionAtLeast(driverVersion, "531.14")) {
-            torchIndexUrl = "https://download.pytorch.org/whl/cu121";
-            log.info("NVIDIA driver " + driverVersion + " detected -> installing CUDA 12.1 PyTorch.");
-        } else if (driverVersion != null && versionAtLeast(driverVersion, "522.06")) {
-            torchIndexUrl = "https://download.pytorch.org/whl/cu118";
-            log.info("NVIDIA driver " + driverVersion + " detected -> installing CUDA 11.8 PyTorch.");
-        } else {
-            torchIndexUrl = null;
-            if (Os.isMac() && Os.isAarch64()) {
-                log.info("Apple Silicon detected -> keeping the default macOS arm64 PyTorch"
-                        + " wheel, which includes MPS (Metal) GPU support.");
-            } else {
-                log.info("No CUDA-capable NVIDIA driver detected -> using CPU PyTorch.");
-            }
-        }
+        String torchIndexUrl = cudaTorchIndexUrl(driverVersion);
         if (torchIndexUrl != null) {
+            log.info("NVIDIA driver " + driverVersion + " detected -> installing "
+                    + (torchIndexUrl.endsWith("cu121") ? "CUDA 12.1" : "CUDA 11.8") + " PyTorch.");
             log.info("Installing CUDA PyTorch wheels (torch, torchvision, torchaudio)...");
             cmd.run(List.of(uvExe.toString(), "pip", "install", "torch", "torchvision", "torchaudio",
                     "--index-url", torchIndexUrl), workDir);
+        } else if (Os.isMac() && Os.isAarch64()) {
+            log.info("Apple Silicon detected -> keeping the default macOS arm64 PyTorch"
+                    + " wheel, which includes MPS (Metal) GPU support.");
+        } else {
+            log.info("No CUDA-capable NVIDIA driver detected -> using CPU PyTorch.");
         }
+    }
+
+    /**
+     * The PyTorch CUDA wheel index matching an NVIDIA driver version, or {@code null} for a CPU install
+     * (no CUDA-capable driver). <strong>Single source of truth</strong> for the driver&rarr;CUDA mapping,
+     * shared by the local installer and the remote (SSH) {@code RemoteInstaller} so both pick the same wheel
+     * for a given driver. Update the thresholds / index URLs here and both installers follow.
+     *
+     * @param driverVersion the {@code nvidia-smi} {@code driver_version}, or {@code null} when there is no
+     *                      NVIDIA GPU
+     */
+    public static String cudaTorchIndexUrl(String driverVersion) {
+        if (driverVersion != null && versionAtLeast(driverVersion, "531.14")) {
+            return "https://download.pytorch.org/whl/cu121";
+        }
+        if (driverVersion != null && versionAtLeast(driverVersion, "522.06")) {
+            return "https://download.pytorch.org/whl/cu118";
+        }
+        return null;
     }
 
     /**
