@@ -41,3 +41,8 @@ For a complete guide to using CasanovoGUI — installing it, running each task
 your results in the **View** tab — see
 **[Getting Started: Graphical User Interface](https://casanovo.readthedocs.io/en/latest/getting_started_gui.html)**
 in the [Casanovo documentation](https://casanovo.readthedocs.io/en/latest/).
+
+
+## How to cite
+
+Bo Wen, Kai Li, Michael Riffle, Michael J. MacCoss, Wout Bittremieux, William Stafford Noble. ["CasanovoGUI: a cross-platform desktop application for deep learning-based de novo peptide sequencing with Casanovo"](https://doi.org/10.64898/2026.07.11.737889). ***bioRxiv***. 2026.07.11.737889

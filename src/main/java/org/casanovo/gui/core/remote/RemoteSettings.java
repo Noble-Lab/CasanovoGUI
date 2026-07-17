@@ -8,7 +8,8 @@ import java.util.prefs.Preferences;
  * Persisted configuration for the remote (SSH) execution backend, on its own Preferences node
  * ({@code org/casanovo/gui/remote}) so it stays isolated from the rest of the app. <strong>Secrets are
  * never stored</strong>: a key passphrase or a password is prompted per session and held only in memory
- * by the caller. Persisted here are only the connection coordinates and non-secret paths.
+ * by the caller. Persisted here are only the connection coordinates and non-secret paths; the
+ * {@link #isEnabled() enabled} flag is session-only, so remote execution always starts off on launch.
  */
 public final class RemoteSettings {
 
@@ -24,12 +25,24 @@ public final class RemoteSettings {
 
     private final Preferences prefs = Preferences.userRoot().node("org/casanovo/gui/remote");
 
+    /**
+     * Whether remote execution is on. Deliberately <strong>session-only</strong> (in memory, never
+     * persisted): every GUI instance starts with remote execution OFF so a new launch never silently runs
+     * remotely, even though the connection coordinates below are remembered.
+     */
+    private boolean enabled;
+
+    public RemoteSettings() {
+        // One-time cleanup: earlier builds persisted "enabled"; it is now session-only, so drop the stale key.
+        prefs.remove("enabled");
+    }
+
     public boolean isEnabled() {
-        return prefs.getBoolean("enabled", false);
+        return enabled;
     }
 
     public void setEnabled(boolean v) {
-        prefs.putBoolean("enabled", v);
+        enabled = v;
     }
 
     public String getHost() {

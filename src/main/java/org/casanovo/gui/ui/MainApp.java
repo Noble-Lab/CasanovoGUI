@@ -1832,12 +1832,78 @@ public class MainApp extends Application {
     private void showAbout() {
         String casa = (installedCasanovoVersion == null || installedCasanovoVersion.isEmpty())
                 ? "not found" : installedCasanovoVersion;
-        alert(Alert.AlertType.INFORMATION, "About Casanovo GUI",
-                "Casanovo GUI " + UpdateChecker.guiVersion() + "\n"
-                        + "Casanovo " + casa + "\n\n"
-                        + "A GUI for Casanovo de novo peptide sequencing.\n"
-                        + "Configure inputs, run, and watch the console.\n\n"
-                        + "Casanovo: https://github.com/Noble-Lab/casanovo");
+
+        Label versions = new Label("Casanovo GUI " + UpdateChecker.guiVersion() + "\nCasanovo " + casa);
+        // "de novo" italicised (Latin term of art), in the theme's default foreground.
+        javafx.scene.text.TextFlow desc = italicPhrase("A GUI for Casanovo ", "de novo",
+                " peptide sequencing.\nConfigure inputs, run, and visualize the results.",
+                "-color-fg-default", false);
+
+        Label citeHeader = new Label("How to cite:");
+        citeHeader.setStyle("-fx-font-weight: bold;");
+        Label authors = new Label("Bo Wen, Kai Li, Michael Riffle, Michael J. MacCoss, "
+                + "Wout Bittremieux, William Stafford Noble.");
+        authors.setWrapText(true);
+        authors.setMaxWidth(460);
+        // The manuscript title as a clickable citation link (opens the DOI on a primary click), with
+        // "de novo" italic. A TextFlow (not a Hyperlink) so it can both wrap and italicise a fragment; the
+        // AtlantaFX accent + underline make it read as a link.
+        String doi = "https://doi.org/10.64898/2026.07.11.737889";
+        javafx.scene.text.TextFlow title = italicPhrase(
+                "CasanovoGUI: a cross-platform desktop application for deep learning-based ",
+                "de novo", " peptide sequencing with Casanovo", "-color-accent-fg", true);
+        title.setMaxWidth(460); // concrete cap so the long title wraps instead of widening the dialog
+        title.setCursor(javafx.scene.Cursor.HAND);
+        title.setOnMouseClicked(e -> {
+            if (e.getButton() == javafx.scene.input.MouseButton.PRIMARY) {
+                getHostServices().showDocument(doi); // primary-click only, like a real Hyperlink
+            }
+        });
+        Label venue = new Label("bioRxiv 2026.07.11.737889.");
+        javafx.scene.layout.VBox citation = new javafx.scene.layout.VBox(1, authors, title, venue);
+        citation.setMaxWidth(Double.MAX_VALUE);
+
+        Hyperlink repo = new Hyperlink("CasanovoGUI: github.com/Noble-Lab/CasanovoGUI");
+        repo.setStyle("-fx-padding: 0;");
+        repo.setOnAction(e -> getHostServices()
+                .showDocument("https://github.com/Noble-Lab/CasanovoGUI"));
+
+        javafx.scene.layout.VBox content = new javafx.scene.layout.VBox(10,
+                versions, desc, citeHeader, citation, repo);
+        content.setPrefWidth(480);
+        content.setMaxWidth(480);
+
+        Alert a = new Alert(Alert.AlertType.INFORMATION);
+        a.setTitle("About Casanovo GUI");
+        a.setHeaderText(null);
+        a.getDialogPane().setContent(content);
+        if (stage != null) {
+            a.initOwner(stage);
+        }
+        a.showAndWait();
+    }
+
+    /**
+     * A TextFlow of three fragments &mdash; {@code prefix} + {@code italicWord} (italic) + {@code suffix}
+     * &mdash; each filled with the given AtlantaFX colour token ({@code -color-fg-default} for body text,
+     * {@code -color-accent-fg} for a link; a raw Text otherwise defaults to black, invisible in the dark
+     * theme) and optionally underlined. Lets the About citation italicise "de novo" inline (a Label can't)
+     * while staying theme-aware.
+     */
+    private static javafx.scene.text.TextFlow italicPhrase(String prefix, String italicWord, String suffix,
+                                                           String fillToken, boolean underline) {
+        javafx.scene.text.Text pre = new javafx.scene.text.Text(prefix);
+        javafx.scene.text.Text it = new javafx.scene.text.Text(italicWord);
+        javafx.scene.text.Text post = new javafx.scene.text.Text(suffix);
+        pre.setStyle("-fx-fill: " + fillToken + ";");
+        it.setStyle("-fx-fill: " + fillToken + "; -fx-font-style: italic;");
+        post.setStyle("-fx-fill: " + fillToken + ";");
+        if (underline) {
+            pre.setUnderline(true);
+            it.setUnderline(true);
+            post.setUnderline(true);
+        }
+        return new javafx.scene.text.TextFlow(pre, it, post);
     }
 
     // ------------------------------------------------------------ update checks
