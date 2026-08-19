@@ -257,6 +257,9 @@ public final class RawFileParserLauncher {
                 log.accept("Warning: could not mark " + finalExe
                         + " executable; conversion may fail with a permission error.");
             }
+            if (Os.isMac()) {
+                adhocSign(finalExe, log);
+            }
             log.accept("ThermoRawFileParser ready: " + finalExe);
             return finalExe;
         } finally {
@@ -380,6 +383,51 @@ public final class RawFileParserLauncher {
             });
         } catch (IOException ignored) {
             // best-effort
+        }
+    }
+
+    /**
+     * Ad-hoc code-sign a freshly extracted native executable on macOS.
+     *
+     * <p>macOS requires every arm64 binary to carry at least an ad-hoc signature: the kernel refuses to
+     * exec an unsigned arm64 Mach-O and kills it with {@code SIGKILL}, which surfaces to the user as a
+     * bare exit code 137 and no diagnostic. The executable bit alone is therefore not sufficient here,
+     * unlike on Windows and Linux. Binaries shipped inside the app bundle are signed by {@code jpackage},
+     * but ThermoRawFileParser is downloaded after installation and so never passes through it.</p>
+     *
+     * <p>Quarantine is cleared first (best effort): an archive fetched over the network may carry
+     * {@code com.apple.quarantine}, which {@code codesign} refuses to write through. Both steps are
+     * best-effort and only logged on failure — a signing failure must not abort an otherwise good
+     * install, since the Intel build under Rosetta 2 does not need this.</p>
+     */
+    private static void adhocSign(Path exe, Consumer<String> log) {
+        run(new String[]{"/usr/bin/xattr", "-dr", "com.apple.quarantine", exe.toString()}, null);
+        int code = run(new String[]{"/usr/bin/codesign", "--force", "--sign", "-", exe.toString()}, log);
+        if (code != 0) {
+            log.accept("Warning: could not ad-hoc sign " + exe
+                    + "; on Apple Silicon the converter may be terminated by the OS (signal 9).");
+        }
+    }
+
+    /** Run a short command, returning its exit code (or -1); output is discarded unless {@code log} is set. */
+    private static int run(String[] cmd, Consumer<String> log) {
+        try {
+            Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(p.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (log != null && !line.isBlank()) {
+                        log.accept(line);
+                    }
+                }
+            }
+            return p.waitFor();
+        } catch (java.io.IOException e) {
+            return -1;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return -1;
         }
     }
 }
