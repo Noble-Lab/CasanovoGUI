@@ -55,6 +55,10 @@ public final class RawFileParserLauncher {
     /** Cap on the short {@code codesign} / {@code --help} helper commands run during an install. */
     private static final int TOOL_TIMEOUT_SEC = 30;
 
+    /** Marker written beside the executable once macOS has been seen to accept it (see {@link
+        #ensureLaunchable}), so the probe costs a process launch once rather than on every run. */
+    private static final String LAUNCH_OK_FILE = "LAUNCH_OK.txt";
+
     private RawFileParserLauncher() {
     }
 
@@ -168,9 +172,17 @@ public final class RawFileParserLauncher {
         Path installed = findInstalledExe();
         if (installed != null) {
             log.accept("Using cached ThermoRawFileParser: " + installed);
-            // Repairs an install cached before the signing fix existed, which macOS would otherwise
-            // keep killing (see ensureLaunchable); a no-op once it can start.
-            ensureLaunchable(installed, log);
+            // An install cached before the signing fix has no marker: probe and repair it once, then
+            // record that, so a healthy install never pays a process launch on later conversions.
+            if (needsLaunchCheck()) {
+                if (!ensureLaunchable(installed, log)) {
+                    throw new IOException("The cached ThermoRawFileParser at " + installed + " cannot run "
+                            + "on this Mac: macOS terminated it (signal 9) and it could not be signed. "
+                            + "Delete " + platformDir() + " to re-download it, or set a local "
+                            + "ThermoRawFileParser executable in Settings.");
+                }
+                markLaunchable(platformDir());
+            }
             return installed;
         }
         return downloadAndExtract(log, null);
@@ -252,8 +264,10 @@ public final class RawFileParserLauncher {
                         + "terminated it (signal 9) even after ad-hoc signing. Set a local "
                         + "ThermoRawFileParser executable in Settings.");
             }
-            // Record the version inside the extracted tree so it travels with the atomic swap below.
+            // Record the version, and that the probe passed, inside the extracted tree so both travel
+            // with the atomic swap below.
             Files.writeString(extractDir.resolve(VERSION_FILE), ver, StandardCharsets.UTF_8);
+            markLaunchable(extractDir);
 
             // Swap the freshly-extracted tree into place: remove any previous install (avoids stale
             // files from an earlier self-contained build), then move the new tree atomically.
@@ -424,9 +438,29 @@ public final class RawFileParserLauncher {
         return canExec(exe);
     }
 
-    /** True unless the OS killed the process outright (128 + {@code SIGKILL}) over a missing signature. */
+    /** True only if the executable actually ran: it neither failed to start nor was killed by the OS. */
     private static boolean canExec(Path exe) throws InterruptedException {
-        return run(new String[]{exe.toString(), "--help"}) != 137;
+        int code = run(new String[]{exe.toString(), "--help"});
+        // 137 is the kernel rejecting an unsigned arm64 binary; -1 means it never started or hung past
+        // the timeout. Anything else — including its own usage banner's 255 — means it ran.
+        return code != 137 && code != -1;
+    }
+
+    /** Whether this platform still has to prove the cached executable can start. */
+    private static boolean needsLaunchCheck() {
+        return Os.isMac() && Os.isAarch64() && !Files.isRegularFile(platformDir().resolve(LAUNCH_OK_FILE));
+    }
+
+    /** Best-effort: the marker only saves a later probe, so failing to write it must not fail a run. */
+    private static void markLaunchable(Path dir) {
+        if (!Os.isMac() || !Os.isAarch64()) {
+            return;
+        }
+        try {
+            Files.writeString(dir.resolve(LAUNCH_OK_FILE), "ok", StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            // best-effort
+        }
     }
 
     /**
