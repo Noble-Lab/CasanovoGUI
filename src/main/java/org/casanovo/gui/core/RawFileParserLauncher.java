@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
 import java.util.regex.Matcher;
@@ -50,6 +51,9 @@ public final class RawFileParserLauncher {
 
     /** Marker file written beside the extracted executable, recording the installed release. */
     private static final String VERSION_FILE = "VERSION.txt";
+
+    /** Cap on the short {@code codesign} / {@code --help} helper commands run during an install. */
+    private static final int TOOL_TIMEOUT_SEC = 30;
 
     private RawFileParserLauncher() {
     }
@@ -164,6 +168,9 @@ public final class RawFileParserLauncher {
         Path installed = findInstalledExe();
         if (installed != null) {
             log.accept("Using cached ThermoRawFileParser: " + installed);
+            // Repairs an install cached before the signing fix existed, which macOS would otherwise
+            // keep killing (see ensureLaunchable); a no-op once it can start.
+            ensureLaunchable(installed, log);
             return installed;
         }
         return downloadAndExtract(log, null);
@@ -234,6 +241,17 @@ public final class RawFileParserLauncher {
                 throw new IOException("ThermoRawFileParser downloaded but " + exeName()
                         + " was not found in the release archive.");
             }
+            // Make the staged tree runnable before it is published: a failure here is confined to
+            // tmpDir, which the finally block deletes, so a bad install never becomes the live cache.
+            if (!Os.isWindows() && !exe.toFile().setExecutable(true)) {
+                log.accept("Warning: could not mark " + exeName()
+                        + " executable; conversion may fail with a permission error.");
+            }
+            if (!ensureLaunchable(exe, log)) {
+                throw new IOException("ThermoRawFileParser " + ver + " cannot run on this Mac: macOS "
+                        + "terminated it (signal 9) even after ad-hoc signing. Set a local "
+                        + "ThermoRawFileParser executable in Settings.");
+            }
             // Record the version inside the extracted tree so it travels with the atomic swap below.
             Files.writeString(extractDir.resolve(VERSION_FILE), ver, StandardCharsets.UTF_8);
 
@@ -252,10 +270,6 @@ public final class RawFileParserLauncher {
             if (finalExe == null) {
                 throw new IOException("ThermoRawFileParser install failed: " + exeName()
                         + " missing after extraction under " + dir);
-            }
-            if (!Os.isWindows() && !finalExe.toFile().setExecutable(true)) {
-                log.accept("Warning: could not mark " + finalExe
-                        + " executable; conversion may fail with a permission error.");
             }
             log.accept("ThermoRawFileParser ready: " + finalExe);
             return finalExe;
@@ -380,6 +394,60 @@ public final class RawFileParserLauncher {
             });
         } catch (IOException ignored) {
             // best-effort
+        }
+    }
+
+    /**
+     * Make a downloaded native executable launchable on Apple Silicon, ad-hoc signing it if the OS
+     * refuses to start it. Returns whether it can now run; always {@code true} off macOS/arm64.
+     *
+     * <p>macOS requires every arm64 binary to carry at least an ad-hoc signature: the kernel refuses to
+     * exec an unsigned arm64 Mach-O and kills it with {@code SIGKILL}, which surfaces as a bare exit
+     * code 137 and no diagnostic. The executable bit alone is therefore not sufficient here, unlike on
+     * Windows and Linux. Binaries inside the app bundle are signed by {@code jpackage}, but
+     * ThermoRawFileParser is downloaded after installation and so never passes through it.</p>
+     *
+     * <p>The probe comes first, and signing only follows a binary the kernel actually rejected: one that
+     * starts is either already signed or is the Intel build running under Rosetta 2 (which needs no
+     * signature), and {@code codesign --force} would only discard a genuine Developer ID signature a
+     * future release might carry. Note this covers the entry point only — the rest of the
+     * self-contained .NET tree relies on the vendor shipping its {@code .dylib}s pre-signed.</p>
+     */
+    private static boolean ensureLaunchable(Path exe, Consumer<String> log) throws InterruptedException {
+        if (!Os.isMac() || !Os.isAarch64() || canExec(exe)) {
+            return true;
+        }
+        log.accept("Ad-hoc signing " + exe.getFileName() + " (Apple Silicon requires a signature)...");
+        if (run(new String[]{"/usr/bin/codesign", "--force", "--sign", "-", exe.toString()}) != 0) {
+            log.accept("Warning: codesign failed on " + exe.getFileName() + ".");
+        }
+        return canExec(exe);
+    }
+
+    /** True unless the OS killed the process outright (128 + {@code SIGKILL}) over a missing signature. */
+    private static boolean canExec(Path exe) throws InterruptedException {
+        return run(new String[]{exe.toString(), "--help"}) != 137;
+    }
+
+    /**
+     * Run a short command with a hard timeout, returning its exit code, or -1 if it could not start or
+     * timed out. Output is discarded rather than piped: draining a pipe would block ahead of the
+     * timeout, which is the hang this guards against.
+     */
+    private static int run(String[] cmd) throws InterruptedException {
+        Process p = null;
+        try {
+            p = new ProcessBuilder(cmd)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectErrorStream(true)
+                    .start();
+            return p.waitFor(TOOL_TIMEOUT_SEC, TimeUnit.SECONDS) ? p.exitValue() : -1;
+        } catch (IOException e) {
+            return -1;
+        } finally {
+            if (p != null && p.isAlive()) {
+                p.destroyForcibly();
+            }
         }
     }
 }

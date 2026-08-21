@@ -543,7 +543,7 @@ public final class CasanovoInstaller {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(workDir.toFile());
             pb.redirectErrorStream(true);
-            Os.applyNativeEnv(pb); // Windows-only MKL/OpenMP safeguard; no-op elsewhere
+            Os.applyNativeEnv(pb); // per-platform subprocess env (see Os.applyNativeEnv)
             // applyNativeEnv also sets FORCE_COLOR (for the run console's live Rich progress),
             // but the install console does not strip ANSI — so opt out here. NO_COLOR overrides
             // FORCE_COLOR, giving uv/Casanovo plain text instead of raw colour escapes.

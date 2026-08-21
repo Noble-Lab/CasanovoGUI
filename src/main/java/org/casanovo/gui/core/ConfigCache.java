@@ -87,7 +87,7 @@ public final class ConfigCache {
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(work.toFile());
             pb.redirectErrorStream(true);
-            Os.applyNativeEnv(pb); // Windows-only MKL/OpenMP safeguard; no-op elsewhere
+            Os.applyNativeEnv(pb); // per-platform subprocess env (see Os.applyNativeEnv)
             Process p = pb.start();
             drain(p);
             int code = p.waitFor();

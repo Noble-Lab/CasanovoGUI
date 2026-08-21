@@ -207,7 +207,7 @@ public final class UpdateChecker {
                     .toProcessCommand(settings);
             ProcessBuilder pb = new ProcessBuilder(osCmd);
             pb.redirectErrorStream(true);
-            Os.applyNativeEnv(pb); // Windows-only MKL/OpenMP safeguard; no-op elsewhere
+            Os.applyNativeEnv(pb); // per-platform subprocess env (see Os.applyNativeEnv)
             Process proc = pb.start();
             Pattern verLine = Pattern.compile("Casanovo Version:\\s*([0-9][0-9A-Za-z.\\-]*)");
             String found = null;

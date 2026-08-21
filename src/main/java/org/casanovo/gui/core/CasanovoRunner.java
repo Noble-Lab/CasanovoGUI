@@ -67,8 +67,9 @@ public class CasanovoRunner {
             try {
                 ProcessBuilder pb = new ProcessBuilder(osCommand);
                 pb.redirectErrorStream(true);
-                // Windows-only: prevent the hard access-violation crash (0xC0000005) from the
-                // Intel MKL/OpenMP clash. No-op on Linux/macOS (see Os.applyNativeEnv).
+                // Per-platform subprocess environment: the Windows-only guard against the hard
+                // access-violation crash (0xC0000005) from the Intel MKL/OpenMP clash, and the
+                // Apple Silicon MPS CPU fallback (see Os.applyNativeEnv).
                 Os.applyNativeEnv(pb);
                 if (workingDir != null && workingDir.isDirectory()) {
                     pb.directory(workingDir);
