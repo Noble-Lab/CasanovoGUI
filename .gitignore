@@ -39,3 +39,4 @@ casanovo-gui-config-*.yaml
 
 # Cygwin/MSYS crash dumps, left behind when a shell in the toolchain dies.
 *.stackdump
+/RELEASE_NOTES.md
