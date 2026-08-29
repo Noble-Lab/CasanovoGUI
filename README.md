@@ -23,7 +23,7 @@ Download the installer for your platform from the
 |----|----------|------------|
 | **Windows** | `CasanovoGUI-<version>-windows-x64.zip` | Unzip and run `CasanovoGUI.exe` |
 | **macOS** (Apple Silicon) | `CasanovoGUI-<version>-macos-arm64.dmg` | Open and drag to Applications |
-| **Linux** | `CasanovoGUI-<version>-linux-x86_64.deb` or `…-linux-x86_64.tar.gz` | Install the `.deb`, or just extract the `.tar.gz` (no root) and run |
+| **Linux** | `CasanovoGUI-<version>-linux-x86_64.deb` or `…-linux-x86_64.tar.gz` | Install with `sudo apt install ./CasanovoGUI-<version>-linux-x86_64.deb`, then launch from the desktop menu or run `casanovogui`; or extract the `.tar.gz` (no root) and run `CasanovoGUI/bin/CasanovoGUI` |
 
 **No manual tool installation is needed.** The installers bundle their own Java
 runtime, so you do **not** have to install Java. And the first time you start an

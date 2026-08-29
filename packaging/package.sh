@@ -78,7 +78,107 @@ if [ "$INSTALLER" = "1" ]; then
     ARCH=$(uname -m)
     tar -C dist -czf "dist/$APP-$VERSION-linux-$ARCH.tar.gz" "$APP"
     echo "      portable tarball -> dist/$APP-$VERSION-linux-$ARCH.tar.gz"
-    "$JPACKAGE" --type deb --app-image "dist/$APP" --name "$APP" --app-version "$VERSION" --dest dist
+    # A .deb installs under /opt, which is on neither the desktop menu nor PATH, so a user can
+    # be left unable to find what they just installed. Two things fix that:
+    #
+    #   --linux-shortcut  ships a .desktop file and has jpackage's postinst register it with
+    #                     xdg-desktop-menu, putting the app in the applications menu. It also
+    #                     makes jpackage add Depends: xdg-utils, so the .deb must be installed
+    #                     with `apt install ./<file>.deb` rather than a bare `dpkg -i`.
+    #   --resource-dir    overrides two of jpackage's Debian maintainer scripts to register the
+    #                     launcher under /usr/bin, so it is also on PATH.
+    #
+    # The PATH entry goes through update-alternatives rather than a bare `ln -sf`. Debian
+    # reserves /usr/bin for dpkg-tracked files: a symlink created behind dpkg's back is
+    # invisible to `dpkg -S` and to file-conflict detection, and `ln -sf` would silently
+    # clobber anything already there. update-alternatives is the mechanism Debian provides for
+    # exactly this, and it removes its own link on uninstall.
+    #
+    # postinst and prerm are overridden because jpackage runs xdg-desktop-menu bare under
+    # set -e in both: on a machine with no writable system menu directory (a container, a
+    # headless server) that makes the package impossible to install AND impossible to remove.
+    # The override file names are jpackage's own (it prints them under --verbose as
+    # "add <name> to the resource-dir to customize"); a misspelt name is ignored without
+    # warning, so they must match exactly.
+    #
+    # The scripts are generated here rather than committed so the package name, launcher path
+    # and desktop-file name cannot drift away from what jpackage actually produces.
+    #
+    # jpackage derives the Debian package name from the app name by more than lowercasing, so
+    # this only stays correct while the app name needs nothing else doing to it.
+    case "$APP" in
+      *[!A-Za-z0-9]*) echo "package.sh: APP='$APP' needs more than lowercasing to become a" \
+                           "Debian package name; teach PKG jpackage's rule before renaming." >&2
+                      exit 1 ;;
+    esac
+    PKG=$(printf %s "$APP" | tr "[:upper:]" "[:lower:]")
+    RES=$(mktemp -d)
+    trap 'rm -rf "$RES"' EXIT
+    cat > "$RES/postinst" <<EOF
+#!/bin/sh
+# postinst script for $PKG (overrides the jpackage template; see packaging/package.sh)
+set -e
+
+case "\$1" in
+    configure)
+        # Never let menu registration fail the install: xdg-desktop-menu exits non-zero on a
+        # machine with no writable system menu directory (a headless server, a container),
+        # and under set -e that leaves the package unconfigurable over a cosmetic shortcut.
+        xdg-desktop-menu install /opt/$PKG/lib/$PKG-$APP.desktop || echo "note: no desktop menu entry (no writable menu directory); $PKG is still installed" >&2
+        # Put the launcher on PATH; /opt is not searched by default. Priority 100 is arbitrary:
+        # nothing else provides this name, so there is no contest to win.
+        update-alternatives --install /usr/bin/$PKG $PKG /opt/$PKG/bin/$APP 100
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \\\`\$1'" >&2
+        exit 1
+    ;;
+esac
+
+exit 0
+EOF
+    cat > "$RES/prerm" <<EOF
+#!/bin/sh
+# prerm script for $PKG (overrides the jpackage template; see packaging/package.sh)
+#
+# jpackage's own prerm is a short script whose one effective statement unregisters the desktop
+# entry (its MIME-handler helpers are emitted only when the app declares file associations,
+# which this one does not). It runs xdg-desktop-menu bare under set -e, so where there is no
+# writable system menu directory it makes the package impossible to REMOVE. A cosmetic menu
+# entry must not be able to trap a package on the system, hence this override.
+#
+# It also drops the PATH entry here rather than in postrm: by the time postrm runs, dpkg has
+# already deleted /opt/$PKG, and update-alternatives wants its target to still exist.
+set -e
+
+case "\$1" in
+    remove|deconfigure)
+        xdg-desktop-menu uninstall /opt/$PKG/lib/$PKG-$APP.desktop || echo "note: could not unregister the desktop menu entry" >&2
+        update-alternatives --remove $PKG /opt/$PKG/bin/$APP
+    ;;
+
+    upgrade|failed-upgrade)
+        # Left in place: the new version's postinst re-registers both.
+    ;;
+
+    *)
+        echo "prerm called with unknown argument: \$1" >&2
+        exit 1
+    ;;
+esac
+
+exit 0
+EOF
+    # chmod is belt-and-braces: jpackage sets rwxr-xr-x on maintainer scripts as it copies
+    # them, but a resource file that arrives non-executable would break the package silently.
+    chmod +x "$RES/postinst" "$RES/prerm"
+    "$JPACKAGE" --type deb --app-image "dist/$APP" --name "$APP" --app-version "$VERSION" \
+      --linux-shortcut --linux-menu-group "Science" --resource-dir "$RES" \
+      --dest dist "${ICON_ARG[@]}"
     rm -rf "dist/$APP"       # raw folder removed; the portable .tar.gz + the .deb remain
   fi
 fi

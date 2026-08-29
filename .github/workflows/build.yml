@@ -134,29 +134,75 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          deb="$(ls dist/*.deb | head -1)"
+          # Glob, not `ls | head -1`: under pipefail the pipe would abort the step with no
+          # message if dist/ ever held more than one .deb.
+          debs=(dist/*.deb)
+          [ ${#debs[@]} -eq 1 ] || { echo "::error::expected one .deb, found ${#debs[@]}"; exit 1; }
+          deb="${debs[0]}"
+          echo "DEB=$deb" >> "$GITHUB_ENV"
           echo "::group::$deb contents"
           dpkg-deb -c "$deb"
           echo '::endgroup::'
           contents="$(dpkg-deb -c "$deb")"
-          # The .desktop file ships inside /opt and is registered at install time by
-          # postinst, NOT shipped into /usr/share/applications -- check where it really is.
-          if ! grep -q '/opt/casanovogui/lib/.*\.desktop' <<<"$contents"; then
+          # The .desktop file ships inside /opt and is registered at install time by postinst,
+          # NOT into /usr/share/applications. Match its exact name: the bundled JDK also carries
+          # legal/java.desktop directories, which a looser pattern matches by accident.
+          if ! grep -q '/opt/casanovogui/lib/casanovogui-CasanovoGUI\.desktop$' <<<"$contents"; then
             echo '::error::No .desktop file in the package: the application will not appear'\
                  ' in the desktop menu. Check --linux-shortcut in packaging/package.sh.'
             exit 1
           fi
           rm -rf ctl && mkdir ctl && dpkg-deb -e "$deb" ctl
           echo '::group::postinst'; cat ctl/postinst; echo '::endgroup::'
+          echo '::group::prerm'; cat ctl/prerm; echo '::endgroup::'
           # A misspelt resource-dir override is ignored silently, so assert both effects of
           # ours are present rather than trusting that jpackage picked the file up.
           grep -q 'xdg-desktop-menu install' ctl/postinst \
             || { echo '::error::postinst does not register the desktop entry'; exit 1; }
-          grep -q 'ln -sf /opt/casanovogui/bin/CasanovoGUI /usr/bin/casanovogui' ctl/postinst \
-            || { echo '::error::postinst override was ignored: no /usr/bin symlink'; exit 1; }
-          grep -q 'rm -f /usr/bin/casanovogui' ctl/postrm \
-            || { echo '::error::postrm override was ignored: symlink would be left behind'; exit 1; }
+          grep -q 'update-alternatives --install /usr/bin/casanovogui' ctl/postinst \
+            || { echo '::error::postinst override was ignored: no PATH entry'; exit 1; }
+          grep -q 'update-alternatives --remove casanovogui' ctl/prerm \
+            || { echo '::error::prerm override was ignored: PATH entry would be left behind'; exit 1; }
+          # --linux-shortcut makes jpackage add this dependency; the README tells users to
+          # install with `apt install ./<file>.deb` because of it, so assert it is really there.
+          dpkg-deb -f "$deb" Depends | grep -q 'xdg-utils' \
+            || { echo '::error::expected Depends: xdg-utils from --linux-shortcut'; exit 1; }
           echo 'deb is discoverable from both the desktop menu and PATH'
+
+      # Inspecting the package is not enough: the defects that matter here only appear when the
+      # maintainer scripts actually run. jpackage calls xdg-desktop-menu bare under `set -e`, so
+      # on a machine with no writable system menu directory its postinst makes the package
+      # impossible to install and its prerm makes it impossible to REMOVE -- stranding it until
+      # someone edits /var/lib/dpkg by hand. Our overrides make both non-fatal; this asserts a
+      # full install/remove/purge cycle really does complete, and that both things the overrides
+      # exist to deliver -- the menu entry and the PATH entry -- actually appear and disappear.
+      - name: Install, remove and purge the .deb
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          menu=/usr/share/applications/casanovogui-CasanovoGUI.desktop
+          # `apt install ./file.deb`, not `dpkg -i || apt-get -f install`: it resolves the
+          # xdg-utils dependency the same way the README tells users to, and it does not mask a
+          # failing postinst behind a repair step that can "succeed" by removing the package.
+          sudo apt-get install -y "./$DEB"
+          command -v casanovogui \
+            || { echo '::error::casanovogui is not on PATH after installation'; exit 1; }
+          # The postinst deliberately swallows xdg-desktop-menu failures so a headless box can
+          # still install, which means only this can prove registration actually happened.
+          [ -f "$menu" ] \
+            || { echo "::error::no menu entry at $menu: the desktop registration silently failed"; exit 1; }
+          sudo apt-get remove -y casanovogui
+          # -L as well as -e: dpkg deletes /opt/casanovogui before postrm runs, so a leftover
+          # link is DANGLING, and `command -v` / `-e` alone report it as absent.
+          if [ -L /usr/bin/casanovogui ] || [ -e /usr/bin/casanovogui ]; then
+            echo '::error::the /usr/bin entry survived removal'; exit 1
+          fi
+          [ ! -f "$menu" ] \
+            || { echo "::error::the menu entry at $menu survived removal"; exit 1; }
+          # purge reaches the postrm branch that plain remove never enters.
+          sudo dpkg -P casanovogui
+          echo 'install, remove and purge all complete; menu and PATH entries added and cleaned up'
 
       - name: Collect release assets (consistent CasanovoGUI-<ver>-<platform> names)
         shell: bash
