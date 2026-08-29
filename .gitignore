@@ -35,7 +35,7 @@ test_data/
 *.mztab.db
 casanovo-gui-config-*.yaml
 # ...but never a committed fixture: the reference output of the example dataset lives here.
-!src/test/resources/**
+!examples/**
 
 # Cygwin/MSYS crash dumps, left behind when a shell in the toolchain dies.
 *.stackdump

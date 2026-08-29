@@ -37,7 +37,7 @@ geometric mean instead (`score^(1/length)` ≥ 0.97) is length-neutral, which is
 spans **7–25 residues and charges 2+, 3+ and 4+**.
 
 The peptides Casanovo assigns to these spectra are recorded in
-`src/test/resources/hela_50_spectra.expected.tsv` and re-checked on Linux, macOS and Windows by
+`hela_50_spectra.expected.tsv` and re-checked on Linux, macOS and Windows by
 `.github/workflows/smoke.yml`. They are stable across hardware and PyTorch versions:
 re-sequencing reproduces 50/50 peptides both on a GPU with PyTorch 2.5.1+cu121 and on a CPU
 with PyTorch 2.13.0+cpu.

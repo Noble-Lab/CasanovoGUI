@@ -95,7 +95,7 @@
             <!-- The example dataset ships inside the jar so "Load Example MS/MS Data"
                  needs no network, while the file itself lives in examples/ where users can
                  find it. One copy, two consumers. Explicit include: the folder's README
-                 must not end up in the artifact. -->
+                 and its CI reference output must not end up in the artifact. -->
             <resource>
                 <directory>examples</directory>
                 <targetPath>org/casanovo/gui/examples</targetPath>

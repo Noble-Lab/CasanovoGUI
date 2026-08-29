@@ -250,7 +250,7 @@ jobs:
           result="$(ls smoke-out/*.mztab | head -1)"
           echo "checking $result"
           "$VENV_PY" .github/scripts/check_sequencing.py \
-            "$result" src/test/resources/hela_50_spectra.expected.tsv
+            "$result" examples/hela_50_spectra.expected.tsv
 
       - name: Keep the output when something failed
         if: failure()
