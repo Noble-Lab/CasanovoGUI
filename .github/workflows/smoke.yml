@@ -74,7 +74,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        # Pinned to an exact release, unlike the moving major tags used elsewhere here:
+        # setup-uv publishes v10.x but its bare major tags stop at v7, so `@v10` does not
+        # resolve and the job fails before its first step.
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           # This job has no uv.lock or requirements.txt for the default glob to key on, which
           # left the cache permanently valid and never refreshed. The installer source IS this
