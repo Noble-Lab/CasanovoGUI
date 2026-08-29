@@ -10,12 +10,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -84,7 +87,7 @@ class RemoteInstallScriptTest {
 
         // bash, because RemoteShell runs the real thing as `bash -lc`: verifying it under a
         // different shell would leave the production one unchecked.
-        ProcessBuilder pb = new ProcessBuilder("bash", bashDir + "/install.sh");
+        ProcessBuilder pb = new ProcessBuilder(BASH, bashDir + "/install.sh");
         pb.directory(bashWorkDir.toFile());
         pb.redirectErrorStream(true);
         Process p = pb.start();
@@ -102,19 +105,64 @@ class RemoteInstallScriptTest {
         return env;
     }
 
+    /** Candidates tried by {@link #findWorkingBash()}, in order, for the failure message. */
+    private static final List<String> BASH_CANDIDATES = bashCandidates();
+
+    /** The first candidate that actually runs, or {@code null} when none does. */
+    private static final String BASH = findWorkingBash();
+
     /**
-     * Fails rather than skips when bash is missing. Skipping would leave the only executable
-     * check on the generated script silently unrun on a green build, and bash is present on the
-     * development machine and on all three CI runners.
+     * Where to look for a bash that runs. {@code bash} on PATH comes first and is the answer
+     * everywhere but a Windows CI runner, where it resolves to {@code System32ash.exe} &mdash;
+     * the WSL launcher, which exits non-zero when no distribution is installed. Git for Windows
+     * ships a real bash that is not necessarily on PATH, so name it explicitly rather than
+     * letting the WSL stub decide that bash is unavailable.
+     */
+    private static List<String> bashCandidates() {
+        List<String> candidates = new ArrayList<>();
+        candidates.add("bash");
+        if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) {
+            for (String base : new String[] {
+                    System.getenv("ProgramFiles"), System.getenv("ProgramW6432"),
+                    System.getenv("ProgramFiles(x86)"), "C:/Program Files" }) {
+                if (base != null && !base.isBlank()) {
+                    // Forward slashes: Windows accepts them, and they keep this free of escapes.
+                    candidates.add(base + "/Git/bin/bash.exe");
+                    candidates.add(base + "/Git/usr/bin/bash.exe");
+                }
+            }
+        }
+        return List.copyOf(new LinkedHashSet<>(candidates));
+    }
+
+    /** The first candidate that starts and exits zero for {@code -c "exit 0"}. */
+    private static String findWorkingBash() {
+        for (String candidate : BASH_CANDIDATES) {
+            try {
+                Process p = new ProcessBuilder(candidate, "-c", "exit 0")
+                        .redirectErrorStream(true).start();
+                p.getInputStream().readAllBytes();
+                if (p.waitFor(30, TimeUnit.SECONDS) && p.exitValue() == 0) {
+                    return candidate;
+                }
+            } catch (IOException e) {
+                // Not installed at this path; try the next candidate.
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Fails rather than skips when no bash runs. Skipping would leave the only executable check
+     * on the generated script silently unrun on a green build, and a working bash is present on
+     * the development machine and on all three CI runners once the WSL stub is stepped over.
      */
     private static void requireBash() {
-        try {
-            Process p = new ProcessBuilder("bash", "-c", "exit 0").start();
-            assertTrue(p.waitFor(30, TimeUnit.SECONDS) && p.exitValue() == 0,
-                    "bash is required to verify the generated remote-install script");
-        } catch (IOException | InterruptedException e) {
-            throw new AssertionError("bash is required to verify the generated script", e);
-        }
+        assertNotNull(BASH, "a working bash is required to verify the generated remote-install "
+                + "script; none of " + BASH_CANDIDATES + " ran");
     }
 
     @Test
