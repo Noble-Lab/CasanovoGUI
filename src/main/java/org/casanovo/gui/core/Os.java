@@ -32,6 +32,29 @@ public final class Os {
     }
 
     /**
+     * Whether two paths denote the same file, comparing where they resolve rather than how they
+     * are spelled. A path the user typed can reach the same file by another route (a "." segment,
+     * a symlinked home), and on Windows case does not distinguish them either.
+     *
+     * <p>{@code isSameFile} needs both to exist; normalising is the fallback, which is what
+     * matters for a managed install that has not been created yet.</p>
+     */
+    public static boolean samePath(java.nio.file.Path a, java.nio.file.Path b) {
+        try {
+            if (java.nio.file.Files.exists(a) && java.nio.file.Files.exists(b)) {
+                return java.nio.file.Files.isSameFile(a, b);
+            }
+        } catch (java.io.IOException | RuntimeException ignored) {
+            // Fall through to the lexical comparison below.
+        }
+        return a.toAbsolutePath().normalize().equals(b.toAbsolutePath().normalize());
+    }
+
+    /** {@code CUDA_VISIBLE_DEVICES} value that makes no GPU visible. See
+     * {@link #applyNativeEnv(ProcessBuilder, String)}. */
+    public static final String NO_CUDA_DEVICES = "-1";
+
+    /**
      * Apply the environment Casanovo's subprocess needs.
      *
      * <ul>
@@ -60,6 +83,38 @@ public final class Os {
      * </ul>
      */
     public static void applyNativeEnv(ProcessBuilder pb) {
+        applyNativeEnv(pb, null);
+    }
+
+    /**
+     * As {@link #applyNativeEnv(ProcessBuilder)}, and additionally make "CPU" mean CPU.
+     *
+     * <p>Selecting {@code accelerator: cpu} tells Lightning which device to place the model on,
+     * but nothing stops another layer of the stack from enumerating and binding a CUDA device
+     * anyway. Setting {@code CUDA_VISIBLE_DEVICES} to {@value #NO_CUDA_DEVICES} removes every
+     * CUDA device from the subprocess's view, so a CPU run cannot bind one whatever any layer
+     * above it asks for. This deliberately overrides rather than defaults: hiding the GPUs is
+     * precisely what selecting CPU asks for, so an inherited value must not defeat it. It is a
+     * CUDA-only guard: Metal has no equivalent switch, so on Apple Silicon a CPU run relies on
+     * Lightning's own device placement.</p>
+     *
+     * <p>The value is {@code -1} rather than the empty string because Windows cannot carry an
+     * empty variable into a child process: {@code CreateProcess} drops it from the environment
+     * block, so the child sees the variable <em>unset</em> — and an inherited
+     * {@code CUDA_VISIBLE_DEVICES=0} would then be widened to "every GPU" instead of narrowed to
+     * none. CUDA treats {@code -1} as an invalid index and makes no device visible, on every
+     * platform.</p>
+     *
+     * <p>Note this cannot itself provoke PyTorch's
+     * {@code "Cannot access accelerator device when none is available."}: that check asks
+     * whether a backend was <em>compiled in</em>, which hiding devices does not change.</p>
+     *
+     * @param accelerator the selected Casanovo {@code accelerator}, or {@code null} when unknown
+     */
+    public static void applyNativeEnv(ProcessBuilder pb, String accelerator) {
+        if (accelerator != null && accelerator.trim().equalsIgnoreCase("cpu")) {
+            pb.environment().put("CUDA_VISIBLE_DEVICES", NO_CUDA_DEVICES);
+        }
         pb.environment().putIfAbsent("PYTHONIOENCODING", "utf-8");
         pb.environment().putIfAbsent("FORCE_COLOR", "1");
         if (isMac() && isAarch64()) {

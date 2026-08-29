@@ -37,6 +37,7 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 import org.casanovo.gui.core.CasanovoCommand;
+import org.casanovo.gui.core.ConfigFile;
 import org.casanovo.gui.core.CasanovoConfig;
 import org.casanovo.gui.core.CasanovoInstaller;
 import org.casanovo.gui.core.exec.ExecutionBackend;
@@ -47,8 +48,10 @@ import org.casanovo.gui.core.remote.RemoteBackend;
 import org.casanovo.gui.core.remote.RemoteSettings;
 import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
+import org.casanovo.gui.core.DeviceProbe;
+import org.casanovo.gui.core.ExampleData;
 import org.casanovo.gui.core.Os;
-import org.casanovo.gui.core.PyVenv;
+import org.casanovo.gui.core.RawFiles;
 import org.casanovo.gui.core.RawFileParserLauncher;
 import org.casanovo.gui.core.Settings;
 import org.casanovo.gui.core.TimsTof;
@@ -61,7 +64,6 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -111,6 +113,8 @@ public class MainApp extends Application {
     private final Label casanovoVersionLabel = new Label();
     /** Installed Casanovo version shown in the execution readout; resolved off-thread, null until known. */
     private String installedCasanovoVersion;
+    /** Managed-install result computed by the latest update-check worker, never via FX-thread I/O. */
+    private boolean managedInstallAvailable;
     private final TextField commandPreview = new TextField();
     private final Button paramsButton = new Button("Parameters");
     private final CheckBox useGuiParams = new CheckBox("Use GUI parameters");
@@ -134,8 +138,6 @@ public class MainApp extends Application {
     private static final Pattern ANSI = Pattern.compile("\\x1B\\[[0-9;?]*[ -/]*[@-~]");
     /** Casanovo logs "Test dataset contains N spectra." — the count of spectra to be predicted. */
     private static final Pattern SPECTRA_COUNT = Pattern.compile("dataset contains (\\d+) spectra");
-    /** "predict_batch_size: N" line in the run's --config YAML. */
-    private static final Pattern BATCH_SIZE = Pattern.compile("^\\s*predict_batch_size:\\s*(\\d+)");
     private volatile long lastProgressMs = 0L;
     /** Last time a real "%|" tqdm bar was shown; non-%| progress noise is dropped within 1 s of it. */
     private volatile long lastBarMs = 0L;
@@ -151,7 +153,26 @@ public class MainApp extends Application {
     private volatile int predictTotalBatches = 0;
 
     private volatile boolean installing = false;
+    private volatile Thread installerThread;
     private volatile boolean checkpointErrorSeen = false;
+
+    // The device check that precedes a run: it is asynchronous, so it counts as a busy state
+    // of its own — otherwise a second Run click (or an install) lands in the gap between
+    // onRun() and the job actually starting.
+    private volatile boolean checkingDevice = false;
+    private volatile boolean deviceCheckCancelled = false;
+
+    /** Where "Load Example MS/MS Data" put the example, reused across clicks in one session. */
+    private Path exampleRunFolder;
+
+    /** Whether the last run's "Open output folder" link was showing when a device check began. */
+    private boolean outputLinkWasVisible;
+
+    private volatile Thread deviceCheckThread;
+
+    /** Immutable values resolved before a run, carried together through raw-file conversion. */
+    private record PreparedRun(CasanovoCommand command, int predictBatchSize) {
+    }
 
     // Raw-file (.raw -> .mzML) conversion, run before the Casanovo process itself starts.
     private volatile boolean convertingRaw = false;
@@ -175,7 +196,7 @@ public class MainApp extends Application {
     @Override
     public void start(Stage primaryStage) {
         this.stage = primaryStage;
-        limelight = new LimelightController(stage, settings, () -> console, config, () -> isJobRunning() || installing || convertingRaw || viewPane.runningProperty().get(), b -> { installing = b; setBusy(b); }); // limelight
+        limelight = new LimelightController(stage, settings, () -> console, config, () -> busyReason() != null, b -> { installing = b; setBusy(b); }); // limelight
         Themes.apply(settings.getTheme());
         console = makeConsole(settings.isColoredConsole());
         try (java.io.InputStream icon = getClass().getResourceAsStream("/org/casanovo/gui/icon.png")) {
@@ -345,10 +366,13 @@ public class MainApp extends Application {
         settingsItem.setOnAction(e -> openSettings());
         MenuItem remoteItem = new MenuItem("Remote execution…");
         remoteItem.setOnAction(e -> openRemoteSettings());
+        MenuItem exampleItem = new MenuItem("Load Example MS/MS Data\u2026");
+        exampleItem.setOnAction(e -> loadExampleData());
         MenuItem exitItem = new MenuItem("Exit");
         exitItem.setAccelerator(new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN));
         exitItem.setOnAction(e -> stage.close());
         fileMenu.getItems().addAll(settingsItem, remoteItem, limelight.menuItem(), // limelight
+                new javafx.scene.control.SeparatorMenuItem(), exampleItem,
                 new javafx.scene.control.SeparatorMenuItem(), exitItem);
 
         Menu helpMenu = new Menu("Help");
@@ -357,10 +381,12 @@ public class MainApp extends Application {
         CheckMenuItem autoCheckItem = new CheckMenuItem("Automatically check on startup");
         autoCheckItem.setSelected(UpdateChecker.isAutoCheckEnabled());
         autoCheckItem.setOnAction(e -> UpdateChecker.setAutoCheckEnabled(autoCheckItem.isSelected()));
+        MenuItem envItem = new MenuItem("Environment Report");
+        envItem.setOnAction(e -> showEnvironmentReport());
         MenuItem aboutItem = new MenuItem("About");
         aboutItem.setOnAction(e -> showAbout());
         helpMenu.getItems().addAll(checkUpdatesItem, autoCheckItem,
-                new javafx.scene.control.SeparatorMenuItem(), aboutItem);
+                new javafx.scene.control.SeparatorMenuItem(), envItem, aboutItem);
 
         return new MenuBar(fileMenu, buildViewMenu(), helpMenu);
     }
@@ -602,6 +628,12 @@ public class MainApp extends Application {
     }
 
     private void openParameters() {
+        // The scene accelerator calls this method directly, bypassing Button.fire(). Honour
+        // the button's disabled state so Ctrl+P cannot mutate parameters while a device check
+        // (or any other run/install busy state) is validating the current values.
+        if (paramsButton.isDisabled()) {
+            return;
+        }
         // Same criterion as the run (the resolved --model), so the dialog shows exactly the residues the
         // run will use — even when the user typed a model that overrides the .d auto-selection. currentPane()
         // is null on a non-command tab (the Parameters shortcut is scene-wide) — then it's simply not a
@@ -617,12 +649,102 @@ public class MainApp extends Application {
     }
 
     private void openSettings() {
+        // The run in flight was validated against the current settings; changing them underneath
+        // it would leave the verdict describing an environment that no longer exists.
+        if (refuseWhileBusy("Settings")) {
+            return;
+        }
         boolean saved = new SettingsDialog(stage, settings, this::onInstall).showAndApply();
         if (saved) {
+            // A different executable or Conda environment is a different PyTorch: the cached
+            // device report describes the one that was just replaced.
+            DeviceProbe.invalidate();
+            managedInstallAvailable = false; // recomputed by the next background update check
             refreshSettingsLabel();
             fetchCasanovoVersionAsync(); // the executable/env may have changed — re-resolve the version
             refreshPreview();
         }
+    }
+
+    /**
+     * Set up a ready-to-run analysis of the bundled 50-spectrum example.
+     *
+     * <p>Creates a fresh timestamped run folder in the user's home directory, unpacks the
+     * example dataset into it, and points the <i>De novo</i> tab at both. Everything for the
+     * run then lives in one self-contained folder, and the user only has to press
+     * <i>Run Casanovo</i> &mdash; which is the point: it is the shortest path from a fresh
+     * install to a completed analysis, with no file to find and no network needed.</p>
+     */
+    private void loadExampleData() {
+        // Don't move the inputs out from under a run or a mapping in progress.
+        if (refuseWhileBusy("Loading the example data")) {
+            return;
+        }
+        // The example replaces whatever the fields held, so an inline error about them (a missing
+        // spectrum file from an earlier Run) is about inputs that no longer exist.
+        clearValidationError();
+        // The example is a spectrum file, so it belongs to the De novo tab (pane 0).
+        CommandPane pane = panes.get(0);
+        if (!(pane instanceof SequencePane sequence)) {
+            alert(Alert.AlertType.ERROR, "Could not load the example data",
+                    "The De novo tab is not available in this build, so the example cannot be "
+                            + "loaded into it.");
+            return;
+        }
+        // One folder per session, not one per click: the menu item is something users press
+        // while exploring, and a fresh ~/Casanovo_<timestamp> each time would litter the home
+        // directory — while two clicks inside the same second would resolve to one folder and
+        // overwrite the input of a run already started from the first.
+        if (exampleRunFolder == null || !Files.isDirectory(exampleRunFolder)) {
+            exampleRunFolder = ExampleData.newRunFolder();
+        }
+        Path runFolder = exampleRunFolder;
+        File spectra;
+        try {
+            spectra = ExampleData.extractTo(runFolder);
+        } catch (IOException ex) {
+            alert(Alert.AlertType.ERROR, "Could not load the example data", ex.getMessage());
+            return;
+        }
+
+        tabs.getSelectionModel().select(0);
+        sequence.setSpectra(List.of(spectra));
+        pane.setOutputDir(runFolder.toFile());
+
+        console.appendLine("[example] Spectra:   " + spectra.getAbsolutePath());
+        console.appendLine("[example] Output to: " + runFolder.toAbsolutePath());
+        console.appendLine("[example] 50 HeLa MS/MS spectra \u2014 press Run Casanovo to sequence them.");
+        statusLabel.setText("Example data loaded \u2014 press Run Casanovo.");
+        refreshPreview();
+    }
+
+    /**
+     * Whether {@code action} must be refused because the window is busy &mdash; and if so, say
+     * which state refused it. The menu bar stays enabled while a run, install or check is in
+     * flight, so a guard that simply returned would look like a dead menu item.
+     */
+    private String busyReason() {
+        return isJobRunning() ? "a run is in progress"
+                : installing ? "an install is in progress"
+                : convertingRaw ? "a file conversion is in progress"
+                : checkingDevice ? "the compute device is being checked"
+                : viewPane.runningProperty().get() ? "a mapping is in progress"
+                : null;
+    }
+
+    private boolean refuseWhileBusy(String action) {
+        String why = busyReason();
+        if (why == null) {
+            return false;
+        }
+        noteBusy(action + " is unavailable while " + why + ".");
+        return true;
+    }
+
+    /** Say why an action was refused, in both places the user is looking. */
+    private void noteBusy(String message) {
+        statusLabel.setText(message);
+        console.appendLine("[busy] " + message);
     }
 
     private CommandPane currentPane() {
@@ -664,7 +786,7 @@ public class MainApp extends Application {
             runButton.setDisable(true);
             return;
         }
-        runButton.setDisable(isJobRunning() || installing || viewPane.runningProperty().get());
+        runButton.setDisable(busyReason() != null);
         try {
             CasanovoCommand cmd = effectiveCommand(pane, false);
             commandPreview.setText(cmd.toDisplayString(settings));
@@ -726,10 +848,358 @@ public class MainApp extends Application {
         return t != null && t.getContent() == viewPane;
     }
 
+    /**
+     * Confirm the selected accelerator is actually usable before launching Casanovo.
+     *
+     * <p>Casanovo's device selection happens inside PyTorch Lightning, so a mismatch between
+     * the chosen device and the installed PyTorch otherwise surfaces only as a raw traceback
+     * partway through a run &mdash; a CPU-only wheel with a GPU selected, or a CUDA wheel
+     * carrying no kernels for the installed card. The probe runs off the FX thread and is
+     * cached per install, so it costs about a second once and nothing thereafter. Skipped for
+     * remote runs, where the environment that matters is the server's, not this machine's.</p>
+     */
+    private void checkDeviceThenRun(CommandPane pane, CasanovoCommand base, boolean guiOwnsConfig,
+                                    String guiAccelerator, String guiPredictBatchSize) {
+        if (remoteSettings.isEnabled() && remoteSettings.isConfigured()) {
+            if (guiOwnsConfig) {
+                buildThenRun(pane, ConfigFile.fallback(
+                        true, guiAccelerator, guiPredictBatchSize));
+            } else {
+                resolveAcceleratorThenRun(pane, base, false, null, null);
+            }
+            return;
+        }
+        statusLabel.setText("Checking the compute device…");
+        Thread probe = new Thread(() -> {
+            DeviceProbe.Report report;
+            DeviceProbe.Verdict verdict;
+            ConfigFile.RunValues runValues = null;
+            boolean gpuVisible;
+            try {
+                // Reading an external config is file I/O, so it happens here rather than on the
+                // FX thread, where a config on a stalled network share would freeze the window.
+                // The same value is carried to the run, so what was checked is what is tagged.
+                runValues = resolveRunValues(
+                        base, guiOwnsConfig, guiAccelerator, guiPredictBatchSize);
+                report = DeviceProbe.probe(settings);
+                verdict = DeviceProbe.validate(runValues.accelerator(), report);
+                // nvidia-smi is a subprocess too. Keep it inside the safety net so a launch or
+                // timeout failure still publishes a verdict and releases the busy state.
+                gpuVisible = gpuVisibleForReinstall(report, verdict);
+            } catch (Throwable t) {
+                // Neither call is written to throw, but probe() still touches the filesystem, and
+                // onDeviceVerdict is the only thing that clears checkingDevice — an exception
+                // escaping here would leave Run, Install and Update disabled for the session.
+                // Both stand-ins are built inline so nothing on this path can throw again.
+                //
+                // The tag matters as much as the flag: leaving it null would launch a run the
+                // user set to 'cpu' without hiding the GPUs. What the GUI itself selected is
+                // still known; only an unread config file is genuinely unknown.
+                if (runValues == null) {
+                    runValues = ConfigFile.fallback(
+                            guiOwnsConfig, guiAccelerator, guiPredictBatchSize);
+                }
+                report = new DeviceProbe.Report(null, null, false, null, null, List.of(),
+                        false, false, "the device check failed: " + t);
+                verdict = new DeviceProbe.Verdict(DeviceProbe.Status.WARN,
+                        "Could not check the compute device.",
+                        "The check itself failed (" + t + "). The run will proceed; if it fails "
+                                + "with a device error, select 'cpu' in Parameters → Accelerator.",
+                        false, false);
+                gpuVisible = false;
+            }
+            // Identity checks may touch a slow or disconnected filesystem, so resolve this on
+            // the probe worker rather than from onDeviceVerdict on the FX application thread.
+            boolean managedInstall = verdict.offerReinstall()
+                    && CasanovoInstaller.managedVenvRoot(
+                    settings.getCasanovoExecutable(), settings.isUseConda()).isPresent();
+            DeviceProbe.Report finalReport = report;
+            DeviceProbe.Verdict finalVerdict = verdict;
+            ConfigFile.RunValues finalRunValues = runValues;
+            boolean finalGpuVisible = gpuVisible;
+            boolean finalManagedInstall = managedInstall;
+            Platform.runLater(() -> onDeviceVerdict(pane, guiOwnsConfig, finalRunValues,
+                    finalReport, finalVerdict, finalGpuVisible, finalManagedInstall));
+        }, "device-probe");
+        beginDeviceCheck(probe);
+        try {
+            probe.start();
+        } catch (Throwable t) {
+            // Nothing will post a verdict now, and onDeviceVerdict is what clears the flag. The
+            // check is advisory — every other way it can fail warns and proceeds — so do that
+            // here too rather than dropping the run the user asked for.
+            endDeviceCheck();
+            console.appendLine("[warn] Could not start the device check: " + t);
+            buildThenRun(pane, ConfigFile.fallback(
+                    guiOwnsConfig, guiAccelerator, guiPredictBatchSize));
+        }
+    }
+
+    /**
+     * Resolve the accelerator on a background thread &mdash; it reads the external config file
+     * &mdash; and then start the run. Used where the device check is skipped (a remote run) but
+     * the tag is still needed: the file may live on a share that takes a mount timeout to answer,
+     * which must not be waited for on the FX thread. Holds the same busy state as a device check
+     * so the window cannot start a second run inside the gap.
+     */
+    private void resolveAcceleratorThenRun(CommandPane pane, CasanovoCommand base,
+                                           boolean guiOwnsConfig, String guiAccelerator,
+                                           String guiPredictBatchSize) {
+        Thread worker = new Thread(() -> {
+            ConfigFile.RunValues resolved;
+            Throwable failure = null;
+            try {
+                resolved = resolveRunValues(
+                        base, guiOwnsConfig, guiAccelerator, guiPredictBatchSize);
+            } catch (Throwable t) {
+                // endDeviceCheck runs only from the posting below, so an escape here would leave
+                // the window busy for the session. Keep the tag the GUI knows; an unread config
+                // is the one case where the accelerator is genuinely unknown.
+                failure = t;
+                resolved = ConfigFile.fallback(
+                        guiOwnsConfig, guiAccelerator, guiPredictBatchSize);
+            }
+            ConfigFile.RunValues runValues = resolved;
+            Throwable why = failure;
+            Platform.runLater(() -> {
+                endDeviceCheck();
+                if (why != null) {
+                    console.appendLine("[warn] Could not read the run's accelerator: " + why);
+                }
+                if (checkAbandoned()) {
+                    return;
+                }
+                buildThenRun(pane, runValues);
+            });
+        }, "accelerator-resolve");
+        beginDeviceCheck(worker);
+        try {
+            worker.start();
+        } catch (Throwable ex) {
+            endDeviceCheck();
+            console.appendLine("[warn] Could not read the run's accelerator off the UI thread: " + ex);
+            buildThenRun(pane, ConfigFile.fallback(
+                    guiOwnsConfig, guiAccelerator, guiPredictBatchSize));
+        }
+    }
+
+    /**
+     * Take the busy state a pre-run step holds, and publish {@code worker} so Stop can interrupt
+     * it. Every asynchronous step before a run goes through here, so none of them can forget the
+     * part that makes Stop work.
+     */
+    private void beginDeviceCheck(Thread worker) {
+        checkingDevice = true;
+        deviceCheckCancelled = false;
+        // The step owns the window the way a run does: Stop is live, and Parameters, the tab
+        // strip and Settings cannot change what the verdict is about while it is in flight.
+        setBusy(true);
+        // updateRunningState(true) clears the last run's output link on the premise that a new
+        // run is starting; a step that ends in a block or a cancel starts nothing, so remember
+        // whether to put it back.
+        outputLinkWasVisible = openOutputLink.isVisible();
+        updateRunningState(true);
+        refreshPreview();
+        worker.setDaemon(true);
+        deviceCheckThread = worker;
+    }
+
+    /**
+     * Whether the run this step was preparing must not start after all &mdash; the user pressed
+     * Stop, or something else took the window while the step ran (this window allows one job).
+     * Says which, since the click that started it produced no other visible result.
+     */
+    private boolean checkAbandoned() {
+        if (deviceCheckCancelled) {
+            statusLabel.setText("Stopped.");
+            console.appendLine("[stopped] The device check was cancelled; nothing was run.");
+            return true;
+        }
+        // checkingDevice is already cleared by endDeviceCheck when this runs, so the shared
+        // predicate answers the right question: has something else taken the window?
+        String why = busyReason();
+        if (why != null) {
+            statusLabel.setText("Another job started during the device check.");
+            console.appendLine("[device] The run was not started: " + why + ".");
+            return true;
+        }
+        return false;
+    }
+
+
+    /**
+     * Clear the check's busy state. Reached from the verdict (including the cancelled one, since
+     * Stop only interrupts the probe and lets the verdict land), and from a check that could not
+     * be started. The running state is re-derived rather than simply cleared: something else —
+     * a raw conversion, a job started from elsewhere — may hold the window now, and switching
+     * Stop off under it would leave that one uncancellable.
+     */
+    private void endDeviceCheck() {
+        checkingDevice = false;
+        deviceCheckThread = null;
+        setBusy(false);
+        boolean somethingElseRunning = isJobRunning() || convertingRaw;
+        updateRunningState(somethingElseRunning);
+        if (outputLinkWasVisible && !somethingElseRunning) {
+            showOpenOutputLink(true); // nothing replaced the last run's results
+        }
+        refreshPreview();
+    }
+
+    /**
+     * Build the command the run needs &mdash; which writes the generated config to the output
+     * folder &mdash; and start it. Deliberately after the device check: a check that ends in a
+     * block or a cancel would otherwise leave a config file, and a console line announcing it,
+     * for a run that never happened.
+     */
+    private void buildThenRun(CommandPane pane, ConfigFile.RunValues runValues) {
+        CasanovoCommand command;
+        try {
+            command = effectiveCommand(pane, true, runValues.accelerator())
+                    .withAccelerator(runValues.accelerator());
+        } catch (RuntimeException ex) {
+            alert(Alert.AlertType.ERROR, "Cannot run", ex.getMessage());
+            return;
+        }
+        refreshPreview();
+        convertRawThenRun(pane, new PreparedRun(command, runValues.predictBatchSize()));
+    }
+
+    /** Act on the device check: start the run, or stop with an explanation and a way out. */
+    /**
+     * Whether a reinstall could plausibly produce the GPU build the verdict wants. A CPU-only
+     * wheel is worth several gigabytes only when there is a device to match: without this, a
+     * machine with no NVIDIA GPU is offered a reinstall that resolves the same CPU wheel and
+     * blocks again, indefinitely. Runs {@code nvidia-smi}, so it stays on the worker &mdash; and
+     * only for the case that needs it. On a Mac the question is the Metal backend, which
+     * nvidia-smi says nothing about, so the offer stands.
+     */
+    private static boolean gpuVisibleForReinstall(DeviceProbe.Report report,
+                                                  DeviceProbe.Verdict verdict) {
+        if (!verdict.offerReinstall() || !report.isCpuOnlyBuild() || Os.isMac()) {
+            return true;
+        }
+        return CasanovoInstaller.nvidiaDriverVersion().isPresent();
+    }
+
+    private void onDeviceVerdict(CommandPane pane, boolean guiOwnsConfig,
+                                 ConfigFile.RunValues runValues,
+                                 DeviceProbe.Report report, DeviceProbe.Verdict verdict,
+                                 boolean gpuVisible, boolean managedInstall) {
+        endDeviceCheck();
+        if (checkAbandoned()) {
+            return;
+        }
+        console.appendLine("[device] " + report.summary());
+        if (verdict.status() != DeviceProbe.Status.BLOCK) {
+            console.appendLine("[device] " + verdict.summary());
+            if (verdict.status() == DeviceProbe.Status.WARN && !verdict.detail().isEmpty()) {
+                console.appendLine("[warn] " + verdict.detail());
+            }
+            buildThenRun(pane, runValues);
+            return;
+        }
+
+        statusLabel.setText(verdict.summary());
+        console.appendLine("[error] " + verdict.summary());
+        console.appendLine("[error] " + verdict.detail());
+
+        // Two ways out, each offered only when it would actually work: switching to the CPU
+        // needs the GUI to own the configuration (an external config file is the user's to
+        // edit), and reinstalling only makes sense for the environment we manage.
+        // "Use GUI parameters" alone is not the condition: effectiveCommand also treats a pane
+        // that supplies its own --config as externally configured, and switching the GUI's
+        // accelerator would then change nothing at all.
+        boolean canUseCpu = verdict.offerCpu() && guiOwnsConfig;
+        boolean canReinstall = verdict.offerReinstall() && managedInstall && gpuVisible;
+        if (!canUseCpu && !canReinstall) {
+            alert(Alert.AlertType.ERROR, "Cannot use the selected device",
+                    verdict.summary() + "\n\n" + verdict.detail());
+            return;
+        }
+
+        StringBuilder message = new StringBuilder(verdict.summary())
+                .append("\n\n").append(verdict.detail());
+        if (!gpuVisible) {
+            // Say why the way out the verdict suggested is not on offer, rather than leaving the
+            // user to click a reinstall that resolves the same wheel and blocks again.
+            message.append("\n\nNo NVIDIA driver is visible here (nvidia-smi reports none), so a "
+                    + "reinstall would resolve the same CPU build. Select 'cpu' or 'auto' in "
+                    + "Parameters → Accelerator, or check the driver first.");
+            console.appendLine("[device] No NVIDIA driver detected; a reinstall would not help.");
+        }
+        ButtonType reinstall = new ButtonType("Reinstall Casanovo");
+        ButtonType useCpu = new ButtonType("Run on the CPU instead");
+        ButtonType cancel = new ButtonType("Cancel", ButtonBar.ButtonData.CANCEL_CLOSE);
+        List<ButtonType> buttons = new ArrayList<>();
+        if (canReinstall) {
+            message.append("\n\nReinstalling rebuilds the managed Python environment from "
+                    + "scratch and installs a PyTorch matched to this machine's driver. It downloads "
+                    + "several gigabytes and takes a few minutes.");
+            buttons.add(reinstall);
+        }
+        if (canUseCpu) {
+            buttons.add(useCpu);
+        }
+        buttons.add(cancel);
+
+        Alert ask = new Alert(Alert.AlertType.CONFIRMATION, message.toString(),
+                buttons.toArray(new ButtonType[0]));
+        ask.setTitle("Cannot use the selected device");
+        ask.setHeaderText(null);
+        ask.getDialogPane().setMinWidth(520);
+        if (stage != null) {
+            ask.initOwner(stage);
+        }
+        ButtonType choice = ask.showAndWait().orElse(cancel);
+        if (choice == reinstall) {
+            console.appendLine("[device] Reinstalling Casanovo with a driver-matched PyTorch\u2026");
+            // installAll() clears the device-probe cache, so re-entering onRun re-probes the
+            // rebuilt environment rather than trusting the verdict that sent us here.
+            runInstall(this::onRun);
+        } else if (choice == useCpu) {
+            console.appendLine("[device] Using 'cpu' for this run only.");
+            buildThenRun(pane, new ConfigFile.RunValues(
+                    "cpu", runValues.predictBatchSize()));
+        }
+    }
+
+    /**
+     * Whether the GUI, rather than a file the user supplied, decides this run's parameters. A
+     * pane that passes its own {@code --config} is externally configured even with "Use GUI
+     * parameters" ticked, which is why this is not simply the checkbox.
+     */
+    private boolean guiOwnsConfig(CasanovoCommand base) {
+        return useGuiParams.isSelected() && !base.getArguments().contains("--config");
+    }
+
+    /**
+     * The accelerator the run will actually use: the GUI's own value when the GUI owns the
+     * configuration, otherwise whatever the external config file selects. The launcher reads this
+     * (as a tag on the command) to hide every GPU from a CPU run, so a run that loses it silently
+     * loses that guard. Reading the external file is I/O, so callers resolve this once, off the
+     * FX thread, and carry the answer through to the command they build.
+     */
+    private ConfigFile.RunValues resolveRunValues(CasanovoCommand base, boolean guiOwnsConfig,
+                                                  String guiAccelerator,
+                                                  String guiPredictBatchSize) {
+        // One pass over the external file for both values: reading it twice doubles the wait on
+        // the unresponsive share this was moved off the UI thread to survive.
+        return ConfigFile.forRun(
+                base, guiOwnsConfig, guiAccelerator, guiPredictBatchSize);
+    }
+
     private CasanovoCommand effectiveCommand(CommandPane pane, boolean forRun) {
+        return effectiveCommand(pane, forRun, null);
+    }
+
+    /** Build a command, optionally overriding the generated config for this run only. */
+    private CasanovoCommand effectiveCommand(CommandPane pane, boolean forRun,
+                                              String acceleratorOverride) {
         CasanovoCommand base = pane.buildCommand();
-        if (!useGuiParams.isSelected()
-                || base.getArguments().contains("--config")) {
+        if (!guiOwnsConfig(base)) {
+            // Untagged on purpose: buildThenRun applies the accelerator its caller already
+            // resolved, so neither this nor the preview reads the config file on the FX thread.
             return base;
         }
         String configPath;
@@ -741,7 +1211,8 @@ public class MainApp extends Application {
                         + "config file manually.");
             }
             try {
-                configPath = writeEffectiveConfig(resolveOutputDir(base)).getAbsolutePath();
+                configPath = writeEffectiveConfig(
+                        resolveOutputDir(base), acceleratorOverride).getAbsolutePath();
             } catch (IOException e) {
                 throw new RuntimeException("Could not write generated config: " + e.getMessage(), e);
             }
@@ -818,7 +1289,7 @@ public class MainApp extends Application {
     }
 
     private void onRun() {
-        if (isJobRunning() || installing || convertingRaw || viewPane.runningProperty().get()) {
+        if (refuseWhileBusy("Run")) {
             return; // one job per window: also bail while a pepmap mapping is in progress
         }
         CommandPane pane = currentPane();
@@ -866,16 +1337,18 @@ public class MainApp extends Application {
             alert(Alert.AlertType.ERROR, "Casanovo not found", execCheck);
             return;
         }
-        CasanovoCommand command;
+        // Only what the check needs, and nothing that touches the disk: the run's config is
+        // written later, by buildThenRun, once the device is known to be usable.
+        CasanovoCommand base;
         try {
-            command = effectiveCommand(pane, true);
+            base = pane.buildCommand();
         } catch (RuntimeException ex) {
             alert(Alert.AlertType.ERROR, "Cannot run", ex.getMessage());
             return;
         }
-        refreshPreview();
-
-        convertRawThenRun(pane, command);
+        checkDeviceThenRun(pane, base, guiOwnsConfig(base),
+                config.get("accelerator").getValue(),
+                config.get("predict_batch_size").getValue());
     }
 
     /**
@@ -883,15 +1356,16 @@ public class MainApp extends Application {
      * before starting the run, substituting the converted paths back in. Proceeds immediately
      * (today's exact behavior/timing) when there are no {@code .raw} inputs.
      */
-    private void convertRawThenRun(CommandPane pane, CasanovoCommand command) {
+    private void convertRawThenRun(CommandPane pane, PreparedRun run) {
+        CasanovoCommand command = run.command();
         List<File> rawFiles = new ArrayList<>();
         for (String a : command.getArguments()) {
-            if (isRawFile(a)) {
+            if (RawFiles.isRawFile(a)) {
                 rawFiles.add(new File(a));
             }
         }
         if (rawFiles.isEmpty()) {
-            proceedWithRun(pane, command, pane.resultSpectra());
+            proceedWithRun(pane, run, pane.resultSpectra());
             return;
         }
 
@@ -932,8 +1406,9 @@ public class MainApp extends Application {
         List<File> originalSpectra = pane.resultSpectra();
 
         if (toConvert.isEmpty()) {
-            proceedWithRun(pane, substituteRawPaths(command, targets),
-                    substituteRawFiles(originalSpectra, targets));
+            proceedWithRun(pane, new PreparedRun(
+                            RawFiles.substitutePaths(command, targets), run.predictBatchSize()),
+                    RawFiles.substituteFiles(originalSpectra, targets));
             return;
         }
 
@@ -946,7 +1421,7 @@ public class MainApp extends Application {
         progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
         statusLabel.setText("Preparing ThermoRawFileParser…");
 
-        Thread t = new Thread(() -> runRawConversion(pane, command, toConvert, targets, originalSpectra),
+        Thread t = new Thread(() -> runRawConversion(pane, run, toConvert, targets, originalSpectra),
                 "raw-conversion");
         t.setDaemon(true);
         rawConvertThread = t;
@@ -954,8 +1429,9 @@ public class MainApp extends Application {
     }
 
     /** Background-thread half of {@link #convertRawThenRun}: resolves the converter, then converts each file. */
-    private void runRawConversion(CommandPane pane, CasanovoCommand command, List<File> toConvert,
+    private void runRawConversion(CommandPane pane, PreparedRun run, List<File> toConvert,
                                   Map<String, File> targets, List<File> originalSpectra) {
+        CasanovoCommand command = run.command();
         Path exe;
         try {
             exe = RawFileParserLauncher.ensureRawFileParser(settings.getRawParserPath(),
@@ -1048,8 +1524,8 @@ public class MainApp extends Application {
         final CasanovoCommand substituted;
         final List<File> spectra;
         try {
-            substituted = substituteRawPaths(command, targets);
-            spectra = substituteRawFiles(originalSpectra, targets);
+            substituted = RawFiles.substitutePaths(command, targets);
+            spectra = RawFiles.substituteFiles(originalSpectra, targets);
         } catch (Exception ex) {
             String m = ex.getMessage() == null ? ex.toString() : ex.getMessage();
             Platform.runLater(() -> abortRawConversion("Could not finalize converted inputs: " + m));
@@ -1063,7 +1539,7 @@ public class MainApp extends Application {
             }
             convertingRaw = false;
             rawConvertThread = null;
-            proceedWithRun(pane, substituted, spectra);
+            proceedWithRun(pane, new PreparedRun(substituted, run.predictBatchSize()), spectra);
         });
     }
 
@@ -1097,30 +1573,6 @@ public class MainApp extends Application {
             console.appendLine("[error] " + message);
             alert(Alert.AlertType.ERROR, "Raw conversion failed", message);
         }
-    }
-
-    /** Replace each {@code .raw} argument in {@code command} with its converted {@code .mzML} path. */
-    private static CasanovoCommand substituteRawPaths(CasanovoCommand command, Map<String, File> targets) {
-        List<String> args = new ArrayList<>();
-        for (String a : command.getArguments()) {
-            File target = isRawFile(a) ? targets.get(new File(a).getAbsolutePath()) : null;
-            args.add(target != null ? target.getAbsolutePath() : a);
-        }
-        return new CasanovoCommand(command.getSubcommand(), args);
-    }
-
-    /** Replace each {@code .raw} file with its converted {@code .mzML} file, for "Open in PDV" auto-load. */
-    private static List<File> substituteRawFiles(List<File> files, Map<String, File> targets) {
-        List<File> out = new ArrayList<>();
-        for (File f : files) {
-            File target = targets.get(f.getAbsolutePath());
-            out.add(target != null ? target : f);
-        }
-        return out;
-    }
-
-    private static boolean isRawFile(String arg) {
-        return arg != null && arg.toLowerCase(java.util.Locale.ROOT).endsWith(".raw") && new File(arg).isFile();
     }
 
     private static String stripExtension(String fileName) {
@@ -1191,6 +1643,10 @@ public class MainApp extends Application {
 
     /** Open the Remote-execution settings dialog; its "Test connection" probes with the current fields. */
     private void openRemoteSettings() {
+        // Switching local/remote mid-check would apply the verdict to a different machine.
+        if (refuseWhileBusy("Remote execution")) {
+            return;
+        }
         RemoteSettingsDialog dlg = new RemoteSettingsDialog(stage, remoteSettings,
                 (host, port, user, auth, keyPath, knownHosts) -> RemoteBackend.testConnection(
                         host, port, user, auth, keyPath, knownHosts, this::promptHostKey,
@@ -1259,8 +1715,40 @@ public class MainApp extends Application {
         }
     }
 
+    /** Ask, without blocking the FX thread, whether a quiet installer should keep waiting. */
+    private boolean continueWaitingForInstaller(List<String> command, long silentSeconds,
+                                                long elapsedSeconds) {
+        long silentMinutes = Math.max(1, silentSeconds / 60);
+        long elapsedMinutes = Math.max(1, elapsedSeconds / 60);
+        console.appendLine("[install] No output for " + silentMinutes
+                + " minute(s); waiting for your decision.");
+        Boolean keepWaiting = blockingFx(() -> {
+            ButtonType keep = new ButtonType("Continue waiting", ButtonBar.ButtonData.OK_DONE);
+            ButtonType stop = new ButtonType("Stop installation", ButtonBar.ButtonData.CANCEL_CLOSE);
+            String executable = command.isEmpty() ? "installer command" : command.get(0);
+            Alert alert = new Alert(Alert.AlertType.WARNING,
+                    "The installer has produced no output for " + silentMinutes
+                            + " minute(s) and has been running for " + elapsedMinutes + " minute(s).\n\n"
+                            + "A slow internet connection can make this normal. Continue waiting?\n\n"
+                            + "Command: " + executable,
+                    keep, stop);
+            alert.setTitle("Installation is taking a long time");
+            alert.setHeaderText(null);
+            if (stage != null) {
+                alert.initOwner(stage);
+            }
+            return alert.showAndWait().orElse(stop) == keep;
+        });
+        boolean keep = Boolean.TRUE.equals(keepWaiting);
+        console.appendLine(keep
+                ? "[install] Continuing to wait."
+                : "[install] Stopping at the user's request.");
+        return keep;
+    }
+
     /** The rest of a run, once the command's inputs are all in their final (non-{@code .raw}) form. */
-    private void proceedWithRun(CommandPane pane, CasanovoCommand command, List<File> spectra) {
+    private void proceedWithRun(CommandPane pane, PreparedRun run, List<File> spectra) {
+        CasanovoCommand command = run.command();
         File workingDir = inferWorkingDir(command);
         // Remember the inputs + where the result will land so "Open in PDV" can load it directly.
         pendingSpectra = spectra;
@@ -1275,7 +1763,7 @@ public class MainApp extends Application {
         runStatusBase = "Running " + runLabel + "…";
         statusLabel.setText(runStatusBase);
         predictTotalBatches = 0;
-        predictBatchSize = readPredictBatchSize(command);
+        predictBatchSize = run.predictBatchSize();
         updateRunningState(true);
         consoleFrame.setState(ConsoleBorderEffect.State.RUNNING);
         progressBar.setVisible(true);
@@ -1346,6 +1834,7 @@ public class MainApp extends Application {
             settings.setCasanovoExecutable(managed.getAbsolutePath());
             settings.setUseConda(false);
             settings.save();
+            managedInstallAvailable = true;
             refreshSettingsLabel();
             refreshPreview();
             return true;
@@ -1459,31 +1948,6 @@ public class MainApp extends Application {
                 // leave total unknown -> animated bar
             }
         }
-    }
-
-    /**
-     * Read {@code predict_batch_size} from the run's {@code --config} YAML (the exact file
-     * Casanovo reads). Defaults to 1024 — Casanovo's own default — when absent or unreadable.
-     */
-    private int readPredictBatchSize(CasanovoCommand command) {
-        List<String> args = command.getArguments();
-        int idx = args.indexOf("--config");
-        if (idx >= 0 && idx + 1 < args.size()) {
-            File cfg = new File(args.get(idx + 1));
-            if (cfg.isFile()) {
-                try {
-                    for (String line : Files.readAllLines(cfg.toPath())) {
-                        Matcher m = BATCH_SIZE.matcher(line);
-                        if (m.find()) {
-                            return Integer.parseInt(m.group(1));
-                        }
-                    }
-                } catch (IOException | NumberFormatException ignored) {
-                    // fall through to the default
-                }
-            }
-        }
-        return 1024;
     }
 
     /** Drive the progress bar from a tqdm "NN%|" or Lightning-Rich "done/total" token. */
@@ -1631,6 +2095,23 @@ public class MainApp extends Application {
     }
 
     private void onStop() {
+        if (checkingDevice) {
+            statusLabel.setText("Stopping…");
+            deviceCheckCancelled = true;
+            Thread t = deviceCheckThread;
+            if (t != null) {
+                t.interrupt(); // unwinds the probe's waitFor, which also kills its interpreter
+            }
+            return;
+        }
+        if (installing) {
+            statusLabel.setText("Stopping installation…");
+            Thread t = installerThread;
+            if (t != null) {
+                t.interrupt(); // Runner kills its current child while unwinding waitFor.
+            }
+            return;
+        }
         if (isJobRunning()) {
             statusLabel.setText("Stopping…");
             cancelJob();
@@ -1653,7 +2134,7 @@ public class MainApp extends Application {
 
     /** Download + install Python and Casanovo in the background. */
     private void onInstall() {
-        if (installing || isJobRunning()) {
+        if (refuseWhileBusy("Installing Casanovo")) {
             return;
         }
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
@@ -1680,7 +2161,10 @@ public class MainApp extends Application {
      * is shown.
      */
     private void runInstall(Runnable afterSuccess) {
-        if (installing || isJobRunning()) {
+        // The choke point for every install: a conversion or a mapping in flight is using the
+        // very venv uv is about to rewrite, and neither was in the hand-written guard this
+        // replaces — which is how "add checkingDevice to five expressions" missed two states.
+        if (refuseWhileBusy("Installing Casanovo")) {
             return;
         }
         installing = true;
@@ -1692,14 +2176,15 @@ public class MainApp extends Application {
         Thread t = new Thread(() -> {
             try {
                 String exe = CasanovoInstaller.installAll(
-                        CasanovoInstaller.defaultInstallRoot(), console::appendLine);
+                        CasanovoInstaller.defaultInstallRoot(), console::appendLine,
+                        this::continueWaitingForInstaller);
                 Platform.runLater(() -> {
                     settings.setCasanovoExecutable(exe);
                     settings.setUseConda(false);
                     settings.save();
+                    managedInstallAvailable = true;
                     warmConfigCacheAsync();
-                    installing = false;
-                    setBusy(false);
+                    finishInstallerTask();
                     refreshSettingsLabel();
                     refreshPreview();
                     statusLabel.setText("Casanovo installed.");
@@ -1711,18 +2196,39 @@ public class MainApp extends Application {
                     }
                 });
             } catch (Exception ex) {
+                boolean stopped = ex instanceof InterruptedException
+                        || Thread.currentThread().isInterrupted();
                 String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
                 Platform.runLater(() -> {
+                    if (stopped) {
+                        console.appendLine("[install] Stopped.");
+                        finishInstallerTask();
+                        statusLabel.setText("Installation stopped.");
+                        return;
+                    }
                     console.appendLine("[install] FAILED: " + msg);
-                    installing = false;
-                    setBusy(false);
+                    finishInstallerTask();
                     statusLabel.setText("Install failed.");
                     alert(Alert.AlertType.ERROR, "Install failed", msg);
                 });
             }
         }, "casanovo-installer");
-        t.setDaemon(true);
-        t.start();
+        startInstallerThread(t);
+    }
+
+    private void startInstallerThread(Thread thread) {
+        installerThread = thread;
+        stopButton.setDisable(false);
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void finishInstallerTask() {
+        installerThread = null;
+        installing = false;
+        setBusy(false);
+        stopButton.setDisable(true);
+        refreshPreview();
     }
 
     /** Disable interactive controls while a long background task (install) runs. */
@@ -1829,6 +2335,64 @@ public class MainApp extends Application {
         return newest;
     }
 
+    /**
+     * Show what this machine actually provides: OS, CPU, and the installed PyTorch's build
+     * type and visible devices. A user reporting a device problem can copy this instead of
+     * describing their setup, which is otherwise the hardest part of diagnosing one.
+     */
+    private void showEnvironmentReport() {
+        // The report probes the configured environment, which during an install is a venv uv is
+        // rewriting in place and during a run is a GPU the run is using.
+        if (refuseWhileBusy("The environment report")) {
+            return;
+        }
+        javafx.scene.control.TextArea area = new javafx.scene.control.TextArea("Querying PyTorch\u2026");
+        area.setEditable(false);
+        area.setPrefRowCount(12);
+        area.setPrefColumnCount(64);
+        area.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;");
+
+        Alert dialog = new Alert(Alert.AlertType.INFORMATION);
+        dialog.setTitle("Environment Report");
+        dialog.setHeaderText("Copy this into a bug report.");
+        dialog.getDialogPane().setContent(area);
+        dialog.setResizable(true);
+        if (stage != null) {
+            dialog.initOwner(stage);
+        }
+
+        // The probe launches an interpreter on its first call, so keep it off the FX thread.
+        Thread worker = new Thread(() -> {
+            String text;
+            try {
+                text = "CasanovoGUI     : " + UpdateChecker.guiVersion() + "\n"
+                        + DeviceProbe.environmentReport(DeviceProbe.probe(settings));
+            } catch (Throwable t) {
+                // Nothing else ever fills this dialog, so an unguarded throw would leave it on
+                // "Querying PyTorch…" for good. Why it failed is itself worth reporting.
+                text = "Environment report failed: " + t;
+            }
+            String result = text;
+            Platform.runLater(() -> {
+                endDeviceCheck();
+                area.setText(result);
+            });
+        }, "environment-report");
+        // This launches an interpreter against the configured environment, exactly as a pre-run
+        // check does, and it outlives a dialog the user can dismiss at once. Holding the same
+        // busy state stops an install from rewriting that venv underneath it. The dialog stays
+        // non-modal so the main window's Stop button remains available throughout the probe.
+        beginDeviceCheck(worker);
+        try {
+            worker.start();
+        } catch (Throwable t) {
+            endDeviceCheck();
+            area.setText("Environment report failed: " + t);
+        }
+
+        dialog.show();
+    }
+
     private void showAbout() {
         String casa = (installedCasanovoVersion == null || installedCasanovoVersion.isEmpty())
                 ? "not found" : installedCasanovoVersion;
@@ -1927,7 +2491,12 @@ public class MainApp extends Application {
         }
         Thread t = new Thread(() -> {
             UpdateChecker.CheckOutcome outcome = UpdateChecker.checkAll(settings);
-            Platform.runLater(() -> onUpdateOutcome(outcome, manual));
+            boolean managedInstall = CasanovoInstaller.managedVenvRoot(
+                    settings.getCasanovoExecutable(), settings.isUseConda()).isPresent();
+            Platform.runLater(() -> {
+                managedInstallAvailable = managedInstall;
+                onUpdateOutcome(outcome, manual);
+            });
         }, "update-checker");
         t.setDaemon(true);
         t.start();
@@ -1997,25 +2566,16 @@ public class MainApp extends Application {
 
     /**
      * True when an update can be applied in-app: it's the Casanovo tool, the GUI
-     * manages the install (executable lives under {@code ~/.casanovo-gui}) and
+     * manages the exact configured executable and
      * Conda is not in use.
      */
     private boolean canSelfUpdate(UpdateChecker.UpdateInfo info) {
-        if (info.target != UpdateChecker.Target.CASANOVO || settings.isUseConda()) {
-            return false;
-        }
-        try {
-            Path exe = Paths.get(settings.getCasanovoExecutable()).toAbsolutePath().normalize();
-            Path root = CasanovoInstaller.defaultInstallRoot().toAbsolutePath().normalize();
-            return exe.startsWith(root);
-        } catch (Exception e) {
-            return false;
-        }
+        return info.target == UpdateChecker.Target.CASANOVO && managedInstallAvailable;
     }
 
     /** Upgrade the GUI-managed Casanovo in place via {@code uv pip install -U casanovo}. */
     private void onUpdateCasanovo(UpdateChecker.UpdateInfo info) {
-        if (installing || isJobRunning()) {
+        if (refuseWhileBusy("Updating Casanovo")) {
             return;
         }
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
@@ -2042,10 +2602,10 @@ public class MainApp extends Application {
         Thread t = new Thread(() -> {
             try {
                 CasanovoInstaller.updateCasanovo(
-                        CasanovoInstaller.defaultInstallRoot(), console::appendLine);
+                        CasanovoInstaller.defaultInstallRoot(), console::appendLine,
+                        this::continueWaitingForInstaller);
                 Platform.runLater(() -> {
-                    installing = false;
-                    setBusy(false);
+                    finishInstallerTask();
                     statusLabel.setText("Casanovo updated.");
                     warmConfigCacheAsync(); // new version -> refresh the cached base config
                     updateBanner.removeTarget(UpdateChecker.Target.CASANOVO);
@@ -2053,18 +2613,24 @@ public class MainApp extends Application {
                             "Casanovo was updated to " + info.latestVersion + ".");
                 });
             } catch (Exception ex) {
+                boolean stopped = ex instanceof InterruptedException
+                        || Thread.currentThread().isInterrupted();
                 String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
                 Platform.runLater(() -> {
+                    if (stopped) {
+                        console.appendLine("[update] Stopped.");
+                        finishInstallerTask();
+                        statusLabel.setText("Update stopped.");
+                        return;
+                    }
                     console.appendLine("[update] FAILED: " + msg);
-                    installing = false;
-                    setBusy(false);
+                    finishInstallerTask();
                     statusLabel.setText("Update failed.");
                     alert(Alert.AlertType.ERROR, "Update failed", msg);
                 });
             }
         }, "casanovo-updater");
-        t.setDaemon(true);
-        t.start();
+        startInstallerThread(t);
     }
 
     // ------------------------------------------------------- PyArrow self-check
@@ -2075,11 +2641,12 @@ public class MainApp extends Application {
      * repair. Reads dist-info only: no Python launched, no network.
      */
     private void maybeCheckPyArrow() {
-        Path venvRoot = managedVenvRoot();
-        if (venvRoot == null) {
-            return; // only the GUI-managed install can be auto-repaired
-        }
         Thread t = new Thread(() -> {
+            Path venvRoot = CasanovoInstaller.managedVenvRoot(
+                    settings.getCasanovoExecutable(), settings.isUseConda()).orElse(null);
+            if (venvRoot == null) {
+                return; // only the GUI-managed install can be auto-repaired
+            }
             if (CasanovoInstaller.hasPyArrowMismatch(venvRoot)) {
                 Platform.runLater(this::promptPyArrowRepair);
             }
@@ -2088,25 +2655,8 @@ public class MainApp extends Application {
         t.start();
     }
 
-    /** Venv root of a GUI-managed Casanovo install (executable under ~/.casanovo-gui), or null. */
-    private Path managedVenvRoot() {
-        if (settings.isUseConda()) {
-            return null;
-        }
-        try {
-            Path exe = Paths.get(settings.getCasanovoExecutable()).toAbsolutePath().normalize();
-            Path root = CasanovoInstaller.defaultInstallRoot().toAbsolutePath().normalize();
-            if (!exe.startsWith(root)) {
-                return null;
-            }
-            return PyVenv.venvRootForExecutable(settings.getCasanovoExecutable()).orElse(null);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
     private void promptPyArrowRepair() {
-        if (installing || isJobRunning()) {
+        if (refuseWhileBusy("Repairing the Casanovo install")) {
             return;
         }
         ButtonType repairBtn = new ButtonType("Repair now", ButtonBar.ButtonData.OK_DONE);
@@ -2135,27 +2685,33 @@ public class MainApp extends Application {
         Thread t = new Thread(() -> {
             try {
                 CasanovoInstaller.repairPyArrow(
-                        CasanovoInstaller.defaultInstallRoot(), console::appendLine);
+                        CasanovoInstaller.defaultInstallRoot(), console::appendLine,
+                        this::continueWaitingForInstaller);
                 Platform.runLater(() -> {
-                    installing = false;
-                    setBusy(false);
+                    finishInstallerTask();
                     statusLabel.setText("Casanovo repaired.");
                     alert(Alert.AlertType.INFORMATION, "Repair complete",
                             "PyArrow was re-pinned to a compatible version. Casanovo should now run.");
                 });
             } catch (Exception ex) {
+                boolean stopped = ex instanceof InterruptedException
+                        || Thread.currentThread().isInterrupted();
                 String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
                 Platform.runLater(() -> {
+                    if (stopped) {
+                        console.appendLine("[repair] Stopped.");
+                        finishInstallerTask();
+                        statusLabel.setText("Repair stopped.");
+                        return;
+                    }
                     console.appendLine("[repair] FAILED: " + msg);
-                    installing = false;
-                    setBusy(false);
+                    finishInstallerTask();
                     statusLabel.setText("Repair failed.");
                     alert(Alert.AlertType.ERROR, "Repair failed", msg);
                 });
             }
         }, "pyarrow-repair");
-        t.setDaemon(true);
-        t.start();
+        startInstallerThread(t);
     }
 
     // -------------------------------------------------------- config generation
@@ -2171,11 +2727,14 @@ public class MainApp extends Application {
      * timestamped name, so the exact parameters are kept alongside the results. If that
      * location cannot be written, it falls back to a temporary file.</p>
      */
-    private File writeEffectiveConfig(File outputDir) throws IOException {
+    private File writeEffectiveConfig(File outputDir, String acceleratorOverride) throws IOException {
         Optional<String> base = ConfigCache.cachedBase(settings);
+        Map<String, String> overrides = acceleratorOverride == null
+                ? Map.of() : Map.of("accelerator", acceleratorOverride);
         // overlayOnto/toYaml derive new_token_init from the (possibly timsTOF) residues, so the config
         // already bridges the aliased token for a .d run — no post-processing needed here.
-        String yaml = base.isPresent() ? config.overlayOnto(base.get()) : config.toYaml();
+        String yaml = base.isPresent()
+                ? config.overlayOnto(base.get(), overrides) : config.toYaml(overrides);
         if (outputDir != null && outputDir.isDirectory()) {
             File dest = new File(outputDir, "casanovo-gui-config-" + runStamp() + ".yaml");
             try {

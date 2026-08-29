@@ -46,6 +46,11 @@ public abstract class CommandPane {
     /** Build the command from the current field values. Assumes {@link #validateInputs()} passed. */
     public abstract CasanovoCommand buildCommand();
 
+    /** Point this pane's output directory at {@code dir}. */
+    public void setOutputDir(java.io.File dir) {
+        options.setOutputDir(dir);
+    }
+
     /**
      * Show or hide the external "Config file" row. Hidden while the GUI generates the config from
      * the Parameters dialog; shown when the user supplies a YAML file instead.

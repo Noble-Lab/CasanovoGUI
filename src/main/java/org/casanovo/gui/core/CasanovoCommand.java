@@ -16,10 +16,16 @@ public class CasanovoCommand {
 
     private final String subcommand;
     private final List<String> arguments;
+    private final String accelerator;
 
     public CasanovoCommand(String subcommand, List<String> arguments) {
+        this(subcommand, arguments, null);
+    }
+
+    private CasanovoCommand(String subcommand, List<String> arguments, String accelerator) {
         this.subcommand = subcommand;
         this.arguments = new ArrayList<>(arguments);
+        this.accelerator = accelerator;
     }
 
     public String getSubcommand() {
@@ -28,6 +34,25 @@ public class CasanovoCommand {
 
     public List<String> getArguments() {
         return new ArrayList<>(arguments);
+    }
+
+    /**
+     * The Casanovo {@code accelerator} this run will use, or {@code null} when the run sets none
+     * and Casanovo's own default ({@code auto}) therefore applies. An external config file that
+     * the GUI could not read yields {@link DeviceProbe#UNKNOWN} instead: "nobody knows" is a
+     * different answer from "not set", and only the first has to suppress the device check.
+     *
+     * <p>It is not part of the command line — it lives in the YAML config — but the launcher
+     * needs it to shape the subprocess environment, notably to hide every GPU from a run the
+     * user asked to perform on the CPU (see {@code Os.applyNativeEnv}).</p>
+     */
+    public String getAccelerator() {
+        return accelerator;
+    }
+
+    /** A copy of this command tagged with the accelerator its config selects. */
+    public CasanovoCommand withAccelerator(String accelerator) {
+        return new CasanovoCommand(subcommand, arguments, accelerator);
     }
 
     /**

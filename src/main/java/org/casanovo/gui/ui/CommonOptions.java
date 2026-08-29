@@ -108,6 +108,11 @@ class CommonOptions {
         return PathFields.validateSingleFile(configField, "a YAML config file");
     }
 
+    /** Point the output directory at {@code dir} (used by "Load Example MS/MS Data"). */
+    void setOutputDir(java.io.File dir) {
+        outputDirField.setText(dir.getAbsolutePath());
+    }
+
     /**
      * Validate the shared required option (the output directory). Returns an inline
      * {@link ValidationError} pointing at the field, or {@code null} when it is set.

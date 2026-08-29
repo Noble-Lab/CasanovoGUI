@@ -7,6 +7,7 @@ import net.schmizz.sshj.sftp.SFTPClient;
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider;
 import net.schmizz.sshj.userauth.password.PasswordFinder;
 import net.schmizz.sshj.userauth.password.Resource;
+import org.casanovo.gui.core.Os;
 import org.casanovo.gui.core.OutputPump;
 import org.casanovo.gui.core.exec.ExecutionBackend;
 import org.casanovo.gui.core.exec.JobHandle;
@@ -250,7 +251,8 @@ public final class RemoteBackend implements ExecutionBackend {
                 remoteArgs = pathMap.rewriteArgs(request.command().getArguments());
 
                 launchDetached(ssh, remoteOutDir, activate,
-                        request.command().getSubcommand(), remoteArgs);
+                        request.command().getSubcommand(), remoteArgs,
+                        request.command().getAccelerator());
                 // The detached group (and its watchdog) now exist: mark it launched so the finally always
                 // enforces a cancel via run.cancel, even if Stop lands before we read the PID below.
                 this.launched = true;
@@ -337,9 +339,13 @@ public final class RemoteBackend implements ExecutionBackend {
      * group ({@code $$} in the subshell is the parent leader's PID, i.e. the group id) and escalates to KILL
      * after a grace &mdash; {@code trap '' TERM} lets it survive its own broadcast. On normal completion the
      * leader KILLs the watchdog by its specific (positive) PID.</p>
+     *
+     * @param accelerator the selected Casanovo {@code accelerator}; {@code cpu} additionally hides every
+     *                    GPU from the remote run, or {@code null} when it is not known
      */
     private void launchDetached(SSHClient ssh, String out, String activate,
-                                String subcommand, List<String> remoteArgs) throws IOException {
+                                String subcommand, List<String> remoteArgs,
+                                String accelerator) throws IOException {
         StringBuilder inner = new StringBuilder();
         inner.append("echo $$ > ").append(RemoteShell.shq(out + "/run.pid")).append('\n');
         inner.append("( trap '' TERM; while [ ! -e ").append(RemoteShell.shq(out + "/run.cancel"))
@@ -347,6 +353,11 @@ public final class RemoteBackend implements ExecutionBackend {
                 .append(" kill -KILL -$$ 2>/dev/null ) &\n");
         inner.append("__wd=$!\n");
         inner.append("source ").append(RemoteShell.shq(activate)).append('\n');
+        // Make a CPU run on the server mean CPU, exactly as the local backend does: with every GPU
+        // hidden, no layer of the stack can bind an accelerator the user asked not to use.
+        if (accelerator != null && accelerator.trim().equalsIgnoreCase("cpu")) {
+            inner.append("export CUDA_VISIBLE_DEVICES=").append(Os.NO_CUDA_DEVICES).append('\n');
+        }
         inner.append("casanovo ").append(subcommand);
         for (String arg : remoteArgs) {
             inner.append(' ').append(RemoteShell.shq(arg));

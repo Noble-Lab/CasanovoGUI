@@ -100,6 +100,19 @@ final class MultiFileField {
         field.getPseudoClassStates().addListener((SetChangeListener<PseudoClass>) c -> refreshDisplay());
     }
 
+    /**
+     * Replace the selection programmatically (used by "Load Example MS/MS Data").
+     * Unlike the browse handler this performs no mixed-type check, because the caller
+     * supplies a known-good file rather than an arbitrary user selection.
+     */
+    void setFiles(List<File> files) {
+        List<String> paths = new ArrayList<>();
+        for (File f : files) {
+            paths.add(f.getAbsolutePath());
+        }
+        setPaths(paths);
+    }
+
     /** The backing field that holds the path-separator-joined paths. */
     TextField field() {
         return field;

@@ -28,8 +28,9 @@ import java.util.function.Consumer;
  * commands over SSH), but the recipe and the pinned <em>policy</em> are kept in sync: the Python version, the
  * PyArrow pin, and the driver&rarr;CUDA wheel selection ({@link CasanovoInstaller#cudaTorchIndexUrl(String)})
  * all come from {@link CasanovoInstaller}. Like the local installer it reads the remote {@code nvidia-smi}
- * driver version and installs the matched {@code torch}/{@code torchvision}/{@code torchaudio} trio before
- * Casanovo on a GPU host.</p>
+ * driver version and installs the matched {@code torch} before Casanovo on a GPU host (only
+ * torch: see {@link CasanovoInstaller#cudaTorchIndexUrl(String)}'s caller for why the usual
+ * three-package line is not used).</p>
  */
 public final class RemoteInstaller {
 
@@ -66,16 +67,17 @@ public final class RemoteInstaller {
             }
         };
 
-        // Match the local installer: detect the remote NVIDIA driver and pick the SAME matched CUDA PyTorch
-        // wheel index (shared selection), so a GPU box with an older driver gets the right cuXXX build rather
-        // than PyPI's default. The version comparison stays in Java (shared, tested), not reimplemented in shell.
+        // Match the local installer: the remote uv picks the PyTorch wheel from the remote driver itself via
+        // --torch-backend=auto (see CasanovoInstaller.pipInstallMatchingTorch for why that beats choosing an
+        // index ourselves). Only when the remote uv predates that flag do we fall back to our own driver ->
+        // index mapping, whose version comparison stays in Java (shared, tested) rather than in shell.
         String driver = detectNvidiaDriver(ssh);
         String torchIndexUrl = CasanovoInstaller.cudaTorchIndexUrl(driver);
         if (torchIndexUrl != null) {
-            log.accept("NVIDIA driver " + driver + " detected -> installing matched CUDA PyTorch ("
-                    + torchIndexUrl + ").");
+            log.accept("NVIDIA driver " + driver + " detected (fallback wheel index, used only if the "
+                    + "remote uv is too old: " + torchIndexUrl + ").");
         } else {
-            log.accept("No CUDA-capable NVIDIA driver detected -> using the default PyTorch.");
+            log.accept("nvidia-smi reported no CUDA-capable driver on the remote host.");
         }
 
         // ---- Build the environment with uv (see the class javadoc for why uv, not `python -m venv`). ----
@@ -107,17 +109,19 @@ public final class RemoteInstaller {
         lines.add("echo \"Using uv: $UV\"");
         // uv fetches a managed CPython (no reliance on a system python), matching the local recipe.
         lines.add("\"$UV\" venv --clear --python " + RemoteShell.shq(CasanovoInstaller.PYTHON_VERSION) + " \"$VENV\"");
-        // Matched CUDA PyTorch trio BEFORE Casanovo, so Casanovo keeps the GPU build (mirrors the local flow).
+        // Ask the remote uv whether it understands --torch-backend. When it does, PyTorch is resolved
+        // against the CUDA index matching the REMOTE driver, in the same resolution as Casanovo itself.
+        lines.add("TB=\"\"; if \"$UV\" pip install --help 2>/dev/null"
+                + " | grep -q -- '--torch-backend'; then TB=--torch-backend=auto; fi");
+        lines.add("echo \"torch backend: ${TB:-unavailable (this uv predates --torch-backend)}\"");
+        // Fallback for an older remote uv: our own driver -> wheel index mapping, installed BEFORE Casanovo
+        // so that Casanovo's own resolution keeps the GPU build (the pre-flag local flow).
         if (torchIndexUrl != null) {
-            lines.add("\"$UV\" pip install --python \"$VENV/bin/python\" torch torchvision torchaudio"
-                    + " --index-url " + RemoteShell.shq(torchIndexUrl));
+            lines.add("if [ -z \"$TB\" ]; then \"$UV\" pip install --python "
+                    + "\"$VENV/bin/python\" torch --index-url "
+                    + RemoteShell.shq(torchIndexUrl) + "; fi");
         }
-        // Install Casanovo AND the PyArrow pin in one resolution so it is atomic: the casanovo launcher only
-        // appears if the pin applied too. (Same pin as local; a too-new PyArrow crashes Casanovo on import.
-        // Installing them separately could leave a launcher present but mis-pinned, which the reuse check
-        // above would then wrongly accept.)
-        lines.add("\"$UV\" pip install --python \"$VENV/bin/python\" casanovo "
-                + RemoteShell.shq(CasanovoInstaller.PYARROW_PIN));
+        lines.addAll(casanovoInstallLines(torchIndexUrl));
         lines.add("test -x " + RemoteShell.shq(launcher)
                 + " || { echo 'ERROR: casanovo not found after install' >&2; exit 5; }");
         int code = RemoteShell.runStreamed(ssh, RemoteShell.bashLogin(String.join("\n", lines)), toLog);
@@ -140,8 +144,74 @@ public final class RemoteInstaller {
     }
 
     /**
-     * The remote NVIDIA driver version via {@code nvidia-smi}, or {@code null} when there is no usable GPU
-     * (no {@code nvidia-smi}, or its output isn't a version). Fed to
+     * The lines that install Casanovo with a PyTorch matched to the remote machine, and fall back
+     * when that uv turns out not to accept {@code --torch-backend} after all.
+     *
+     * <p>Extracted and pure so a test can run it against stub binaries: this is shell logic with
+     * two traps that {@code sh -n} cannot see. The install runs under {@code set +e} because the
+     * whole script uses {@code set -e}, and a failing command inside a pipeline's subshell would
+     * otherwise abort the group before the exit status is recorded. The log and status files live
+     * beside the venv &mdash; a directory uv has just written to &mdash; rather than in
+     * {@code TMPDIR}, which on a hardened host can be unwritable and would then turn a successful
+     * install into a reported failure.</p>
+     *
+     * <p>Expects {@code $UV}, {@code $VENV} and {@code $TB} (the flag, or empty) to be set.</p>
+     */
+    static List<String> casanovoInstallLines(String torchIndexUrl) {
+        // Casanovo AND the PyArrow pin in one resolution so it is atomic: the launcher only
+        // appears if the pin applied too. (A too-new PyArrow crashes Casanovo on import;
+        // installing them separately could leave a launcher present but mis-pinned.)
+        // $TB is deliberately unquoted: when empty it must expand to no argument at all.
+        String pin = RemoteShell.shq(CasanovoInstaller.PYARROW_PIN);
+        List<String> lines = new ArrayList<>();
+        lines.add("UVLOG=\"$VENV.install.log\"; UVST=\"$VENV.install.status\"; rm -f \"$UVST\"");
+        // Streamed through tee, not captured: this is the multi-minute step of the install and the
+        // GUI's remote log must show it progressing. The status travels in its own file because a
+        // pipeline reports tee's status, not uv's.
+        lines.add("set +e");
+        lines.add("{ \"$UV\" pip install --python \"$VENV/bin/python\" $TB casanovo " + pin
+                + "; echo $? >\"$UVST\"; } 2>&1 | tee \"$UVLOG\"");
+        lines.add("set -e");
+        lines.add("UVEXIT=\"$(cat \"$UVST\" 2>/dev/null || echo unknown)\"");
+        // An empty or half-written status file is not a status: the write can be cut short by an
+        // OOM kill during the multi-gigabyte resolution, a dropped channel, or a full disk. Left
+        // as "" it would read as "uv failed" and abort an install that had in fact succeeded.
+        lines.add("case \"$UVEXIT\" in ''|*[!0-9]*) UVEXIT=unknown;; esac");
+        lines.add("rm -f \"$UVST\"");
+        // No status at all means the recipe itself could not run (the venv's directory went away
+        // mid-install). Guessing either way would be worse than saying so.
+        lines.add("if [ \"$UVEXIT\" = unknown ]; then");
+        lines.add("  echo 'ERROR: could not determine whether Casanovo installed' >&2");
+        lines.add("  rm -f \"$UVLOG\"; exit 7");
+        lines.add("fi");
+        lines.add("if [ \"$UVEXIT\" != 0 ]; then");
+        lines.add("  [ -n \"$TB\" ] || { rm -f \"$UVLOG\"; exit 5; }");
+        // Mirrors CasanovoInstaller.rejectedTheFlag: the complaint must name the flag AND be about
+        // parsing it, or the failure was something else and must not trigger a second install.
+        // grep matches per line, which is the point: the flag and the complaint about it have to
+        // be in the same sentence, or an unrelated failure elsewhere in a multi-minute log would
+        // pair up with a note that merely mentions the flag.
+        lines.add("  if ! tr 'A-Z' 'a-z' <\"$UVLOG\" | grep -qE "
+                + "'torch-backend.*(unexpected argument|unrecognized|unknown option|preview)"
+                + "|(unexpected argument|unrecognized|unknown option|preview).*torch-backend'; then");
+        lines.add("    rm -f \"$UVLOG\"; exit 6");
+        lines.add("  fi");
+        lines.add("  echo 'uv rejected --torch-backend; falling back to driver detection'");
+        if (torchIndexUrl != null) {
+            // --reinstall-package: the flagged attempt may already have installed a CPU torch
+            // before it failed, and uv would consider a bare `torch` requirement satisfied by it.
+            lines.add("  \"$UV\" pip install --python \"$VENV/bin/python\" --reinstall-package "
+                    + "torch torch --index-url " + RemoteShell.shq(torchIndexUrl));
+        }
+        lines.add("  \"$UV\" pip install --python \"$VENV/bin/python\" casanovo " + pin);
+        lines.add("fi");
+        lines.add("rm -f \"$UVLOG\"");
+        return lines;
+    }
+
+    /**
+     * The remote NVIDIA driver version via {@code nvidia-smi}, or {@code null} when there is no
+     * usable GPU (no {@code nvidia-smi}, or its output isn't a version). Fed to
      * {@link CasanovoInstaller#cudaTorchIndexUrl(String)} to pick a matched CUDA wheel index.
      */
     private static String detectNvidiaDriver(SSHClient ssh) {

@@ -23,3 +23,19 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local test data: full mzML runs and their Casanovo results are far too large to commit.
+# The small, committed example lives in examples/ instead.
+test_data/
+
+# Output of local runs: an output folder holds the mzTab, its .db sidecar and the generated
+# casanovo-gui-config-<stamp>.yaml of every run made into it.
+/ok/
+*.mztab
+*.mztab.db
+casanovo-gui-config-*.yaml
+# ...but never a committed fixture: the reference output of the example dataset lives here.
+!src/test/resources/**
+
+# Cygwin/MSYS crash dumps, left behind when a shell in the toolchain dies.
+*.stackdump

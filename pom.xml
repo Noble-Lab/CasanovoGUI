@@ -25,6 +25,7 @@
         <javafx.version>25.0.3</javafx.version>
         <!-- Launcher (does NOT extend Application) so a plain classpath launch works too. -->
         <main.class>org.casanovo.gui.CasanovoGuiApp</main.class>
+        <junit.version>5.11.4</junit.version>
     </properties>
 
     <dependencies>
@@ -59,6 +60,16 @@
             <artifactId>slf4j-nop</artifactId>
             <version>1.7.36</version>
         </dependency>
+
+        <!-- Unit tests. Deliberately headless and dependency-free: they cover the pure decision
+             logic (device validation, mzTab parsing, version comparison), not the JavaFX layer,
+             so `mvn test` runs on a CI runner with no display and no Python. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -81,12 +92,31 @@
                     <exclude>**/project.properties</exclude>
                 </excludes>
             </resource>
+            <!-- The example dataset ships inside the jar so "Load Example MS/MS Data"
+                 needs no network, while the file itself lives in examples/ where users can
+                 find it. One copy, two consumers. Explicit include: the folder's README
+                 must not end up in the artifact. -->
+            <resource>
+                <directory>examples</directory>
+                <targetPath>org/casanovo/gui/examples</targetPath>
+                <filtering>false</filtering>
+                <includes>
+                    <include>hela_50_spectra.mgf</include>
+                </includes>
+            </resource>
         </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
+            </plugin>
+
+            <!-- Surefire 3.x is required to discover JUnit 5 tests. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
             </plugin>
 
             <!-- Always rebuild the project jar from target/classes, even when classes are

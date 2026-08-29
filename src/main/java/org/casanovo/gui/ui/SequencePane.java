@@ -34,6 +34,11 @@ public class SequencePane extends CommandPane {
         content.setFitToWidth(true);
     }
 
+    /** Replace the spectrum selection (used by "Load Example MS/MS Data"). */
+    public void setSpectra(List<File> files) {
+        peakField.setFiles(files);
+    }
+
     @Override
     public String getTitle() {
         return "De novo";

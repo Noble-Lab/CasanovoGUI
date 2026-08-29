@@ -1,0 +1,264 @@
+name: tests & smoke
+
+# Two layers of check:
+#
+#   unit         — the headless decision logic (device validation, driver mapping, subprocess
+#                  environment). Fast; runs on every push and PR, on all three OSes because the
+#                  subprocess-environment assertions are per-platform — the CUDA_VISIBLE_DEVICES
+#                  value that reaches a child differs on Windows, and the MKL/MPS guards only
+#                  apply on Windows and Apple Silicon.
+#   casanovo     — the real installer recipe end to end on each supported OS: download uv,
+#                  create the private venv, install Casanovo with a PyTorch matched to the
+#                  machine, and confirm the result actually runs on the CPU.
+#
+# The smoke job exists because the two most consequential install outcomes cannot be checked
+# on a developer machine that has a GPU:
+#
+#   * on a GPU-less runner, `uv --torch-backend=auto` must resolve a CPU wheel;
+#   * on Apple Silicon, it must leave the MPS-capable wheel alone rather than force a CPU one.
+#
+# It also asserts the property this workflow was written for: on a CPU-only PyTorch build,
+# nothing in a CPU run reaches for an accelerator. That is the configuration in which PyTorch
+# raises "Cannot access accelerator device when none is available."
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so a new PyTorch or Casanovo release that breaks the install is caught by us
+    # rather than by a user. Casanovo declares `torch>=2.2` with no ceiling, so the resolved
+    # PyTorch moves on its own even when nothing here changes.
+    - cron: '0 6 * * 1'
+
+jobs:
+  unit:
+    name: unit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Run unit tests
+        run: mvn -B test
+
+  casanovo:
+    name: casanovo smoke (${{ matrix.os }})
+    # Not on pull requests: this job downloads a full PyTorch stack on three runners plus ~575 MB
+    # of weights, and what it guards against — a new PyTorch or Casanovo release breaking the
+    # install — is caught by the weekly schedule and by the push to main, not by a given PR.
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest    # x86-64, no GPU  -> expect a CPU wheel
+            expect: cpu
+            weights: ~/.cache/casanovo
+          - os: windows-latest   # x86-64, no GPU  -> expect a CPU wheel
+            expect: cpu
+            weights: ~/AppData/Local/casanovo
+          - os: macos-latest     # Apple Silicon   -> expect an MPS-capable wheel
+            expect: mps
+            weights: ~/Library/Caches/casanovo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # Mirrors CasanovoInstaller.installAll: a private venv with a pinned interpreter, then
+      # Casanovo installed in ONE resolution with uv choosing the PyTorch backend, then the
+      # PyArrow pin that keeps pylance's native extension loadable.
+      # Read the recipe out of the installer itself, so this job cannot quietly validate a
+      # Python version or PyArrow pin the application no longer uses.
+      - name: Read the installer's own pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=src/main/java/org/casanovo/gui/core/CasanovoInstaller.java
+          py="$(sed -n 's/.*PYTHON_VERSION = "\([^"]*\)".*/\1/p' "$src")"
+          pin="$(sed -n 's/.*PYARROW_PIN = "\([^"]*\)".*/\1/p' "$src")"
+          [ -n "$py" ] && [ -n "$pin" ] || { echo "::error::could not read the pins from $src"; exit 1; }
+          echo "PYTHON_VERSION=$py" >> "$GITHUB_ENV"
+          echo "PYARROW_PIN=$pin" >> "$GITHUB_ENV"
+          echo "python $py, $pin"
+
+      - name: Install Casanovo the way the GUI does
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python "$PYTHON_VERSION" .venv
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PY=.venv/Scripts/python.exe
+            EXE=.venv/Scripts/casanovo.exe
+          else
+            PY=.venv/bin/python
+            EXE=.venv/bin/casanovo
+          fi
+          echo "VENV_PY=$PY" >> "$GITHUB_ENV"
+          echo "CASANOVO_EXE=$EXE" >> "$GITHUB_ENV"
+          # Mirrors pipInstallMatchingTorch: the flag is an optimisation, and a uv that rejects
+          # it (older, or gating it behind --preview) must not fail the install.
+          # Mirrors CasanovoInstaller.rejectedTheFlag: only a complaint that names the flag
+          # takes the fallback; anything else is a real failure and must fail the job.
+          if ! out=$(uv pip install --python "$PY" --torch-backend=auto casanovo "$PYARROW_PIN" 2>&1); then
+            printf '%s\n' "$out"
+            # Per line, as CasanovoInstaller.rejectedTheFlag does: the flag and the complaint
+            # about it must be in the same sentence, or any failure in the log would match.
+            if printf '%s' "$out" | tr 'A-Z' 'a-z' | grep -qE \
+                'torch-backend.*(unexpected argument|unrecognized|unknown option|preview)|(unexpected argument|unrecognized|unknown option|preview).*torch-backend'; then
+              echo "::warning::uv rejected --torch-backend; installing without it"
+              uv pip install --python "$PY" casanovo "$PYARROW_PIN"
+            else
+              exit 1
+            fi
+          else
+            printf '%s\n' "$out"
+          fi
+
+      # `casanovo version` is the launcher plus the whole import chain, including the
+      # lance/pyarrow native extension the pin above exists to keep loadable. Note there is no
+      # `python -m casanovo`: the package ships no __main__, so the launcher is the only entry.
+      - name: Casanovo starts
+        shell: bash
+        env:
+          KMP_DUPLICATE_LIB_OK: 'TRUE'
+          MKL_THREADING_LAYER: SEQUENTIAL
+        run: |
+          set -euo pipefail
+          "$CASANOVO_EXE" version
+
+      # Runs the very script DeviceProbe ships and feeds to the pre-run check, so what CI
+      # asserts here is exactly what the application will conclude on this platform.
+      - name: Probe the installed PyTorch
+        shell: bash
+        env:
+          # The same pair Os.applyNativeEnv gives the real probe: without MKL_THREADING_LAYER,
+          # importing torch on Windows can hit the 0xC0000005 crash the app guards against, so
+          # this step would not be asserting what the application concludes.
+          KMP_DUPLICATE_LIB_OK: 'TRUE'
+          MKL_THREADING_LAYER: SEQUENTIAL
+        run: |
+          set -euo pipefail
+          # Python prints CRLF on Windows, and a stray \r would read as a non-empty value in
+          # every check below (a CPU wheel's empty cuda_build would look like a CUDA build).
+          "$VENV_PY" src/main/resources/org/casanovo/gui/device_probe.py | tr -d '\r' | tee probe.txt
+
+      - name: Assert uv picked the right backend for this platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          torch="$(sed -n 's/^torch=//p' probe.txt)"
+          cuda_build="$(sed -n 's/^cuda_build=//p' probe.txt)"
+          mps_built="$(sed -n 's/^mps_built=//p' probe.txt)"
+          echo "resolved torch=$torch cuda_build='$cuda_build' mps_built=$mps_built"
+
+          # A failed probe reports error= and exits 0, leaving every field empty — which reads
+          # exactly like a correct CPU wheel. Assert something positive before asserting absence.
+          if grep -q '^error=' probe.txt || [ -z "$torch" ]; then
+            echo "::error::the device probe did not report a PyTorch build:"
+            cat probe.txt
+            exit 1
+          fi
+
+          if [ -n "$cuda_build" ]; then
+            echo "::error::A GPU-less runner resolved a CUDA build ($torch)." \
+                 "--torch-backend=auto should have selected a CPU wheel."
+            exit 1
+          fi
+
+          if [ "${{ matrix.expect }}" = "mps" ] && [ "$mps_built" != "True" ]; then
+            echo "::error::Apple Silicon resolved a wheel without the Metal backend ($torch)." \
+                 "--torch-backend=auto must not force a CPU-only wheel on macOS."
+            exit 1
+          fi
+
+      # The regression this whole change is about: with no accelerator compiled in, a CPU run
+      # must not reach for one. Casanovo's inference DataLoader sets pin_memory=True, which is
+      # the path that would otherwise ask PyTorch for an accelerator device index.
+      - name: A CPU run never reaches for an accelerator
+        shell: bash
+        env:
+          KMP_DUPLICATE_LIB_OK: 'TRUE'
+          MKL_THREADING_LAYER: SEQUENTIAL
+          CUDA_VISIBLE_DEVICES: '-1'
+        run: |
+          set -euo pipefail
+          "$VENV_PY" .github/scripts/cpu_accelerator_check.py
+
+      # Casanovo downloads its model weights on first use; ~575 MB is worth caching. Keyed on
+      # the resolved Casanovo version, so a new release fetches the weights it expects.
+      - name: Resolve the Casanovo version (cache key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$("$VENV_PY" -c 'import importlib.metadata as m; print(m.version("casanovo"))')"
+          echo "CASANOVO_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Casanovo $version"
+
+      - name: Cache the model weights
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.weights }}
+          key: casanovo-weights-${{ runner.os }}-${{ env.CASANOVO_VERSION }}
+
+      # Casanovo rejects partial configs -- it requires every key -- so the CPU config is built
+      # from `casanovo configure`, its own complete default. Generating it rather than
+      # committing one keeps this in step with whatever keys the installed Casanovo expects,
+      # which matters because this job also runs on a schedule against new releases.
+      - name: Build a CPU-only Casanovo config
+        shell: bash
+        env:
+          KMP_DUPLICATE_LIB_OK: 'TRUE'
+          MKL_THREADING_LAYER: SEQUENTIAL
+        run: |
+          set -euo pipefail
+          "$CASANOVO_EXE" configure -o smoke-config.default.yaml
+          sed 's/^accelerator:.*/accelerator: "cpu"/' smoke-config.default.yaml > smoke-config.yaml
+          grep '^accelerator:' smoke-config.yaml
+
+      # The end-to-end check, and the one the reviewer asked for: an explicit CPU-only run.
+      # A broken install still exits zero and still writes an mzTab, so the next step is what
+      # actually catches it.
+      - name: Sequence the example dataset on the CPU
+        shell: bash
+        env:
+          KMP_DUPLICATE_LIB_OK: 'TRUE'
+          MKL_THREADING_LAYER: SEQUENTIAL
+          CUDA_VISIBLE_DEVICES: '-1'
+        run: |
+          set -euo pipefail
+          mkdir -p smoke-out
+          "$CASANOVO_EXE" sequence --config smoke-config.yaml \
+            -o smoke-out/result.mztab examples/hela_50_spectra.mgf
+
+      - name: The result matches the reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Casanovo appends its own .mztab suffix to -o, so the file lands as result.mztab.mztab.
+          result="$(ls smoke-out/*.mztab | head -1)"
+          echo "checking $result"
+          "$VENV_PY" .github/scripts/check_sequencing.py \
+            "$result" src/test/resources/hela_50_spectra.expected.tsv
+
+      - name: Keep the output when something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-output-${{ matrix.os }}
+          path: |
+            smoke-out/
+            probe.txt
+            smoke-config.yaml
+          if-no-files-found: ignore
