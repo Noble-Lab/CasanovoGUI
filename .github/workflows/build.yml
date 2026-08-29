@@ -34,8 +34,8 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'build-artifact')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
@@ -63,7 +63,7 @@ jobs:
           github.event_name == 'push' ||
           (github.event_name == 'pull_request' &&
            contains(github.event.pull_request.labels.*.name, 'build-artifact'))
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "${{ github.event_name == 'push' && github.ref_name || format('pr-build-{0}', github.event.pull_request.number) }}"
           name: "${{ github.event_name == 'push' && github.ref_name || format('Pre-release build (PR #{0})', github.event.pull_request.number) }}"
@@ -72,7 +72,7 @@ jobs:
           files: release/*
       - name: Upload artifact (manual runs only)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CasanovoGUI-portable-jar
           path: release/*
@@ -94,8 +94,8 @@ jobs:
           - { os: macos-15,       name: macos,   arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
@@ -126,6 +126,38 @@ jobs:
         if: matrix.name != 'windows'
         shell: bash
         run: APP_VERSION="$VER" bash ./packaging/package.sh --installer
+      # A .deb that installs into /opt with no menu entry is reachable neither from the
+      # desktop nor from a shell. Assert the shortcut is actually in the package rather than
+      # trusting that the jpackage flag did what it says.
+      - name: Verify the .deb is discoverable
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="$(ls dist/*.deb | head -1)"
+          echo "::group::$deb contents"
+          dpkg-deb -c "$deb"
+          echo '::endgroup::'
+          contents="$(dpkg-deb -c "$deb")"
+          # The .desktop file ships inside /opt and is registered at install time by
+          # postinst, NOT shipped into /usr/share/applications -- check where it really is.
+          if ! grep -q '/opt/casanovogui/lib/.*\.desktop' <<<"$contents"; then
+            echo '::error::No .desktop file in the package: the application will not appear'\
+                 ' in the desktop menu. Check --linux-shortcut in packaging/package.sh.'
+            exit 1
+          fi
+          rm -rf ctl && mkdir ctl && dpkg-deb -e "$deb" ctl
+          echo '::group::postinst'; cat ctl/postinst; echo '::endgroup::'
+          # A misspelt resource-dir override is ignored silently, so assert both effects of
+          # ours are present rather than trusting that jpackage picked the file up.
+          grep -q 'xdg-desktop-menu install' ctl/postinst \
+            || { echo '::error::postinst does not register the desktop entry'; exit 1; }
+          grep -q 'ln -sf /opt/casanovogui/bin/CasanovoGUI /usr/bin/casanovogui' ctl/postinst \
+            || { echo '::error::postinst override was ignored: no /usr/bin symlink'; exit 1; }
+          grep -q 'rm -f /usr/bin/casanovogui' ctl/postrm \
+            || { echo '::error::postrm override was ignored: symlink would be left behind'; exit 1; }
+          echo 'deb is discoverable from both the desktop menu and PATH'
+
       - name: Collect release assets (consistent CasanovoGUI-<ver>-<platform> names)
         shell: bash
         run: |
@@ -148,7 +180,7 @@ jobs:
           github.event_name == 'push' ||
           (github.event_name == 'pull_request' &&
            contains(github.event.pull_request.labels.*.name, 'build-artifact'))
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "${{ github.event_name == 'push' && github.ref_name || format('pr-build-{0}', github.event.pull_request.number) }}"
           name: "${{ github.event_name == 'push' && github.ref_name || format('Pre-release build (PR #{0})', github.event.pull_request.number) }}"
@@ -157,7 +189,7 @@ jobs:
           files: release/*
       - name: Upload artifact (manual runs only)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CasanovoGUI-${{ matrix.name }}-${{ matrix.arch }}
           path: release/*

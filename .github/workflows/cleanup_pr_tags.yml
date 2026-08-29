@@ -15,7 +15,7 @@ jobs:
       contents: write   # delete releases and tags
     steps:
       - name: Delete pr-build prerelease and tag
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const tag = `pr-build-${context.issue.number}`;

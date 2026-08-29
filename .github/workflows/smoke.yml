@@ -41,8 +41,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
@@ -71,10 +71,18 @@ jobs:
             expect: mps
             weights: ~/Library/Caches/casanovo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10
+        with:
+          # This job has no uv.lock or requirements.txt for the default glob to key on, which
+          # left the cache permanently valid and never refreshed. The installer source IS this
+          # job's manifest: the step below reads the Python version and the PyArrow pin out of
+          # it, so keying on it refreshes the cache exactly when the recipe changes. Casanovo
+          # itself stays unpinned, so a new release is still resolved and downloaded -- which
+          # is what the weekly run exists to catch.
+          cache-dependency-glob: src/main/java/org/casanovo/gui/core/CasanovoInstaller.java
 
       # Mirrors CasanovoInstaller.installAll: a private venv with a pinned interpreter, then
       # Casanovo installed in ONE resolution with uv choosing the PyTorch backend, then the
@@ -207,7 +215,7 @@ jobs:
           echo "Casanovo $version"
 
       - name: Cache the model weights
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ matrix.weights }}
           key: casanovo-weights-${{ runner.os }}-${{ env.CASANOVO_VERSION }}
@@ -254,7 +262,7 @@ jobs:
 
       - name: Keep the output when something failed
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-output-${{ matrix.os }}
           path: |
