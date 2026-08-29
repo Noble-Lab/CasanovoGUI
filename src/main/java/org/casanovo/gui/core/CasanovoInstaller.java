@@ -155,7 +155,7 @@ public final class CasanovoInstaller {
      * @param installRoot directory to install into
      * @param logSink receives human-readable progress lines
      * @param stallHandler decides whether a quiet command should keep waiting; {@code null}
-     *                     retains the non-interactive timeout behavior
+     *                     lets a quiet command wait indefinitely (there is nobody to ask)
      * @return absolute path to the installed Casanovo executable
      * @throws Exception if installation fails or a stalled command is stopped
      */
@@ -188,7 +188,7 @@ public final class CasanovoInstaller {
         Path logFile = logsDir.resolve("install.log");
 
         Logger log = new Logger(logFile, logSink);
-        Runner cmd = new Runner(log, INSTALL_STALL_WARNING_SECONDS, 0, stallHandler);
+        Runner cmd = installRunner(log, stallHandler);
 
         log.info("=== Casanovo installation started ===");
         log.info("Install root: " + installRoot.toAbsolutePath());
@@ -321,7 +321,7 @@ public final class CasanovoInstaller {
      * @param installRoot GUI-managed installation root
      * @param logSink receives human-readable progress lines
      * @param stallHandler decides whether a quiet command should keep waiting; {@code null}
-     *                     retains the non-interactive timeout behavior
+     *                     lets a quiet command wait indefinitely (there is nobody to ask)
      * @throws Exception if the update fails or a stalled command is stopped
      */
     public static void updateCasanovo(Path installRoot, Consumer<String> logSink,
@@ -340,7 +340,7 @@ public final class CasanovoInstaller {
         Path logsDir = installRoot.resolve("logs");
         Files.createDirectories(logsDir);
         Logger log = new Logger(logsDir.resolve("install.log"), logSink);
-        Runner cmd = new Runner(log, INSTALL_STALL_WARNING_SECONDS, 0, stallHandler);
+        Runner cmd = installRunner(log, stallHandler);
 
         Path uvExe = installRoot.resolve("uv").resolve(isWindows ? "uv.exe" : "uv");
         if (!Files.exists(uvExe)) {
@@ -373,8 +373,9 @@ public final class CasanovoInstaller {
             log.info("PyTorch stack changed during the upgrade:");
             log.info("  before: " + torchBefore);
             log.info("  after:  " + torchAfter);
+            warnAboutStaleCompanions(venvRoot, log);
             boolean cudaImpossible = Os.isMac(); // no macOS CUDA wheels exist, for any Mac
-            if (matchedTorch && (cudaImpossible || hasGpuTorchBuild(torchAfter))) {
+            if (matchedTorch && (cudaImpossible || hasGpuTorchBuild(torchSignature(venvRoot)))) {
                 log.info("uv selected it for this machine's driver -> no repair needed.");
             } else if (matchedTorch) {
                 // uv chose the backend itself and landed on a CPU build.
@@ -421,7 +422,7 @@ public final class CasanovoInstaller {
      * @param installRoot GUI-managed installation root
      * @param logSink receives human-readable progress lines
      * @param stallHandler decides whether a quiet command should keep waiting; {@code null}
-     *                     retains the non-interactive timeout behavior
+     *                     lets a quiet command wait indefinitely (there is nobody to ask)
      * @throws Exception if repair fails or a stalled command is stopped
      */
     public static void repairPyArrow(Path installRoot, Consumer<String> logSink,
@@ -430,7 +431,7 @@ public final class CasanovoInstaller {
         Path logsDir = installRoot.resolve("logs");
         Files.createDirectories(logsDir);
         Logger log = new Logger(logsDir.resolve("install.log"), logSink);
-        Runner cmd = new Runner(log, INSTALL_STALL_WARNING_SECONDS, 0, stallHandler);
+        Runner cmd = installRunner(log, stallHandler);
         Path uvExe = installRoot.resolve("uv").resolve(isWindows ? "uv.exe" : "uv");
         if (!Files.exists(uvExe)) {
             uvExe = findExecutable(installRoot.resolve("uv"), isWindows ? "uv.exe" : "uv");
@@ -544,7 +545,14 @@ public final class CasanovoInstaller {
      * Judged only on what uv printed: the exception message repeats the command line, which
      * contains the flag whatever went wrong, so matching that would classify every failure —
      * a proxy error, a resolution conflict, a full disk — as a rejected flag.
+     *
+     * <p>The phrasings live in {@link #TORCH_BACKEND_REJECTIONS} because the remote (SSH)
+     * installer greps a remote log for the same set: a new uv wording is then added once, here,
+     * rather than transcribed into a shell alternation that can silently drift.</p>
      */
+    public static final List<String> TORCH_BACKEND_REJECTIONS =
+            List.of("unexpected argument", "unrecognized", "unknown option", "preview");
+
     static boolean rejectedTheFlag(String output) {
         if (output == null) {
             return false;
@@ -560,11 +568,10 @@ public final class CasanovoInstaller {
                 continue;
             }
             // Deliberately not "error": uv prints that on every failure.
-            if (line.contains("unexpected argument")
-                    || line.contains("unrecognized")
-                    || line.contains("unknown option")
-                    || line.contains("preview")) {
-                return true;
+            for (String complaint : TORCH_BACKEND_REJECTIONS) {
+                if (line.contains(complaint)) {
+                    return true;
+                }
             }
         }
         return false;
@@ -689,16 +696,65 @@ public final class CasanovoInstaller {
         return null;
     }
 
+    /** The GPU-sensitive trio, in the order the signature below lists them. */
+    private static final List<String> TORCH_STACK = List.of("torch", "torchvision", "torchaudio");
+
     /**
      * A compact, comparable signature of the GPU-sensitive trio's installed
      * versions (read from {@code dist-info} metadata via {@link PyVenv} — no
      * Python is launched). Includes the local build segment, so a CUDA-to-CPU
      * swap (e.g. {@code 2.5.1+cu121} -> {@code 2.12.0}) registers as a change.
+     *
+     * <p>All three, not torch alone: an upgrade that moves torch and leaves torchvision on the
+     * old build is the ABI mismatch that crashes Casanovo on import, and a torch-only signature
+     * calls that "unchanged". {@link #hasGpuTorchBuild} is asked about {@link #torchSignature}
+     * instead, so no companion's {@code +cu} suffix can answer for torch.</p>
      */
     private static String torchStackSignature(Path venvRoot) {
-        // torch alone: it is the only one of the three this application installs, and testing the
-        // combined string for a CUDA build was satisfied by any package's "+cu" suffix.
+        StringBuilder signature = new StringBuilder();
+        for (String pkg : TORCH_STACK) {
+            if (signature.length() > 0) {
+                signature.append(' ');
+            }
+            signature.append(pkg).append('=')
+                    .append(PyVenv.packageVersion(venvRoot, pkg).orElse("?"));
+        }
+        return signature.toString();
+    }
+
+    /** Just torch's own version, for deciding whether the installed build has a GPU backend. */
+    private static String torchSignature(Path venvRoot) {
         return "torch=" + PyVenv.packageVersion(venvRoot, "torch").orElse("?");
+    }
+
+    /**
+     * Warn about a torchvision/torchaudio left on a build tag torch no longer carries. This
+     * installer only ever installs torch, so it does not remove packages it did not put there,
+     * but that pairing is what faults on import — and saying nothing leaves the user hunting it.
+     */
+    private static void warnAboutStaleCompanions(Path venvRoot, Logger log) {
+        String torchVersion = PyVenv.packageVersion(venvRoot, "torch").orElse(null);
+        if (torchVersion == null) {
+            return;
+        }
+        for (String pkg : TORCH_STACK) {
+            if (pkg.equals("torch")) {
+                continue;
+            }
+            String version = PyVenv.packageVersion(venvRoot, pkg).orElse(null);
+            if (version == null || buildTag(version).equals(buildTag(torchVersion))) {
+                continue;
+            }
+            log.info("[warn] " + pkg + " " + version + " was built for a different PyTorch than"
+                    + " the installed torch " + torchVersion + "; importing it can fault."
+                    + " Reinstall or remove it if Casanovo fails to start.");
+        }
+    }
+
+    /** The local build segment of a version ({@code 2.5.1+cu121} -> {@code cu121}), or empty. */
+    private static String buildTag(String version) {
+        int plus = version == null ? -1 : version.indexOf('+');
+        return plus < 0 ? "" : version.substring(plus + 1);
     }
 
     /**
@@ -728,6 +784,9 @@ public final class CasanovoInstaller {
                         + " CPU. This usually means an x86 (Rosetta) Python/torch was installed"
                         + " instead of the native arm64 build.");
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); // as in detectNvidiaDriver: a cancel must survive
+            log.info("[warn] The MPS availability check was interrupted.");
         } catch (Exception e) {
             log.info("[warn] Could not run the MPS availability check: " + e.getMessage());
         }
@@ -822,6 +881,11 @@ public final class CasanovoInstaller {
                     return line.trim();
                 }
             }
+        } catch (InterruptedException e) {
+            // Stop was pressed. Swallowing the interrupt would both label a real NVIDIA machine
+            // GPU-less and leave the next blocking call on this thread blind to the cancel.
+            Thread.currentThread().interrupt();
+            log.info("The nvidia-smi check was interrupted; assuming no GPU.");
         } catch (Exception e) {
             log.info("nvidia-smi not available; assuming no GPU.");
         }
@@ -901,6 +965,17 @@ public final class CasanovoInstaller {
         }
     }
 
+    /**
+     * The runner install commands use. The idle limit exists only to <em>ask</em> the user
+     * whether to keep waiting, so with no handler to ask there is nothing to do but wait:
+     * killing uv mid-install after ten silent minutes (a slow link, an antivirus scanning the
+     * venv) would leave the wiped {@code .venv} that step 3 created and call it a failure.
+     */
+    private static Runner installRunner(Logger log, StallHandler stallHandler) {
+        return new Runner(log, stallHandler == null ? 0 : INSTALL_STALL_WARNING_SECONDS,
+                0, stallHandler);
+    }
+
     /** Runs a command, streaming its merged output live to the logger. Not final: a test
      * substitutes a runner that records commands and returns scripted results instead of
      * launching uv. */
@@ -910,8 +985,10 @@ public final class CasanovoInstaller {
         private final long totalTimeoutSeconds;
         private final StallHandler stallHandler;
 
+        /** A runner with no deadline of its own: it waits for the command however long it
+         * takes. Commands that need a limit ask for one with the overloads below. */
         Runner(Logger log) {
-            this(log, 60);
+            this(log, 0);
         }
 
         Runner(Logger log, long outputIdleTimeoutSeconds) {
@@ -1023,13 +1100,6 @@ public final class CasanovoInstaller {
                 throw e;
             }
 
-            if (reader.isAlive()) {
-                throw new IOException("command output reader did not stop after the process exited");
-            }
-            IOException readError = readFailure.get();
-            if (readError != null) {
-                throw readError;
-            }
             String text;
             synchronized (captured) {
                 text = captured.toString();
@@ -1037,6 +1107,20 @@ public final class CasanovoInstaller {
             int code = p.exitValue();
             if (code != 0) {
                 throw new CommandFailed(command, code, text);
+            }
+            // The command succeeded, so a reader still stuck on a pipe that never reached EOF
+            // (on Windows a grandchild of uv can inherit the stdout handle and outlive it), or one
+            // that recorded an IOException while tearing down, means the log above may be missing
+            // its last lines — not that a multi-gigabyte install that exited 0 failed.
+            if (reader.isAlive()) {
+                log.info("[warn] the command exited but its output reader did not stop;"
+                        + " the log above may be truncated.");
+            } else {
+                IOException readError = readFailure.get();
+                if (readError != null) {
+                    log.info("[warn] could not read all of the command's output (" + readError
+                            + "); the log above may be truncated.");
+                }
             }
             return text;
         }

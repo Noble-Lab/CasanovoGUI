@@ -24,6 +24,9 @@ public final class ConfigFile {
     private ConfigFile() {
     }
 
+    /** Any line terminator, the way {@code String.split} spells it. */
+    private static final String LINE_BREAK = "\\R";
+
     /**
      * The contents of the {@code --config} file {@code command} supplies, or {@code null} when
      * there is no such argument or the path is not a file.
@@ -46,13 +49,12 @@ public final class ConfigFile {
         return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
     }
 
-    /** The value of a top-level {@code key} in an already-read config, or {@code null}. */
-    private static String scalarIn(String text, String key) {
-        // "key:" and "key :" are the same mapping to PyYAML; requiring the colon to be glued to
-        // the key would report the run as unconfigured.
-        Pattern declaration = Pattern.compile("^(\\s*)" + Pattern.quote(key) + "\\s*:");
-        String found = null;
-        String[] lines = text.split("\\R");
+    /**
+     * The file split into lines with any UTF-8 BOM removed &mdash; the form {@link #scalarIn}
+     * scans. Separate from the scan so a reader after two keys pays for it once.
+     */
+    private static String[] normalizedLines(String text) {
+        String[] lines = text.split(LINE_BREAK);
         for (int n = 0; n < lines.length; n++) {
             // A UTF-8 BOM arrives as U+FEFF on the first line — Notepad and PowerShell both
             // write one — and would otherwise hide a key declared on line 1.
@@ -60,7 +62,18 @@ public final class ConfigFile {
                 lines[n] = lines[n].substring(1);
             }
         }
-        int rootIndent = rootIndent(lines);
+        return lines;
+    }
+
+    /**
+     * The value of a top-level {@code key} in a config already split by
+     * {@link #normalizedLines} and measured by {@link #rootIndent}, or {@code null}.
+     */
+    private static String scalarIn(String[] lines, int rootIndent, String key) {
+        // "key:" and "key :" are the same mapping to PyYAML; requiring the colon to be glued to
+        // the key would report the run as unconfigured.
+        Pattern declaration = Pattern.compile("^(\\s*)" + Pattern.quote(key) + "\\s*:");
+        String found = null;
         for (String line : lines) {
             Matcher declared = declaration.matcher(line);
             if (!declared.find() || declared.group(1).length() != rootIndent) {
@@ -103,25 +116,13 @@ public final class ConfigFile {
         return token.equals("---") || token.equals("...");
     }
 
-    /**
-     * {@code predict_batch_size} from the run's {@code --config} YAML (the exact file Casanovo
-     * reads). Defaults to 1024 &mdash; Casanovo's own default &mdash; when absent or unreadable.
-     */
-    public static int predictBatchSize(CasanovoCommand command) {
-        try {
-            return batchSizeIn(configText(command));
-        } catch (IOException ignored) {
-            return DEFAULT_BATCH_SIZE; // Casanovo's own default
-        }
-    }
-
     /** Casanovo's own {@code predict_batch_size} default, used when the file does not set one. */
     private static final int DEFAULT_BATCH_SIZE = 1024;
 
-    private static int batchSizeIn(String text) {
+    /** A scanned {@code predict_batch_size} as a number, or Casanovo's own default. */
+    private static int batchSize(String scanned) {
         try {
-            String value = text == null ? null : scalarIn(text, "predict_batch_size");
-            return value == null ? DEFAULT_BATCH_SIZE : Integer.parseInt(value);
+            return scanned == null ? DEFAULT_BATCH_SIZE : Integer.parseInt(scanned);
         } catch (NumberFormatException ignored) {
             return DEFAULT_BATCH_SIZE;
         }
@@ -182,7 +183,14 @@ public final class ConfigFile {
             // back to the default the progress bar assumes.
             return new RunValues(DeviceProbe.UNKNOWN, DEFAULT_BATCH_SIZE);
         }
-        return new RunValues(text == null ? null : scalarIn(text, "accelerator"),
-                batchSizeIn(text));
+        if (text == null) {
+            return new RunValues(null, DEFAULT_BATCH_SIZE); // no --config: nothing to read
+        }
+        // One split, one BOM strip and one indentation scan for both keys: reading the file once
+        // and then parsing it twice gives back most of what reading it once saved.
+        String[] lines = normalizedLines(text);
+        int rootIndent = rootIndent(lines);
+        return new RunValues(scalarIn(lines, rootIndent, "accelerator"),
+                batchSize(scalarIn(lines, rootIndent, "predict_batch_size")));
     }
 }

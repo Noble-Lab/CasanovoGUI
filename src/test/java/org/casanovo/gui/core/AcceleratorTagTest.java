@@ -35,6 +35,10 @@ class AcceleratorTagTest {
         return ConfigFile.forRun(command, false, "ignored", "1024").accelerator();
     }
 
+    private static int batchSize(CasanovoCommand command) {
+        return ConfigFile.forRun(command, false, "ignored", "1024").predictBatchSize();
+    }
+
     private static DeviceProbe.Report cpuOnlyReport() {
         return new DeviceProbe.Report("2.13.0+cpu", null, false, null, null,
                 List.of(), false, false, null);
@@ -131,7 +135,7 @@ class AcceleratorTagTest {
     void spaceBeforeTheColonStillCounts(@TempDir Path dir) throws Exception {
         Path file = config(dir, "accelerator : cpu\npredict_batch_size\t: 256\n");
         assertEquals("cpu", accelerator(withConfig(file)));
-        assertEquals(256, ConfigFile.predictBatchSize(withConfig(file)));
+        assertEquals(256, batchSize(withConfig(file)));
     }
 
     @Test
@@ -144,7 +148,7 @@ class AcceleratorTagTest {
                   predict_batch_size: 64
                 """);
         assertEquals("cpu", accelerator(withConfig(file)));
-        assertEquals(64, ConfigFile.predictBatchSize(withConfig(file)));
+        assertEquals(64, batchSize(withConfig(file)));
     }
 
     @Test
@@ -156,7 +160,7 @@ class AcceleratorTagTest {
                 + "...\n");
 
         assertEquals("cpu", accelerator(withConfig(file)));
-        assertEquals(64, ConfigFile.predictBatchSize(withConfig(file)));
+        assertEquals(64, batchSize(withConfig(file)));
     }
 
     @Test
@@ -169,7 +173,7 @@ class AcceleratorTagTest {
                   predict_batch_size: 64
                 """);
         assertNull(accelerator(withConfig(file)));
-        assertEquals(1024, ConfigFile.predictBatchSize(withConfig(file)), "Casanovo's own default");
+        assertEquals(1024, batchSize(withConfig(file)), "Casanovo's own default");
     }
 
     @Test

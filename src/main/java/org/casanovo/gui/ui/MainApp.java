@@ -154,6 +154,8 @@ public class MainApp extends Application {
 
     private volatile boolean installing = false;
     private volatile Thread installerThread;
+    /** Set while a Limelight upload runs: a busy state of its own, with no cancel. */
+    private volatile boolean uploading = false; // limelight
     private volatile boolean checkpointErrorSeen = false;
 
     // The device check that precedes a run: it is asynchronous, so it counts as a busy state
@@ -161,6 +163,13 @@ public class MainApp extends Application {
     // onRun() and the job actually starting.
     private volatile boolean checkingDevice = false;
     private volatile boolean deviceCheckCancelled = false;
+    /**
+     * Set when a device block was answered with a reinstall. The offer is then withheld until a
+     * check passes: where uv is too old for {@code --torch-backend} the installer falls back to
+     * an index that tops out at CUDA 12.1, so for a GPU newer than that the rebuilt environment
+     * resolves the same wheel and blocks again — an unbounded multi-gigabyte loop.
+     */
+    private boolean reinstalledForDeviceBlock;
 
     /** Where "Load Example MS/MS Data" put the example, reused across clicks in one session. */
     private Path exampleRunFolder;
@@ -196,7 +205,7 @@ public class MainApp extends Application {
     @Override
     public void start(Stage primaryStage) {
         this.stage = primaryStage;
-        limelight = new LimelightController(stage, settings, () -> console, config, () -> busyReason() != null, b -> { installing = b; setBusy(b); }); // limelight
+        limelight = new LimelightController(stage, settings, () -> console, config, () -> busyReason() != null, b -> { uploading = b; setBusy(b); }); // limelight
         Themes.apply(settings.getTheme());
         console = makeConsole(settings.isColoredConsole());
         try (java.io.InputStream icon = getClass().getResourceAsStream("/org/casanovo/gui/icon.png")) {
@@ -659,7 +668,7 @@ public class MainApp extends Application {
             // A different executable or Conda environment is a different PyTorch: the cached
             // device report describes the one that was just replaced.
             DeviceProbe.invalidate();
-            managedInstallAvailable = false; // recomputed by the next background update check
+            refreshManagedInstallAsync(); // a different executable may or may not still be ours
             refreshSettingsLabel();
             fetchCasanovoVersionAsync(); // the executable/env may have changed — re-resolve the version
             refreshPreview();
@@ -726,6 +735,7 @@ public class MainApp extends Application {
     private String busyReason() {
         return isJobRunning() ? "a run is in progress"
                 : installing ? "an install is in progress"
+                : uploading ? "an upload to Limelight is in progress" // limelight
                 : convertingRaw ? "a file conversion is in progress"
                 : checkingDevice ? "the compute device is being checked"
                 : viewPane.runningProperty().get() ? "a mapping is in progress"
@@ -1038,7 +1048,10 @@ public class MainApp extends Application {
         checkingDevice = false;
         deviceCheckThread = null;
         setBusy(false);
-        boolean somethingElseRunning = isJobRunning() || convertingRaw;
+        // busyReason() is the shared predicate, and checkingDevice is already cleared above, so
+        // it answers exactly the question this asks — including the states a hand-listed subset
+        // (an install, a Limelight upload, a mapping) would silently re-enable the window under.
+        boolean somethingElseRunning = busyReason() != null;
         updateRunningState(somethingElseRunning);
         if (outputLinkWasVisible && !somethingElseRunning) {
             showOpenOutputLink(true); // nothing replaced the last run's results
@@ -1096,6 +1109,7 @@ public class MainApp extends Application {
             if (verdict.status() == DeviceProbe.Status.WARN && !verdict.detail().isEmpty()) {
                 console.appendLine("[warn] " + verdict.detail());
             }
+            reinstalledForDeviceBlock = false; // this environment works; a future block is new
             buildThenRun(pane, runValues);
             return;
         }
@@ -1111,7 +1125,8 @@ public class MainApp extends Application {
         // that supplies its own --config as externally configured, and switching the GUI's
         // accelerator would then change nothing at all.
         boolean canUseCpu = verdict.offerCpu() && guiOwnsConfig;
-        boolean canReinstall = verdict.offerReinstall() && managedInstall && gpuVisible;
+        boolean reinstallOffered = verdict.offerReinstall() && managedInstall && gpuVisible;
+        boolean canReinstall = reinstallOffered && !reinstalledForDeviceBlock;
         if (!canUseCpu && !canReinstall) {
             alert(Alert.AlertType.ERROR, "Cannot use the selected device",
                     verdict.summary() + "\n\n" + verdict.detail());
@@ -1127,6 +1142,16 @@ public class MainApp extends Application {
                     + "reinstall would resolve the same CPU build. Select 'cpu' or 'auto' in "
                     + "Parameters → Accelerator, or check the driver first.");
             console.appendLine("[device] No NVIDIA driver detected; a reinstall would not help.");
+        }
+        if (reinstallOffered && reinstalledForDeviceBlock) {
+            message.append("\n\nCasanovo was already reinstalled once for this block and the "
+                    + "PyTorch it installed still cannot be used here, so reinstalling again "
+                    + "would resolve the same wheel. Select 'cpu' in Parameters → Accelerator; if "
+                    + "this GPU needs a newer CUDA build, update uv — the installer falls back to "
+                    + "a CUDA 12.1 index when uv is too old to pick a backend itself — and "
+                    + "reinstall from Settings.");
+            console.appendLine("[device] A reinstall was already tried for this block; "
+                    + "not offering it again.");
         }
         ButtonType reinstall = new ButtonType("Reinstall Casanovo");
         ButtonType useCpu = new ButtonType("Run on the CPU instead");
@@ -1154,6 +1179,7 @@ public class MainApp extends Application {
         ButtonType choice = ask.showAndWait().orElse(cancel);
         if (choice == reinstall) {
             console.appendLine("[device] Reinstalling Casanovo with a driver-matched PyTorch\u2026");
+            reinstalledForDeviceBlock = true; // one attempt per block, so a bad match cannot loop
             // installAll() clears the device-probe cache, so re-entering onRun re-probes the
             // rebuilt environment rather than trusting the verdict that sent us here.
             runInstall(this::onRun);
@@ -2104,6 +2130,12 @@ public class MainApp extends Application {
             }
             return;
         }
+        if (uploading) { // limelight
+            // The upload has no cancel machinery, so saying "Stopping…" would be a lie — and it
+            // is not an install, which is what the shared busy flag used to make it look like.
+            noteBusy("The Limelight upload cannot be stopped; it will finish on its own.");
+            return;
+        }
         if (installing) {
             statusLabel.setText("Stopping installation…");
             Thread t = installerThread;
@@ -2357,6 +2389,10 @@ public class MainApp extends Application {
         dialog.setHeaderText("Copy this into a bug report.");
         dialog.getDialogPane().setContent(area);
         dialog.setResizable(true);
+        // Not the Alert default (APPLICATION_MODAL): the probe this waits on can hang — a wedged
+        // driver, a stalled `conda run` — and a modal dialog would block input to the owner
+        // window, taking with it the Stop button that is the only way to cancel the probe.
+        dialog.initModality(javafx.stage.Modality.NONE);
         if (stage != null) {
             dialog.initOwner(stage);
         }
@@ -2498,6 +2534,23 @@ public class MainApp extends Application {
                 onUpdateOutcome(outcome, manual);
             });
         }, "update-checker");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * Re-answer "is the configured executable the venv we manage?" &mdash; the question
+     * {@link #canSelfUpdate} needs and cannot ask on the FX thread, because
+     * {@link CasanovoInstaller#managedVenvRoot} touches the filesystem. Clearing the answer
+     * instead would hide the in-app "Update Casanovo" button for a genuinely managed install
+     * until the next update check happened to run.
+     */
+    private void refreshManagedInstallAsync() {
+        Thread t = new Thread(() -> {
+            boolean managed = CasanovoInstaller.managedVenvRoot(
+                    settings.getCasanovoExecutable(), settings.isUseConda()).isPresent();
+            Platform.runLater(() -> managedInstallAvailable = managed);
+        }, "managed-install-check");
         t.setDaemon(true);
         t.start();
     }

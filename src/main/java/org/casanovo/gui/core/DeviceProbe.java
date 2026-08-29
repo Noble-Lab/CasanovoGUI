@@ -729,20 +729,35 @@ public final class DeviceProbe {
         }
     }
 
+    /**
+     * The prefix {@code device_probe.py} puts on every field line, and the only lines this
+     * parser reads. Must match {@code MARKER} in that script (and the CI smoke test, which
+     * parses the same output).
+     */
+    static final String MARKER = "casanovo-probe:";
+
     /** Parse the probe's {@code key=value} lines. Package-private so tests can exercise it directly. */
     static Report parse(String output) {
         Map<String, String> values = new LinkedHashMap<>();
         for (String line : output.split("\\R")) {
-            int eq = line.indexOf('=');
+            // Only the script's own marked lines: stdout and stderr are merged here, and a
+            // `conda run` interpreter shares the stream with the environment's banners and
+            // warnings, so an unmarked "key=value" belongs to something else. Reading those let
+            // an unrelated "error=" fail a healthy probe and an unrelated "cuda_available=true"
+            // invent a device that would suppress a real block.
+            if (!line.startsWith(MARKER)) {
+                continue;
+            }
+            String field = line.substring(MARKER.length());
+            int eq = field.indexOf('=');
             if (eq > 0) {
-                values.put(line.substring(0, eq).trim(), line.substring(eq + 1).trim());
+                values.put(field.substring(0, eq).trim(), field.substring(eq + 1).trim());
             }
         }
-        if (values.containsKey("error")) {
-            return failed(values.get("error"));
-        }
         if (!values.containsKey("torch")) {
-            return failed("the probe produced no output");
+            // The script emits error= only when torch cannot be imported, and stops there, so a
+            // report without a torch line is a failed probe whatever else it says.
+            return failed(values.getOrDefault("error", "the probe produced no output"));
         }
         String cudaBuild = emptyToNull(values.get("cuda_build"));
         List<String> archList = new ArrayList<>();

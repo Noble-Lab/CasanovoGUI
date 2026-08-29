@@ -42,7 +42,7 @@ import java.util.regex.Pattern;
  *
  * <p><b>Removal recipe.</b> To remove the feature entirely: delete the three Limelight files
  * ({@code core/LimelightUploader.java}, {@code ui/LimelightDialog.java}, this file) and revert
- * the five {@code // limelight}-tagged lines in {@code MainApp.java}. Nothing else is touched —
+ * the eight {@code // limelight}-tagged lines in {@code MainApp.java}. Nothing else is touched —
  * {@code CasanovoRunner}, {@code Settings}, {@code SettingsDialog} and the run bar are untouched.</p>
  *
  * <p><b>Design choices.</b> This controller owns its File-menu {@link MenuItem} (initially
@@ -50,8 +50,10 @@ import java.util.regex.Pattern;
  * {@code org/casanovo/gui/limelight} (never touches {@code Settings.java}), and its own process
  * runner ({@link ProcessBuilder} + {@link Os#applyNativeEnv} + {@code redirectErrorStream} + a
  * daemon reader thread reproducing {@code CasanovoRunner}'s {@code \r}/{@code \n} split, with no
- * cancel machinery). Mutual exclusion reuses MainApp's {@code installing} busy flag via the
- * injected {@code setAppBusy}; the handler bails when {@code appBusy} is set. {@code console} is a
+ * cancel machinery). Mutual exclusion goes through MainApp's own {@code uploading} busy flag
+ * via the injected {@code setAppBusy}; the handler bails when {@code appBusy} is set. That flag
+ * is the upload's own — sharing {@code installing} made Stop announce "Stopping installation…"
+ * for an upload it cannot stop, and refused unrelated actions as "an install is in progress". {@code console} is a
  * {@link Supplier} because {@code MainApp.console} is reassigned by {@code swapConsole}, so it is
  * always resolved fresh, never cached.</p>
  *

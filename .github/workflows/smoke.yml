@@ -158,14 +158,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          torch="$(sed -n 's/^torch=//p' probe.txt)"
-          cuda_build="$(sed -n 's/^cuda_build=//p' probe.txt)"
-          mps_built="$(sed -n 's/^mps_built=//p' probe.txt)"
+          torch="$(sed -n 's/^casanovo-probe:torch=//p' probe.txt)"
+          cuda_build="$(sed -n 's/^casanovo-probe:cuda_build=//p' probe.txt)"
+          mps_built="$(sed -n 's/^casanovo-probe:mps_built=//p' probe.txt)"
           echo "resolved torch=$torch cuda_build='$cuda_build' mps_built=$mps_built"
 
-          # A failed probe reports error= and exits 0, leaving every field empty — which reads
+          # A failed probe reports casanovo-probe:error= and exits 0, leaving every field empty — which reads
           # exactly like a correct CPU wheel. Assert something positive before asserting absence.
-          if grep -q '^error=' probe.txt || [ -z "$torch" ]; then
+          if grep -q '^casanovo-probe:error=' probe.txt || [ -z "$torch" ]; then
             echo "::error::the device probe did not report a PyTorch build:"
             cat probe.txt
             exit 1

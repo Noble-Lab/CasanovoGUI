@@ -190,10 +190,12 @@ public final class RemoteInstaller {
         // parsing it, or the failure was something else and must not trigger a second install.
         // grep matches per line, which is the point: the flag and the complaint about it have to
         // be in the same sentence, or an unrelated failure elsewhere in a multi-minute log would
-        // pair up with a note that merely mentions the flag.
+        // pair up with a note that merely mentions the flag. The alternation is generated from
+        // that method's own list rather than transcribed, so the two cannot drift apart.
+        String complaints = String.join("|", CasanovoInstaller.TORCH_BACKEND_REJECTIONS);
         lines.add("  if ! tr 'A-Z' 'a-z' <\"$UVLOG\" | grep -qE "
-                + "'torch-backend.*(unexpected argument|unrecognized|unknown option|preview)"
-                + "|(unexpected argument|unrecognized|unknown option|preview).*torch-backend'; then");
+                + "'torch-backend.*(" + complaints + ")"
+                + "|(" + complaints + ").*torch-backend'; then");
         lines.add("    rm -f \"$UVLOG\"; exit 6");
         lines.add("  fi");
         lines.add("  echo 'uv rejected --torch-backend; falling back to driver detection'");

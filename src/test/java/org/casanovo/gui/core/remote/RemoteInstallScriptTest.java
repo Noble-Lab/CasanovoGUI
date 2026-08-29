@@ -1,5 +1,6 @@
 package org.casanovo.gui.core.remote;
 
+import org.casanovo.gui.core.CasanovoInstaller;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -20,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Runs the generated remote-install shell against a stub {@code uv}.
@@ -163,6 +165,25 @@ class RemoteInstallScriptTest {
     private static void requireBash() {
         assertNotNull(BASH, "a working bash is required to verify the generated remote-install "
                 + "script; none of " + BASH_CANDIDATES + " ran");
+    }
+
+    @Test
+    @DisplayName("The remote grep and CI both look for the installer's own list of uv complaints")
+    void theRejectionPhrasesHaveOnePlaceToChange() throws IOException {
+        // The rule "which uv complaint means the flag was rejected" is applied in three places:
+        // CasanovoInstaller.rejectedTheFlag, the grep in the script below, and the CI smoke test.
+        // The script generates its alternation from the constant; CI cannot, so assert it.
+        String script = String.join(SEP, RemoteInstaller.casanovoInstallLines(INDEX));
+        for (String phrase : CasanovoInstaller.TORCH_BACKEND_REJECTIONS) {
+            assertTrue(script.contains(phrase), "the remote script must look for: " + phrase);
+        }
+        Path workflow = Path.of(".github", "workflows", "smoke.yml");
+        assumeTrue(Files.isRegularFile(workflow), "only runs from the repository root");
+        String yaml = Files.readString(workflow, StandardCharsets.UTF_8);
+        for (String phrase : CasanovoInstaller.TORCH_BACKEND_REJECTIONS) {
+            assertTrue(yaml.contains(phrase),
+                    "smoke.yml would pass on a rule the application no longer applies: " + phrase);
+        }
     }
 
     @Test

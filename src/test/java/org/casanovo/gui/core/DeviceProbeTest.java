@@ -24,6 +24,20 @@ class DeviceProbeTest {
     // auto and unsupported-accelerator branches do not consult the platform and use the plain
     // two-argument overload.
 
+    /** Platform line separator, so the marked probe output below needs no escapes. */
+    private static final String NL = System.lineSeparator();
+
+    /**
+     * Parse probe output written the way {@code device_probe.py} writes it: every field line
+     * carries {@link DeviceProbe#MARKER}. Tests state the fields; this adds the marker.
+     */
+    private static DeviceProbe.Report probe(String fields) {
+        StringBuilder marked = new StringBuilder();
+        fields.lines().filter(line -> !line.isBlank())
+                .forEach(line -> marked.append(DeviceProbe.MARKER).append(line).append(NL));
+        return DeviceProbe.parse(marked.toString());
+    }
+
     /** A CPU-only wheel: no CUDA and no Metal compiled in. */
     private static DeviceProbe.Report cpuOnly() {
         return new DeviceProbe.Report("2.13.0+cpu", null, false, null, null,
@@ -239,9 +253,9 @@ class DeviceProbeTest {
         // report and validate() turns it into a warning. A blank or missing reason — an
         // interrupted file read throws with no message at all — would otherwise produce an
         // all-empty "successful" report that caches as a CPU-only build for the whole session.
-        assertNotNull(DeviceProbe.parse("error=").error(), "a blank reason is still a failure");
+        assertNotNull(probe("error=").error(), "a blank reason is still a failure");
         assertNotNull(DeviceProbe.parse("").error(), "no output at all is a failure");
-        assertTrue(DeviceProbe.validate("gpu", DeviceProbe.parse("error="), false).status()
+        assertTrue(DeviceProbe.validate("gpu", probe("error="), false).status()
                 == DeviceProbe.Status.WARN, "and a failed report never blocks a run");
     }
 
@@ -407,7 +421,7 @@ class DeviceProbeTest {
     @Test
     @DisplayName("Probe output is parsed into a report")
     void parsesProbeOutput() {
-        DeviceProbe.Report r = DeviceProbe.parse("""
+        DeviceProbe.Report r = probe("""
                 torch=2.13.0+cu130
                 cuda_build=13.0
                 cuda_available=True
@@ -431,7 +445,7 @@ class DeviceProbeTest {
     void parsesCpuOnlyBuild() {
         // Exactly what a `+cpu` wheel reports — the state in which PyTorch raises
         // "Cannot access accelerator device when none is available."
-        DeviceProbe.Report r = DeviceProbe.parse("""
+        DeviceProbe.Report r = probe("""
                 torch=2.13.0+cpu
                 cuda_build=
                 cuda_available=False
@@ -446,11 +460,35 @@ class DeviceProbeTest {
     @Test
     @DisplayName("A probe that could not run is reported as an error, not as 'no devices'")
     void parsesFailure() {
-        DeviceProbe.Report r = DeviceProbe.parse("error=cannot import torch: No module named 'torch'");
+        DeviceProbe.Report r = probe("error=cannot import torch: No module named 'torch'");
         assertNotNull(r.error());
         assertTrue(r.error().contains("No module named"));
 
         assertNotNull(DeviceProbe.parse("").error(), "empty output is a failure, not a CPU machine");
+    }
+
+    @Test
+    @DisplayName("An unmarked key=value line belongs to something else, not to the probe")
+    void unmarkedLinesAreNotProbeFields() {
+        // The probe merges stderr into stdout, and `conda run` shares that stream with the
+        // environment's own banners and warnings. Reading unmarked lines let a plugin's
+        // "error=..." fail a healthy probe outright, and a stray "cuda_available=true" invent a
+        // device that would have suppressed a real block.
+        DeviceProbe.Report r = DeviceProbe.parse(
+                "error=a conda plugin could not load" + NL
+                        + "cuda_available=true" + NL
+                        + DeviceProbe.MARKER + "torch=2.13.0+cpu" + NL
+                        + DeviceProbe.MARKER + "cuda_available=False" + NL);
+        assertNull(r.error(), "the marked torch line says the probe itself ran");
+        assertEquals("2.13.0+cpu", r.torchVersion());
+        assertFalse(r.cudaAvailable(), "the unmarked line must not invent a device");
+    }
+
+    @Test
+    @DisplayName("Output with no marked field at all is a failed probe, not a CPU machine")
+    void unmarkedOutputAloneIsAFailure() {
+        assertNotNull(DeviceProbe.parse("torch=2.13.0+cpu").error(),
+                "an unmarked line is not the probe reporting a build");
     }
 
     @Test
