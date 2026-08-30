@@ -16,7 +16,6 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
-import javafx.scene.control.Tooltip;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.DirectoryChooser;
@@ -81,7 +80,7 @@ final class MultiFileField {
         link.setManaged(false);
         link.setVisible(false);
         link.setPadding(Insets.EMPTY);
-        link.setTooltip(new Tooltip("Click to view or edit the selected files"));
+        link.setTooltip(FxUtils.tooltip("Click to view or edit the selected files"));
         link.setOnAction(e -> {
             link.setVisited(false);
             showListDialog();

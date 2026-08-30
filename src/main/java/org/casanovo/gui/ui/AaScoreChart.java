@@ -117,7 +117,9 @@ public class AaScoreChart extends BorderPane implements ImageExport.HiResExporta
         // First row shows only the mean and peptide score; the sequence is shown by the residue
         // circles below (and in the window title bar).
         String mean = (m > 0) ? String.format(Locale.US, "mean amino acid score %.3f", sum / m) : "";
-        String score = hasSub ? subtitleText.replaceFirst("(?i)peptide score:?\\s*", "peptide score ") : "";
+        // subtitleText arrives as "<Label>: <value>" (e.g. "Casanovo peptide score: 0.9029"); fold it
+        // into the headline as a lowercase mid-sentence clause instead of a second capitalized title.
+        String score = hasSub ? decapitalize(subtitleText.replaceFirst(":\\s*", " ")) : "";
         String headline = mean.isEmpty() ? score : (score.isEmpty() ? mean : mean + ", " + score);
         title.setText(headline);
         canvas.setWidth(AXIS_W + 2 * PAD + n * CELL_W);
@@ -127,6 +129,11 @@ public class AaScoreChart extends BorderPane implements ImageExport.HiResExporta
 
     private int residues() {
         return Math.min(sequence.length(), scores.length);
+    }
+
+    /** Lowercase just the first character, so the clause reads naturally mid-sentence. */
+    private static String decapitalize(String s) {
+        return s.isEmpty() ? s : Character.toLowerCase(s.charAt(0)) + s.substring(1);
     }
 
     private void draw() {

@@ -14,7 +14,6 @@ import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
-import javafx.scene.control.Tooltip;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -88,7 +87,7 @@ public class SettingsDialog {
         useCondaCheck.setMinWidth(Region.USE_PREF_SIZE); // never truncate the checkbox label
 
         Button installButton = new Button("Install Casanovo");
-        installButton.setTooltip(new Tooltip(
+        installButton.setTooltip(FxUtils.tooltip(
                 "Download a private Python runtime and install Casanovo into ~/.casanovo-gui "
                         + "(needs internet; takes a few minutes)."));
         // Each path field shares its row with a right-aligned Browse button (the executable row also

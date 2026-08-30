@@ -182,14 +182,27 @@ final class FxUtils {
         }
     }
 
-    /** A tooltip tuned for form help text: wraps, shows promptly, and stays up long enough to read. */
-    static Tooltip helpTooltip(String text) {
+    /**
+     * The one place tooltips are built: wraps, shows promptly, and stays up long enough to read.
+     * JavaFX's own default hides after 5 seconds, which is too short for anything but a few words.
+     */
+    static Tooltip tooltip(String text) {
+        return tooltip(text, 320);
+    }
+
+    /** {@link #tooltip(String)} with an explicit wrap width. */
+    static Tooltip tooltip(String text, double maxWidth) {
         Tooltip tip = new Tooltip(text);
         tip.setWrapText(true);
-        tip.setMaxWidth(360);
-        tip.setShowDelay(Duration.millis(400));
+        tip.setMaxWidth(maxWidth);
+        tip.setShowDelay(Duration.millis(300));
         tip.setShowDuration(Duration.seconds(30));
         return tip;
+    }
+
+    /** A tooltip tuned for form help text — wider, for the longer prose the option rows carry. */
+    static Tooltip helpTooltip(String text) {
+        return tooltip(text, 360);
     }
 
     static TextField wideField() {

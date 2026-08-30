@@ -24,7 +24,6 @@ import javafx.scene.control.SplitPane;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TextField;
-import javafx.scene.control.Tooltip;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
@@ -226,7 +225,7 @@ public class MainApp extends Application {
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         for (CommandPane p : panes) {
             Tab tab = new Tab(p.getTitle(), p.getContent());
-            tab.setTooltip(tabTip(tabTooltip(p.getTitle())));
+            tab.setTooltip(FxUtils.tooltip(tabTooltip(p.getTitle())));
             tabs.getTabs().add(tab);
         }
         viewPane = new ViewPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s),
@@ -239,7 +238,7 @@ public class MainApp extends Application {
             consoleFrame.setState(b ? ConsoleBorderEffect.State.RUNNING : ConsoleBorderEffect.State.IDLE);
         });
         viewTab = new Tab("View", viewPane);
-        viewTab.setTooltip(tabTip("Map the de novo peptides in an mzTab back to proteins in a reference "
+        viewTab.setTooltip(FxUtils.tooltip("Map the de novo peptides in an mzTab back to proteins in a reference "
                 + "FASTA, with coverage and per-protein views."));
         tabs.getTabs().add(viewTab);
         tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
@@ -543,9 +542,9 @@ public class MainApp extends Application {
                 "Edit Casanovo's run parameters; the GUI writes them to the generated --config (Ctrl+P)."));
 
         runButton.getStyleClass().add("accent");
-        runButton.setTooltip(new javafx.scene.control.Tooltip("Run the current Casanovo command (Ctrl+R)"));
+        runButton.setTooltip(FxUtils.tooltip("Run the current Casanovo command (Ctrl+R)"));
         stopButton.getStyleClass().add("danger");
-        stopButton.setTooltip(new javafx.scene.control.Tooltip("Stop the running Casanovo process (Esc)"));
+        stopButton.setTooltip(FxUtils.tooltip("Stop the running Casanovo process (Esc)"));
         commandPreview.setEditable(false);
         // The command preview is read-only; skip it in tab order.
         commandPreview.setFocusTraversable(false);
@@ -763,15 +762,6 @@ public class MainApp extends Application {
             return null; // a non-command tab (e.g. the Plot tab) is selected
         }
         return panes.get(idx);
-    }
-
-    /** A wrapped, slightly-delayed tooltip describing what a top-level tab does. */
-    private static Tooltip tabTip(String text) {
-        Tooltip t = new Tooltip(text);
-        t.setShowDelay(javafx.util.Duration.millis(300));
-        t.setWrapText(true);
-        t.setMaxWidth(320);
-        return t;
     }
 
     /** Tooltip text for a command tab, keyed by its title. */
@@ -1291,7 +1281,7 @@ public class MainApp extends Application {
     private void refreshSettingsLabel() {
         String base = settings.getCasanovoExecutable();
         settingsLabel.setText(base);
-        settingsLabel.setTooltip(new javafx.scene.control.Tooltip(base));
+        settingsLabel.setTooltip(FxUtils.tooltip(base));
         // Version in its own label so a long path can't truncate it (see buildExecutionReadout).
         boolean known = installedCasanovoVersion != null && !installedCasanovoVersion.isEmpty();
         casanovoVersionLabel.setText(known ? "·  Casanovo " + installedCasanovoVersion : "");

@@ -24,8 +24,68 @@ import java.util.Set;
  */
 public final class MzTabScores {
 
-    /** One PSM: its peptide {@code sequence} and its {@code search_engine_score[1]}. */
-    public record Psm(String sequence, double score) {
+    /**
+     * One PSM: its peptide {@code sequence}, its {@code search_engine_score[1]} (Casanovo's
+     * peptide score) and its length-normalized score (see {@link #normalizedScore}). The
+     * normalized score is {@code NaN} when the mzTab carries no per-residue scores.
+     */
+    public record Psm(String sequence, double score, double normScore) {
+
+        /** This PSM's value under {@code type}. */
+        public double score(ScoreType type) {
+            return type == ScoreType.NORMALIZED ? normScore : score;
+        }
+    }
+
+    /**
+     * Which confidence score a peptide is judged by.
+     *
+     * <p>Casanovo's peptide score is essentially the <em>product</em> of the per-residue scores
+     * (it carries one further factor that the mzTab does not write out), so it falls
+     * geometrically with peptide length: a single cutoff therefore demands far more per-residue
+     * confidence from a long peptide than from a short one, and long peptides are filtered out
+     * almost regardless of how well they were sequenced. The normalized score is the geometric
+     * mean of the same per-residue scores, which is on a per-residue scale and so comparable
+     * across lengths.</p>
+     */
+    public enum ScoreType {
+        /** {@code search_engine_score[1]} as Casanovo reports it: the product of per-residue scores. */
+        PEPTIDE("Casanovo peptide score"),
+        /** Geometric mean of the per-residue scores — the same quantity, per residue. */
+        NORMALIZED("Geometric mean of AA scores");
+
+        private final String label;
+
+        ScoreType(String label) {
+            this.label = label;
+        }
+
+        /** The name shown in the interface. */
+        public String label() {
+            return label;
+        }
+    }
+
+    /**
+     * The geometric mean of the per-residue scores, {@code exp(mean(log(aa)))} — Casanovo's peptide
+     * score taken per residue rather than over the whole peptide, so that peptides of different
+     * lengths can be compared on one scale. Scores are clipped to {@code [eps, 1]} exactly as
+     * Casanovo's own peptide score does, so a single zero-probability residue does not send the
+     * whole peptide to zero. Returns {@code NaN} for an empty or unparseable score list.
+     */
+    public static double normalizedScore(double[] aaScores) {
+        if (aaScores == null || aaScores.length == 0) {
+            return Double.NaN;
+        }
+        double eps = Math.ulp(1.0); // np.finfo(np.float64).eps, matching Casanovo's clip
+        double sumLog = 0.0;
+        for (double v : aaScores) {
+            if (Double.isNaN(v)) {
+                return Double.NaN;
+            }
+            sumLog += Math.log(Math.min(1.0, Math.max(eps, v)));
+        }
+        return Math.exp(sumLog / aaScores.length);
     }
 
     /** Threshold sweep: {@code thresholds[i]} -> ({@code psmCounts[i]}, {@code peptideCounts[i]}). */
@@ -40,8 +100,14 @@ public final class MzTabScores {
     public record Detailed(List<Psm> psms, Map<String, BestPsm> bestByPeptide) {
     }
 
-    /** One PSM row: all its mzTab column values, plus the parsed score and per-residue aa_scores. */
-    public record PsmRow(String[] values, double score, double[] aaScores) {
+    /** One PSM row: all its mzTab column values, plus the parsed score, normalized score, and
+     *  per-residue aa_scores. */
+    public record PsmRow(String[] values, double score, double normScore, double[] aaScores) {
+
+        /** This PSM row's value under {@code type}. */
+        public double score(ScoreType type) {
+            return type == ScoreType.NORMALIZED ? normScore : score;
+        }
     }
 
     /** The PSM rows of one peptide, with the mzTab PSM column names (best-scoring row first). */
@@ -50,6 +116,24 @@ public final class MzTabScores {
 
     private static final String SEQUENCE_COL = "sequence";
     private static final String SCORE_COL = "search_engine_score[1]";
+
+    /** Index of the per-residue score column ({@code opt_global_aa_scores}), or -1 if absent. */
+    private static int aaScoresIndex(Map<String, Integer> header) {
+        for (Map.Entry<String, Integer> en : header.entrySet()) {
+            if (en.getKey().contains("aa_scores")) {
+                return en.getValue();
+            }
+        }
+        return -1;
+    }
+
+    /** {@link #normalizedScore} of the aa_scores cell at {@code aaIdx}, or NaN when there is none. */
+    private static double normScoreOf(String[] cells, int aaIdx) {
+        if (aaIdx < 0 || aaIdx >= cells.length) {
+            return Double.NaN;
+        }
+        return normalizedScore(Peptides.parseScores(cells[aaIdx]));
+    }
 
     private MzTabScores() {
     }
@@ -64,6 +148,7 @@ public final class MzTabScores {
         List<Psm> psms = new ArrayList<>();
         int seqIdx = -1;
         int scoreIdx = -1;
+        int aaIdx = -1;
         boolean sawHeader = false;
         try (BufferedReader r = new BufferedReader(
                 new InputStreamReader(Files.newInputStream(mzTab.toPath()), StandardCharsets.UTF_8))) {
@@ -83,6 +168,7 @@ public final class MzTabScores {
                     }
                     seqIdx = s;
                     scoreIdx = sc;
+                    aaIdx = aaScoresIndex(idx);
                     sawHeader = true;
                 } else if (sawHeader && line.startsWith("PSM\t")) {
                     String[] c = line.split("\t", -1);
@@ -91,7 +177,7 @@ public final class MzTabScores {
                     }
                     double score = parse(c[scoreIdx]);
                     if (!Double.isNaN(score)) {
-                        psms.add(new Psm(c[seqIdx], score));
+                        psms.add(new Psm(c[seqIdx], score, normScoreOf(c, aaIdx)));
                     }
                 }
             }
@@ -104,13 +190,21 @@ public final class MzTabScores {
     }
 
     /**
-     * Like {@link #read} but, in the same single pass, also keeps — per bare peptide — the
-     * highest-scoring PSM's score, {@code spectra_ref}, and per-residue {@code aa_scores} (column
-     * {@code opt_global_aa_scores}, or any column whose name contains {@code aa_scores}). Only the
-     * best record per distinct peptide is retained, so memory stays proportional to distinct
-     * peptides, not to total PSMs.
+     * Like {@link #read} but, in the same single pass, also keeps — per bare peptide — the PSM
+     * that scores highest under {@code type}: its score, {@code spectra_ref}, and per-residue
+     * {@code aa_scores} (column {@code opt_global_aa_scores}, or any column whose name contains
+     * {@code aa_scores}). A peptide whose PSMs all lack a score of that kind (e.g. NORMALIZED with
+     * no aa_scores column) has no entry in the returned map. Only the best record per distinct
+     * peptide is retained, so memory stays proportional to distinct peptides, not to total PSMs.
+     *
+     * <p><b>Caveat:</b> to skip the per-PSM normalized-score computation when it will never be
+     * consulted, the returned {@link Detailed#psms}' {@code normScore} is left {@code NaN} whenever
+     * {@code type} is {@link ScoreType#PEPTIDE} — even for a PSM whose mzTab row does carry
+     * {@code aa_scores}. Only {@link #read}, and this method called with {@code NORMALIZED}, honor
+     * {@link Psm}'s general contract that {@code normScore} being {@code NaN} means the mzTab has no
+     * per-residue scores at all.</p>
      */
-    public static Detailed readWithAaScores(File mzTab) throws IOException {
+    public static Detailed readWithAaScores(File mzTab, ScoreType type) throws IOException {
         List<Psm> psms = new ArrayList<>();
         Map<String, Double> bestScore = new HashMap<>();
         Map<String, String> bestAa = new HashMap<>();
@@ -140,12 +234,7 @@ public final class MzTabScores {
                     scoreIdx = sc;
                     Integer ref = idx.get("spectra_ref");
                     refIdx = (ref == null) ? -1 : ref;
-                    for (Map.Entry<String, Integer> en : idx.entrySet()) {
-                        if (en.getKey().contains("aa_scores")) {
-                            aaIdx = en.getValue();
-                            break;
-                        }
-                    }
+                    aaIdx = aaScoresIndex(idx);
                     sawHeader = true;
                 } else if (sawHeader && line.startsWith("PSM\t")) {
                     String[] c = line.split("\t", -1);
@@ -156,10 +245,14 @@ public final class MzTabScores {
                     if (Double.isNaN(score)) {
                         continue;
                     }
-                    psms.add(new Psm(c[seqIdx], score));
+                    // Skip the split + log work when the normalized score isn't the one in use.
+                    double normScore = type == ScoreType.NORMALIZED ? normScoreOf(c, aaIdx) : Double.NaN;
+                    psms.add(new Psm(c[seqIdx], score, normScore));
                     String bare = Peptides.bare(c[seqIdx]);
-                    if (!bare.isEmpty() && score > bestScore.getOrDefault(bare, Double.NEGATIVE_INFINITY)) {
-                        bestScore.put(bare, score);
+                    double sc = type == ScoreType.NORMALIZED ? normScore : score;
+                    if (!bare.isEmpty() && !Double.isNaN(sc)
+                            && sc > bestScore.getOrDefault(bare, Double.NEGATIVE_INFINITY)) {
+                        bestScore.put(bare, sc);
                         bestAa.put(bare, aaIdx >= 0 && aaIdx < c.length ? c[aaIdx] : "");
                         bestRef.put(bare, refIdx >= 0 && refIdx < c.length ? c[refIdx] : "");
                     }
@@ -181,10 +274,12 @@ public final class MzTabScores {
 
     /**
      * Scan the PSM section and return every PSM row of {@code barePeptide} (mods stripped for the
-     * match), with the PSM column names, sorted by {@code search_engine_score[1]} descending. Each
-     * row keeps all its raw column values plus the parsed score and per-residue {@code aa_scores}.
+     * match), with the PSM column names, sorted by its score under {@code type} descending. Each
+     * row keeps all its raw column values plus the parsed score, normalized score, and per-residue
+     * {@code aa_scores}.
      */
-    public static PsmTable readPsmRowsForPeptide(File mzTab, String barePeptide) throws IOException {
+    public static PsmTable readPsmRowsForPeptide(File mzTab, String barePeptide, ScoreType type)
+            throws IOException {
         List<String> columns = new ArrayList<>();
         List<PsmRow> rows = new ArrayList<>();
         int seqIdx = -1;
@@ -208,13 +303,7 @@ public final class MzTabScores {
                     seqIdx = s;
                     Integer sc = idx.get(SCORE_COL);
                     scoreIdx = (sc == null) ? -1 : sc;
-                    aaIdx = -1;
-                    for (Map.Entry<String, Integer> en : idx.entrySet()) {
-                        if (en.getKey().contains("aa_scores")) {
-                            aaIdx = en.getValue();
-                            break;
-                        }
-                    }
+                    aaIdx = aaScoresIndex(idx);
                     columns.clear();
                     for (int i = 1; i < h.length; i++) { // drop the leading "PSH" row-type cell
                         columns.add(h[i].trim());
@@ -228,14 +317,24 @@ public final class MzTabScores {
                     double score = (scoreIdx >= 0 && scoreIdx < c.length) ? parse(c[scoreIdx]) : Double.NaN;
                     double[] aa = (aaIdx >= 0 && aaIdx < c.length)
                             ? Peptides.parseScores(c[aaIdx]) : new double[0];
-                    rows.add(new PsmRow(java.util.Arrays.copyOfRange(c, 1, c.length), score, aa));
+                    rows.add(new PsmRow(java.util.Arrays.copyOfRange(c, 1, c.length), score,
+                            normalizedScore(aa), aa));
                 }
             }
         }
         if (!sawHeader) {
             throw new IOException("No PSM section (PSH header) found in " + mzTab.getName() + ".");
         }
-        rows.sort((a, b) -> Double.compare(b.score(), a.score())); // best score first
+        // Best score first; a PSM with no score of the selected type sorts last, not first
+        // (plain Double.compare treats NaN as the largest value).
+        rows.sort((a, b) -> {
+            double sa = a.score(type);
+            double sb = b.score(type);
+            if (Double.isNaN(sa)) {
+                return Double.isNaN(sb) ? 0 : 1;
+            }
+            return Double.isNaN(sb) ? -1 : Double.compare(sb, sa);
+        });
         return new PsmTable(columns, rows);
     }
 
@@ -290,9 +389,11 @@ public final class MzTabScores {
     /**
      * For thresholds from {@code min} to {@code max} (inclusive) in steps of
      * {@code step}, count the PSMs and the distinct peptide sequences whose score
-     * is {@code >=} the threshold.
+     * under {@code type} is {@code >=} the threshold. PSMs with no score of that
+     * kind (NaN) are counted at no threshold.
      */
-    public static Curve cumulativeCounts(List<Psm> psms, double min, double max, double step) {
+    public static Curve cumulativeCounts(List<Psm> psms, ScoreType type,
+                                         double min, double max, double step) {
         if (step <= 0 || max < min) {
             throw new IllegalArgumentException(
                     "Invalid score range: min=" + min + " max=" + max + " step=" + step);
@@ -308,13 +409,14 @@ public final class MzTabScores {
         // Sort by score descending and sweep thresholds high -> low, so each PSM
         // is folded in exactly once as the threshold drops past its score.
         List<Psm> sorted = new ArrayList<>(psms);
-        sorted.sort((a, b) -> Double.compare(b.score(), a.score()));
+        sorted.removeIf(p -> Double.isNaN(p.score(type)));
+        sorted.sort((a, b) -> Double.compare(b.score(type), a.score(type)));
         Set<String> sequences = new HashSet<>();
         int j = 0;
         int psmCount = 0;
         for (int i = n - 1; i >= 0; i--) {
             double t = thresholds[i];
-            while (j < sorted.size() && sorted.get(j).score() >= t) {
+            while (j < sorted.size() && sorted.get(j).score(type) >= t) {
                 sequences.add(sorted.get(j).sequence());
                 psmCount++;
                 j++;

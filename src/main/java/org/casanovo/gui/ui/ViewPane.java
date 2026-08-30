@@ -25,6 +25,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.RadioButton;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.SeparatorMenuItem;
@@ -38,8 +39,10 @@ import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableRow;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -172,6 +175,15 @@ public class ViewPane extends BorderPane {
     private final Button faBrowse = new Button("Browse");
 
     private final CheckBox i2lCheck = new CheckBox("Treat I / L as identical");
+    // Which confidence score the "Min peptide score" cutoff (and the score plots) refer to. A pair
+    // of radio buttons on a column-spanning row rather than a labelled combo: a combo wide enough
+    // for the score names would set the settings grid's control column and so widen the whole
+    // sidebar, and this way both choices are readable without opening anything.
+    private final ToggleGroup scoreTypeGroup = new ToggleGroup();
+    private final RadioButton peptideScoreRadio =
+            new RadioButton(MzTabScores.ScoreType.PEPTIDE.label());
+    private final RadioButton normalizedScoreRadio =
+            new RadioButton(MzTabScores.ScoreType.NORMALIZED.label());
     private final Spinner<Double> scoreSpin = new Spinner<>(0.0, 1.0, 0.0, 0.05);
     private final Spinner<Integer> minLenSpin = new Spinner<>(0, 100, 0);
     private final Spinner<Integer> mismatchSpin = new Spinner<>(0, 5, 0);
@@ -207,6 +219,8 @@ public class ViewPane extends BorderPane {
             new LineChart<>(new NumberAxis(), new NumberAxis());
     private final ComboBox<String> scoreMode = new ComboBox<>();
     private MzTabScores.Curve scoreCurve; // cumulative PSM/peptide counts vs score, from ALL mzTab PSMs
+    /** The score the loaded results were computed under; labels the plots and their axes. */
+    private MzTabScores.ScoreType loadedScoreType = MzTabScores.ScoreType.NORMALIZED;
     private VBox cutoffBox; // the mapping (cutoff) plot cell — hidden when there is no mapping
     private VBox topBox;    // the top-proteins plot cell — hidden when there is no mapping
     private javafx.scene.layout.FlowPane chartsFlow; // wraps the plots; kept ≥2 columns when mapping
@@ -411,7 +425,7 @@ public class ViewPane extends BorderPane {
         scoreChart.setAnimated(false);
         scoreChart.setCreateSymbols(true);
         NumberAxis scoreX = (NumberAxis) scoreChart.getXAxis();
-        scoreX.setLabel("Peptide score");
+        scoreX.setLabel(MzTabScores.ScoreType.NORMALIZED.label());
         scoreX.setAutoRanging(false);
         scoreX.setLowerBound(0.0);
         scoreX.setUpperBound(1.0);
@@ -790,7 +804,7 @@ public class ViewPane extends BorderPane {
         intCol(proteinPeptideTable, "PSMs", PeptideRow::psms,
                 "Number of peptide-spectrum matches in the mzTab for this peptide.");
         dblCol(proteinPeptideTable, "Best score", PeptideRow::bestScore,
-                "Highest Casanovo peptide score among this peptide's PSMs.");
+                "Highest score among this peptide's PSMs, under the score selected in the mapping settings.");
         proteinViewMismatchCol = intCol(proteinPeptideTable, "Mismatches", PeptideRow::mismatches,
                 mismatchesColumnTip(true)); // refreshed per-run in applyResults from the recorded I/L setting
         proteinViewBestMatchCol = intCol(proteinPeptideTable, "Best match", PeptideRow::bestMatch,
@@ -841,7 +855,7 @@ public class ViewPane extends BorderPane {
         intCol(mappedTable, "PSMs", MappedRow::psms,
                 "Number of peptide-spectrum matches in the mzTab for this peptide.");
         dblCol(mappedTable, "Best score", MappedRow::bestScore,
-                "Highest Casanovo peptide score among this peptide's PSMs.");
+                "Highest score among this peptide's PSMs, under the score selected in the mapping settings.");
         mappedBestMatchCol = intCol(mappedTable, "Best match", MappedRow::minMismatches,
                 "Fewest substitutions needed to map this peptide to any protein (0 = an exact match somewhere).");
         strCol(mappedTable, "Proteins", MappedRow::proteins, 380,
@@ -886,7 +900,7 @@ public class ViewPane extends BorderPane {
         intCol(unmappedTable, "Length", UnmappedRow::length,
                 "Number of amino-acid residues in the peptide.");
         dblCol(unmappedTable, "Best score", UnmappedRow::bestScore,
-                "Highest Casanovo peptide score among this peptide's PSMs.");
+                "Highest score among this peptide's PSMs, under the score selected in the mapping settings.");
         unmappedTable.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
         unmappedTable.setFixedCellSize(ROW_HEIGHT);
         unmappedTable.setPlaceholder(new Label("No unmapped peptides."));
@@ -1158,7 +1172,7 @@ public class ViewPane extends BorderPane {
         }
         MzTabScores.PsmTable psms;
         try {
-            psms = MzTabScores.readPsmRowsForPeptide(loadedMzTab, bare);
+            psms = MzTabScores.readPsmRowsForPeptide(loadedMzTab, bare, loadedScoreType);
         } catch (java.io.IOException e) {
             status("Could not read PSMs for " + peptide + ": " + e.getMessage());
             return;
@@ -1179,7 +1193,7 @@ public class ViewPane extends BorderPane {
             if (refCol >= 0 && refCol < row.values().length) {
                 drivePdvRef(row.values()[refCol]);
             }
-        }, pdvVizCheck.isSelected(), proteinMatchesFor(bare), results.i2l());
+        }, pdvVizCheck.isSelected(), proteinMatchesFor(bare), results.i2l(), loadedScoreType);
     }
 
     /** Build the per-residue alignment(s) of {@code bare} against each distinct protein substring it matched. */
@@ -1279,7 +1293,7 @@ public class ViewPane extends BorderPane {
                     t.setFont(MONO_BOLD);
                     t.setFill(MISMATCH_COLOR);
                     t.setUnderline(true);
-                    Tooltip.install(t, new Tooltip("Position " + (i + 1) + ": protein " + seq.charAt(i)
+                    Tooltip.install(t, tip("Position " + (i + 1) + ": protein " + seq.charAt(i)
                             + ", de novo read " + subSite[i]));
                     line.getChildren().add(t);
                     i++;
@@ -1659,7 +1673,7 @@ public class ViewPane extends BorderPane {
     // ---- settings panel ----------------------------------------------------
 
     private ScrollPane buildSettings() {
-        Label title = new Label("Mapping settings");
+        Label title = new Label("Settings");
         title.setStyle("-fx-font-weight: bold;");
 
         // Memory: default "Auto" (0 = no -Xmx), settable from 1 GB up to this machine's RAM.
@@ -1684,11 +1698,46 @@ public class ViewPane extends BorderPane {
         GridPane grid = new GridPane();
         grid.setHgap(10);
         grid.setVgap(8);
+        // The column-spanning rows (the score radios above all) are wider than label + spinner need.
+        // Letting the label column take up the slack keeps the spinners flush with the panel's right
+        // edge instead of leaving a ragged gap there on every row.
+        // No halignment here: gridRow right-aligns its own labels, and spanRow left-aligns the
+        // spanning rows. Setting it on the column would drag the section headers right as well.
+        ColumnConstraints labelCol = new ColumnConstraints();
+        labelCol.setHgrow(Priority.ALWAYS);
+        grid.getColumnConstraints().addAll(labelCol, new ColumnConstraints());
         int r = 0;
+
+        // ---- Peptide filtering: which de novo peptides are handed to the mapper at all.
+        r = sectionHeader(grid, r, "Peptide filtering");
         gridRow(grid, r++, "Min peptide score", scoreSpin,
-                "Only map peptides whose best PSM score in the mzTab is at least this value. 0 maps every peptide.");
+                "Only map peptides whose best PSM scores at least this value, under the score "
+                        + "selected below. 0 maps every peptide.");
+        // Which score the cutoff above means. Two radios stacked on a column-spanning row, so the
+        // pair costs the sidebar no width: a combo (or the radios side by side) is wider than the
+        // label + spinner columns and would widen the whole settings panel, leaving every spinner
+        // stranded beside a gap. Vertical room here is plentiful, horizontal room is not.
+        peptideScoreRadio.setToggleGroup(scoreTypeGroup);
+        normalizedScoreRadio.setToggleGroup(scoreTypeGroup);
+        normalizedScoreRadio.setSelected(true);
+        peptideScoreRadio.setTooltip(tip(
+                "Casanovo's own peptide score, search_engine_score[1] in the mzTab."));
+        normalizedScoreRadio.setTooltip(tip(
+                "The geometric mean of that PSM's per-residue aa_scores, exp(mean(log(aa_scores)))."));
+        VBox scoreTypeRow = new VBox(4, normalizedScoreRadio, peptideScoreRadio);
+        // Pulled up, so the pair reads as belonging to the cutoff row above it.
+        GridPane.setMargin(scoreTypeRow, new Insets(-4, 0, 0, 0));
+        r = spanRow(grid, r, scoreTypeRow);
         gridRow(grid, r++, "Min peptide length", minLenSpin,
                 "Skip peptides shorter than this many residues. 0 = no minimum length.");
+
+        // ---- Peptide mapping: how the surviving peptides are matched against the reference FASTA.
+        r = sectionHeader(grid, r, "Peptide mapping");
+        i2lCheck.setSelected(true); // treat I / L as identical by default
+        i2lCheck.setTooltip(tip(
+                "Match isoleucine (I) and leucine (L) as the same residue. Recommended for de novo peptides "
+                        + "since I and L are identical in mass."));
+        r = spanRow(grid, r, i2lCheck);
         gridRow(grid, r++, "Allowed mismatches", mismatchSpin,
                 "Maximum number of mismatched residues allowed between a peptide and a protein. 0 = exact matches only.");
         gridRow(grid, r++, "Allowed X fraction", xShareSpin,
@@ -1700,39 +1749,14 @@ public class ViewPane extends BorderPane {
                 "Auto (default) lets the JVM size the heap — no -Xmx is passed. Set 1–" + maxRamGb
                         + " GB to cap the pepmap heap (max = this machine's RAM).");
 
-        runButton.setMaxWidth(Double.MAX_VALUE);
-        stopButton.setMaxWidth(Double.MAX_VALUE);
-        HBox.setHgrow(runButton, Priority.ALWAYS);
-        HBox.setHgrow(stopButton, Priority.ALWAYS);
-        runButton.setOnAction(e -> runMapping());
-        runButton.setTooltip(tip("Run the peptide-to-protein mapping. Output files (mapping results plus a "
-                + "pepmap.log of the command and parameters) are written to a folder beside the input mzTab file."));
-        stopButton.setOnAction(e -> stop());
-        HBox runRow = new HBox(8, runButton, stopButton);
-
-        i2lCheck.setSelected(true); // treat I / L as identical by default
-        i2lCheck.setTooltip(tip(
-                "Match isoleucine (I) and leucine (L) as the same residue. Recommended for de novo peptides "
-                        + "since I and L are identical in mass."));
-
-        // Visualization (PDV) section — left-aligned controls below the parameter rows: a PDV checkbox
-        // in the same standalone style as "Treat I / L as identical", then a left-aligned MS2 tol row.
-        Separator vizSep = new Separator();
-        vizSep.setStyle("-fx-padding: 0;"); // drop the theme's separator padding
-        GridPane.setColumnSpan(vizSep, 2);
-        GridPane.setMargin(vizSep, new Insets(-3, 0, -3, 0)); // pull in the surrounding row gap
-        grid.add(vizSep, 0, r++);
-        Label vizTitle = new Label("Visualization");
-        vizTitle.setStyle("-fx-font-weight: bold;");
-        GridPane.setColumnSpan(vizTitle, 2);
-        grid.add(vizTitle, 0, r++);
+        // ---- Visualization (PDV): a checkbox, then a left-aligned MS2 tolerance row.
+        r = sectionHeader(grid, r, "Visualization");
         pdvVizCheck.setSelected(true);
         pdvVizCheck.setText("PDV"); // standalone left-aligned checkbox, like "Treat I / L as identical"
         String pdvTip = "When checked, clicking Run also opens the spectra in PDV with the PSM table "
                 + "hidden. Clicking a peptide in the results then selects its best PSM's spectrum in that PDV window.";
         pdvVizCheck.setTooltip(tip(pdvTip));
-        GridPane.setColumnSpan(pdvVizCheck, 2);
-        grid.add(pdvVizCheck, 0, r++);
+        r = spanRow(grid, r, pdvVizCheck);
         pdvTolUnit.getItems().setAll("Da", "ppm");
         pdvTolUnit.getSelectionModel().select("Da");
         pdvTolField.setPrefWidth(54);
@@ -1745,23 +1769,26 @@ public class ViewPane extends BorderPane {
         pdvTolLabel.setTooltip(tip(pdvTolTip));
         pdvTolField.setTooltip(tip(pdvTolTip));
         pdvTolUnit.setTooltip(tip(pdvTolTip));
-        // Left-aligned row (label + value + unit), spanning the grid's full width.
         HBox pdvTolControl = new HBox(8, pdvTolLabel, pdvTolField, pdvTolUnit);
         pdvTolControl.setAlignment(Pos.CENTER_LEFT);
         // MS2 tol only applies when PDV is on, so gray it out (disabled) whenever PDV is unchecked.
         pdvTolControl.disableProperty().bind(pdvVizCheck.selectedProperty().not());
-        GridPane.setColumnSpan(pdvTolControl, 2);
-        grid.add(pdvTolControl, 0, r++);
+        r = spanRow(grid, r, pdvTolControl);
+
+        runButton.setMaxWidth(Double.MAX_VALUE);
+        stopButton.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(runButton, Priority.ALWAYS);
+        HBox.setHgrow(stopButton, Priority.ALWAYS);
+        runButton.setOnAction(e -> runMapping());
+        runButton.setTooltip(tip("Run the peptide-to-protein mapping. Output files (mapping results plus a "
+                + "pepmap.log of the command and parameters) are written to a folder beside the input mzTab file."));
+        stopButton.setOnAction(e -> stop());
+        HBox runRow = new HBox(8, runButton, stopButton);
 
         Separator runSep = new Separator();
         runSep.setStyle("-fx-padding: 0;");
         VBox.setMargin(runSep, new Insets(-3, 0, -3, 0));
-        VBox box = new VBox(8,
-                title,
-                i2lCheck,
-                grid,
-                runSep,
-                runRow);
+        VBox box = new VBox(8, title, grid, runSep, runRow);
         box.setPadding(new Insets(0, 0, 0, 12));
         box.setFillWidth(true);
         settingsBox = box;
@@ -1902,13 +1929,36 @@ public class ViewPane extends BorderPane {
         g.add(control, 1, row);
     }
 
+    /**
+     * A bold section heading in the settings grid, optionally preceded by a hairline rule (every
+     * section but the first). Returns the next free row.
+     */
+    private static int sectionHeader(GridPane g, int row, String text) {
+        if (row > 0) {
+            Separator sep = new Separator();
+            sep.setStyle("-fx-padding: 0;"); // drop the theme's separator padding
+            GridPane.setMargin(sep, new Insets(-3, 0, -3, 0)); // pull in the surrounding row gap
+            row = spanRow(g, row, sep);
+        }
+        Label l = new Label(text);
+        l.setStyle("-fx-font-weight: bold;");
+        return spanRow(g, row, l);
+    }
+
+    /** Adds a node on its own settings-grid row, spanning the label and control columns. */
+    private static int spanRow(GridPane g, int row, javafx.scene.Node node) {
+        GridPane.setColumnSpan(node, 2);
+        // The label column's fillWidth defaults to true, which stretches a resizable spanning child
+        // to the column's full (grown) width; turn that off so halignment(LEFT) actually takes effect.
+        GridPane.setFillWidth(node, false);
+        GridPane.setHalignment(node, HPos.LEFT); // the label column grows; don't drift right with it
+        g.add(node, 0, row);
+        return row + 1;
+    }
+
     /** A wrapped, reasonably-snappy tooltip. */
     private static Tooltip tip(String text) {
-        Tooltip t = new Tooltip(text);
-        t.setShowDelay(javafx.util.Duration.millis(300));
-        t.setWrapText(true);
-        t.setMaxWidth(300);
-        return t;
+        return FxUtils.tooltip(text, 300);
     }
 
     /** Point the panel at {@code mzTab} (auto-fill after a successful Casanovo run). */
@@ -1985,6 +2035,8 @@ public class ViewPane extends BorderPane {
         opts.cpus = cpusSpin.getValue();
         opts.maxMemGb = maxMemSpin.getValue();
         double minScore = scoreSpin.getValue();
+        MzTabScores.ScoreType scoreType = normalizedScoreRadio.isSelected()
+                ? MzTabScores.ScoreType.NORMALIZED : MzTabScores.ScoreType.PEPTIDE;
         String pepmapOverride = settings.getPepmapJar();
 
         cancelled = false;
@@ -2000,7 +2052,8 @@ public class ViewPane extends BorderPane {
                     true, settings.getPdvJar(), consoleOut);
         }
 
-        Thread t = new Thread(() -> mapInBackground(mzTab, fasta, opts, pepmapOverride, minScore), "pepmap-mapping");
+        Thread t = new Thread(() -> mapInBackground(mzTab, fasta, opts, pepmapOverride, minScore, scoreType),
+                "pepmap-mapping");
         t.setDaemon(true);
         t.start();
     }
@@ -2063,7 +2116,7 @@ public class ViewPane extends BorderPane {
     }
 
     private void mapInBackground(File mzTab, File fasta, PepMapLauncher.Options opts, String pepmapOverride,
-                                 double minScore) {
+                                 double minScore, MzTabScores.ScoreType scoreType) {
         File pepFile = null;
         File tempDir = null;
         boolean usingTempDir = false;
@@ -2075,10 +2128,19 @@ public class ViewPane extends BorderPane {
         try {
             // 1. mzTab PSMs (optionally score-filtered) -> distinct bare peptides (mods stripped, as pepmap does).
             //    The same pass keeps each peptide's best per-residue aa_scores for the double-click chart.
-            MzTabScores.Detailed detailed = MzTabScores.readWithAaScores(mzTab);
+            MzTabScores.Detailed detailed = MzTabScores.readWithAaScores(mzTab, scoreType);
             List<MzTabScores.Psm> all = detailed.psms();
+            // NORMALIZED needs per-residue aa_scores; an mzTab without that column leaves every PSM's
+            // normalized score NaN, which silently empties the plots and Best-score cells below.
+            final boolean noAaScores = scoreType == MzTabScores.ScoreType.NORMALIZED && !all.isEmpty()
+                    && all.stream().allMatch(p -> Double.isNaN(p.normScore()));
+            if (noAaScores) {
+                Platform.runLater(() -> consoleOut.accept(
+                        "No per-residue aa_scores column in this mzTab: \""
+                                + MzTabScores.ScoreType.NORMALIZED.label() + "\" is unavailable for every PSM."));
+            }
             // Score plot uses ALL PSMs (no min-score cutoff): cumulative counts across scores 0..1.
-            final MzTabScores.Curve scoreCurveLocal = MzTabScores.cumulativeCounts(all, 0.0, 1.0, 0.05);
+            final MzTabScores.Curve scoreCurveLocal = MzTabScores.cumulativeCounts(all, scoreType, 0.0, 1.0, 0.05);
             // PSM columns that are null for every PSM are hidden from the per-residue table; report them.
             final List<String> emptyColsLocal = MzTabScores.detectEmptyPsmColumns(mzTab);
             if (!emptyColsLocal.isEmpty()) {
@@ -2086,8 +2148,11 @@ public class ViewPane extends BorderPane {
                         "PSM columns null for every PSM in the mzTab (hidden from the per-residue table): "
                                 + String.join(", ", emptyColsLocal)));
             }
+            // A PSM with no score of the selected kind (an mzTab without per-residue scores, under
+            // the normalized score) cannot be judged against the cutoff, so it is filtered out
+            // rather than silently admitted.
             List<MzTabScores.Psm> psms = minScore > 0
-                    ? all.stream().filter(p -> p.score() >= minScore).toList()
+                    ? all.stream().filter(pp -> pp.score(scoreType) >= minScore).toList()
                     : all;
             final Map<String, MzTabScores.BestPsm> bestMap = detailed.bestByPeptide();
             LinkedHashSet<String> bareSeqs = new LinkedHashSet<>();
@@ -2099,7 +2164,13 @@ public class ViewPane extends BorderPane {
             }
             if (bareSeqs.isEmpty()) {
                 Platform.runLater(() -> {
-                    status(minScore > 0 ? "No peptides at score ≥ " + minScore + "." : "No peptides found in the mzTab.");
+                    String msg = minScore > 0 ? "No peptides at score ≥ " + minScore + "." : "No peptides found in the mzTab.";
+                    if (noAaScores) {
+                        msg += " mzTab has no aa_scores column, so \"" + MzTabScores.ScoreType.NORMALIZED.label()
+                                + "\" cannot be computed — switch to \"" + MzTabScores.ScoreType.PEPTIDE.label()
+                                + "\" or set the cutoff to 0.";
+                    }
+                    status(msg);
                     setRunning(false);
                 });
                 return;
@@ -2109,9 +2180,10 @@ public class ViewPane extends BorderPane {
             // No reference FASTA provided: skip pepmap entirely and load every de novo peptide as
             // unmapped (empty mappings -> computeResults puts them all in the Unmapped table).
             if (fasta == null) {
-                Results res = computeResults(List.of(), psms, null, opts.i2l, opts.mismatches);
+                Results res = computeResults(List.of(), psms, null, opts.i2l, opts.mismatches, bestMap);
                 Platform.runLater(() -> {
                     scoreCurve = scoreCurveLocal;
+                    loadedScoreType = scoreType;
                     emptyPsmColumns = Set.copyOf(emptyColsLocal);
                     bestByPeptide = bestMap;
                     loadedMzTab = mzTab;
@@ -2148,7 +2220,7 @@ public class ViewPane extends BorderPane {
             Platform.runLater(() -> status("Mapping " + totalInput + " peptides…"));
             final File outDirFinal = outDir;
             Process p = PepMapLauncher.runMapping(jar, pepFile, fasta, outDir, opts, log,
-                    cmd -> writePepmapLog(outDirFinal, mzTab, fasta, jar, cmd, opts, minScore, log));
+                    cmd -> writePepmapLog(outDirFinal, mzTab, fasta, jar, cmd, opts, minScore, scoreType, log));
             proc = p;
             try (BufferedReader r = new BufferedReader(
                     new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
@@ -2176,9 +2248,10 @@ public class ViewPane extends BorderPane {
             } else if (exit == 0 && detail.isFile()) {
                 Platform.runLater(() -> status("Summarizing results…"));
                 List<MapRow> rows = parseDetail(detail);
-                Results res = computeResults(rows, psms, fasta, opts.i2l, opts.mismatches);
+                Results res = computeResults(rows, psms, fasta, opts.i2l, opts.mismatches, bestMap);
                 Platform.runLater(() -> {
                     scoreCurve = scoreCurveLocal;
+                    loadedScoreType = scoreType;
                     emptyPsmColumns = Set.copyOf(emptyColsLocal);
                     bestByPeptide = bestMap;
                     loadedMzTab = mzTab;
@@ -2259,7 +2332,8 @@ public class ViewPane extends BorderPane {
      * A logging failure is reported via {@code log} but never aborts the mapping.
      */
     private static void writePepmapLog(File outDir, File mzTab, File fasta, Path jar, List<String> cmd,
-                                       PepMapLauncher.Options opts, double minScore, Consumer<String> log) {
+                                       PepMapLauncher.Options opts, double minScore,
+                                       MzTabScores.ScoreType scoreType, Consumer<String> log) {
         File logFile = new File(outDir, "pepmap.log");
         StringBuilder sb = new StringBuilder();
         sb.append("pepmap mapping run\n");
@@ -2274,6 +2348,7 @@ public class ViewPane extends BorderPane {
         sb.append('\n');
         sb.append("Parameter settings:\n");
         sb.append("  Treat I/L as identical (-i2l): ").append(opts.i2l).append('\n');
+        sb.append("  Score (GUI filter):             ").append(scoreType.label()).append('\n');
         sb.append("  Min peptide score (GUI filter): ").append(minScore).append('\n');
         sb.append("  Min peptide length (-l):        ").append(opts.minLength).append('\n');
         sb.append("  Allowed mismatches (-mm):       ").append(opts.mismatches).append('\n');
@@ -2312,11 +2387,13 @@ public class ViewPane extends BorderPane {
     // ---- derive the result model (off the FX thread) -----------------------
 
     private static Results computeResults(List<MapRow> rows, List<MzTabScores.Psm> psms, File fasta, boolean i2l,
-                                          int mismatches)
+                                          int mismatches, Map<String, MzTabScores.BestPsm> bestByPeptide)
             throws IOException {
-        // PSM count + best score per bare peptide; and every distinct de novo peptide.
+        // PSM count per bare peptide, and every distinct de novo peptide. The best score per
+        // peptide under the selected type is already computed in bestByPeptide (readWithAaScores
+        // scans the whole mzTab, unfiltered, so it always covers every peptide seen here); a PSM
+        // dropped by the min-score cutoff can never have been the max, so reusing it here is exact.
         Map<String, Integer> psmByPeptide = new HashMap<>();
-        Map<String, Double> bestScore = new HashMap<>();
         LinkedHashSet<String> allPeptides = new LinkedHashSet<>();
         for (MzTabScores.Psm p : psms) {
             String key = bare(p.sequence());
@@ -2325,7 +2402,10 @@ public class ViewPane extends BorderPane {
             }
             allPeptides.add(key);
             psmByPeptide.merge(key, 1, Integer::sum);
-            bestScore.merge(key, p.score(), Math::max);
+        }
+        Map<String, Double> bestScore = new HashMap<>();
+        for (Map.Entry<String, MzTabScores.BestPsm> en : bestByPeptide.entrySet()) {
+            bestScore.put(en.getKey(), en.getValue().score());
         }
 
         // peptide -> proteins ; protein -> its detail rows ; peptide -> its detail rows.
@@ -2579,6 +2659,7 @@ public class ViewPane extends BorderPane {
         }
         scoreChart.getData().add(s);
         scoreChart.setTitle(mode);
+        ((NumberAxis) scoreChart.getXAxis()).setLabel(loadedScoreType.label());
         ((NumberAxis) scoreChart.getYAxis()).setLabel(mode + " (≥ score)");
     }
 
@@ -2707,7 +2788,7 @@ public class ViewPane extends BorderPane {
             // The axis label is truncated for long names, so show the full name on hover over the bar.
             d.nodeProperty().addListener((o, a, node) -> {
                 if (node != null) {
-                    Tooltip.install(node, new Tooltip(full));
+                    Tooltip.install(node, tip(full));
                 }
             });
             series.getData().add(d);
@@ -2750,6 +2831,7 @@ public class ViewPane extends BorderPane {
             series.getData().add(new XYChart.Data<>(res.cutoffs()[i], y));
         }
         cutoffChart.getData().add(series);
+        ((NumberAxis) cutoffChart.getXAxis()).setLabel(loadedScoreType.label());
         ((NumberAxis) cutoffChart.getYAxis()).setLabel(pct ? "Mapping rate (%)" : "Mapped peptides");
         cutoffChart.setTitle(pct ? "Mapping rate" : "Mapped peptides");
     }
@@ -2883,7 +2965,7 @@ public class ViewPane extends BorderPane {
         runButton.setDisable(r);
         stopButton.setDisable(!r);
         // Lock the inputs while a mapping runs, so the settings can't drift from what the run used.
-        for (javafx.scene.Node n : new javafx.scene.Node[]{i2lCheck, scoreSpin, minLenSpin, mismatchSpin,
+        for (javafx.scene.Node n : new javafx.scene.Node[]{i2lCheck, peptideScoreRadio, normalizedScoreRadio, scoreSpin, minLenSpin, mismatchSpin,
                 xShareSpin, cpusSpin, maxMemSpin, mzTabField, fastaField, mzBrowse, faBrowse}) {
             n.setDisable(r);
         }

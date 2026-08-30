@@ -11,7 +11,6 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
-import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
@@ -34,9 +33,9 @@ import java.util.Set;
 
 /**
  * Reusable popup showing a peptide's per-residue confidence ({@link AaScoreChart}) on top and, below
- * it, a table of every PSM for that peptide — all mzTab columns, sorted by peptide score. A single
- * window is reused across calls. The best PSM (first row) is selected by default; selecting another
- * row re-renders the chart for that PSM. Any panel can call {@link #show}.
+ * it, a table of every PSM for that peptide — all mzTab columns, sorted by the selected score. A
+ * single window is reused across calls. The best PSM (first row) is selected by default; selecting
+ * another row re-renders the chart for that PSM. Any panel can call {@link #show}.
  */
 public final class AaScorePopup {
 
@@ -48,7 +47,9 @@ public final class AaScorePopup {
     private static SplitPane psmSplit; // draggable PSM-table / protein-mapping divider
     private static boolean psmDividerInit; // set the 55/45 divider once (preserve later drags)
     private static Label pdvHint; // shown only while PDV is active (visibility set per show())
+    private static Label tableTitle; // "PSMs (sorted by ...)" — text set per show() from the score type
     private static String currentPeptide = "";
+    private static MzTabScores.ScoreType currentScoreType = MzTabScores.ScoreType.NORMALIZED;
     private static boolean hasMapping; // false for unmapped peptides → hide the protein-mapping panel
     private static java.util.function.Consumer<MzTabScores.PsmRow> onRowActivate; // double-click a row -> drive PDV
     private static VBox tableBox; // PSM-table panel (psmSplit's first item) — a field so export can snapshot it
@@ -76,11 +77,13 @@ public final class AaScorePopup {
      * invoked with the row the user double-clicks — used to drive an open PDV to that PSM's spectrum.
      * {@code pdvActive} shows a hint about navigating PSMs into PDV (only meaningful when PDV is on).
      * {@code proteinMatches} (nullable/empty) renders an alignment panel of the peptide against each
-     * distinct protein substring it mapped to, highlighting mismatches.
+     * distinct protein substring it mapped to, highlighting mismatches. {@code scoreType} names the
+     * score {@code rows} is sorted by, used to label the chart and the PSM table.
      */
     public static void show(Window owner, String peptide, List<String> columns, List<MzTabScores.PsmRow> rows,
                             Set<String> emptyColumns, java.util.function.Consumer<MzTabScores.PsmRow> onDoubleClick,
-                            boolean pdvActive, List<ProteinMatch> proteinMatches, boolean i2l) {
+                            boolean pdvActive, List<ProteinMatch> proteinMatches, boolean i2l,
+                            MzTabScores.ScoreType scoreType) {
         if (stage == null) {
             build(owner);
         }
@@ -88,6 +91,8 @@ public final class AaScorePopup {
         pdvHint.setVisible(pdvActive);
         pdvHint.setManaged(pdvActive);
         currentPeptide = peptide;
+        currentScoreType = scoreType;
+        tableTitle.setText("PSMs (sorted by " + scoreType.label() + ")");
         exportStatus.setText(""); // clear any stale "Saved …" message from a previously shown peptide
         renderAlignment(peptide, proteinMatches, i2l);
         // Unmapped peptides have no protein mapping — hide that panel (and its divider) instead of showing
@@ -116,7 +121,7 @@ public final class AaScorePopup {
             // (selecting before layout can land on the wrong row).
             MzTabScores.PsmRow best = rows.get(0);
             chart.setData(peptide, best.aaScores(),
-                    String.format(Locale.US, "Peptide score: %.4f", best.score()));
+                    String.format(Locale.US, "%s: %.4f", scoreType.label(), best.score(scoreType)));
             javafx.application.Platform.runLater(() -> {
                 table.getSelectionModel().clearAndSelect(0);
                 table.scrollTo(0);
@@ -218,14 +223,15 @@ public final class AaScorePopup {
         table.getSelectionModel().selectedItemProperty().addListener((o, a, row) -> {
             if (row != null) {
                 chart.setData(currentPeptide, row.aaScores(),
-                        String.format(Locale.US, "Peptide score: %.4f", row.score()));
+                        String.format(Locale.US, "%s: %.4f", currentScoreType.label(),
+                                row.score(currentScoreType)));
                 if (onRowActivate != null) {
                     onRowActivate.accept(row);
                 }
             }
         });
 
-        Label tableTitle = new Label("PSMs (sorted by peptide score)");
+        tableTitle = new Label();
         tableTitle.setStyle("-fx-font-weight: bold;");
         pdvHint = new Label("ⓘ Select a row, single-click it, or use ↑/↓ to navigate PSMs and show the "
                 + "selected PSM's annotated spectrum in PDV.");
@@ -260,7 +266,7 @@ public final class AaScorePopup {
         });
 
         Button exportBtn = new Button("Export image");
-        exportBtn.setTooltip(new Tooltip(
+        exportBtn.setTooltip(FxUtils.tooltip(
                 "Save the per-residue chart, PSM table, and protein alignment as a high-resolution PNG (Ctrl+S)"));
         exportBtn.setOnAction(e -> exportImage());
         exportStatus = new Label();
