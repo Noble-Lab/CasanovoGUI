@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -105,12 +106,20 @@ public class CasanovoConfig {
                 "Number of allowed missed cleavages when digesting proteins.");
         add("max_mods", "Max modifications", G_DB, Type.INT, "1", null,
                 "Max variable modifications per peptide. Blank = all isoforms.");
-        add("allowed_fixed_mods", "Allowed fixed mods", G_DB, Type.STRING, "C:C[Carbamidomethyl]", null,
-                "Comma-separated 'aa:mod_residue' fixed modifications.");
-        add("allowed_var_mods", "Allowed variable mods", G_DB, Type.STRING,
+        add("allowed_fixed_mods", "Allowed fixed mods", G_DB, Type.MOD_LIST, "C:C[Carbamidomethyl]", null,
+                "Comma-separated 'aa:mod_residue' pairs, e.g. C:C[Carbamidomethyl]. Each mod_residue "
+                        + "must be a token defined in 'Residues & modifications' (Vocabulary tab). Click "
+                        + "'Edit list...' to pick from those tokens instead of typing this by hand.");
+        // The default is Casanovo's own, byte for byte. overlayOnto only writes fields the user changed,
+        // so a shorter "sensible" default would leave an untouched field showing one modification while
+        // the run used Casanovo's full list.
+        add("allowed_var_mods", "Allowed variable mods", G_DB, Type.MOD_LIST,
                 "M:M[Oxidation],N:N[Deamidated],Q:Q[Deamidated],nterm:[Acetyl]-,nterm:[Carbamyl]-,"
                         + "nterm:[Ammonia-loss]-,nterm:[+25.980265]-", null,
-                "Comma-separated 'aa:mod_residue' variable modifications.");
+                "Comma-separated 'aa:mod_residue' pairs, e.g. M:M[Oxidation] or nterm:[Acetyl]- for an "
+                        + "N-terminal mod. Each mod_residue must be a token defined in 'Residues & "
+                        + "modifications' (Vocabulary tab). Click 'Edit list...' to pick from those tokens "
+                        + "instead of typing this by hand.");
 
         // --- Spectrum processing ---
         add("min_peaks", "Min peaks", G_SPECTRUM, Type.INT, "20", null,
@@ -321,8 +330,44 @@ public class CasanovoConfig {
         return appendKey(yaml, snippet);
     }
 
-    private static final Pattern RESIDUE_LINE = Pattern.compile("\"([^\"]+)\"\\s*:\\s*(-?[0-9.]+).*");
+    // A vocabulary line: 'token': mass. All three YAML key styles appear in the wild - double-quoted
+    // (what Casanovo ships), single-quoted, and bare - and a checklist that ignored one would tell the
+    // user to add a token they are already looking at, or worse, offer the quotes as part of the token
+    // name. The bare alternative is greedy and the mass is anchored to the end of the line (bar a
+    // comment), so a token that itself contains a colon (e.g. "[UNIMOD:1]-") is not cut in half by the
+    // first colon it happens to hold. The mass may carry an exponent or a bare leading dot.
+    private static final Pattern RESIDUE_LINE = Pattern.compile(
+            "(?:\"([^\"]+)\"|'([^']+)'|([^\"'#\\s].*?))\\s*:\\s*"
+                    // Trailing space is \s plus \p{Z}: a vocabulary pasted from a web page or a PDF
+                    // carries non-breaking spaces at the end of its lines, which \s does not match and
+                    // String.trim() does not remove - and anchoring the mass turns one into a silently
+                    // dropped residue, where the old trailing '.*' had swallowed it.
+                    + "(-?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)[\\s\\p{Z}]*(?:#.*)?");
     private static final Pattern NUMERIC_DELTA_TOKEN = Pattern.compile("\\[[+-]?[0-9.]+\\]-");
+
+    /** The twenty standard amino acids — the tokens every Casanovo checkpoint already knows. */
+    private static final Set<String> CANONICAL_RESIDUES = Set.of(
+            "G", "A", "S", "P", "V", "T", "C", "L", "I", "N",
+            "D", "Q", "K", "E", "M", "H", "F", "R", "Y", "W");
+
+    /** Token to mass for a {@code residues} vocabulary block, in file order, repeated lines collapsed. */
+    private static Map<String, String> parseResidues(String residues) {
+        LinkedHashMap<String, String> massByToken = new LinkedHashMap<>();
+        for (String line : residues.split("\\R")) {
+            Matcher m = RESIDUE_LINE.matcher(line.trim());
+            if (m.matches()) {
+                String token = m.group(1) != null ? m.group(1)
+                        : m.group(2) != null ? m.group(2) : m.group(3).trim();
+                massByToken.put(token, m.group(4));
+            }
+        }
+        return massByToken;
+    }
+
+    /** The distinct token names defined in a {@code residues} vocabulary block, in file order. */
+    public static List<String> residueTokens(String residues) {
+        return new ArrayList<>(parseResidues(residues).keySet());
+    }
 
     /**
      * Derive the {@code new_token_init} YAML from the current {@code residues}. Casanovo's timsTOF
@@ -336,17 +381,19 @@ public class CasanovoConfig {
      * bridge correct across Casanovo versions without hard-coding token names.
      */
     static String newTokenInitYaml(String residues) {
-        LinkedHashMap<String, String> massByToken = new LinkedHashMap<>();
-        for (String line : residues.split("\\R")) {
-            Matcher m = RESIDUE_LINE.matcher(line.trim());
-            if (m.matches()) {
-                massByToken.put(m.group(1), m.group(2));
-            }
-        }
+        Map<String, String> massByToken = parseResidues(residues);
         StringBuilder body = new StringBuilder();
         for (Map.Entry<String, String> named : massByToken.entrySet()) {
             if (NUMERIC_DELTA_TOKEN.matcher(named.getKey()).matches()) {
                 continue; // numeric-delta tokens are the init sources, not targets
+            }
+            if (CANONICAL_RESIDUES.contains(named.getKey())) {
+                // A standard amino acid is in every checkpoint already. Only a mass coincidence with a
+                // numeric-delta token would pair it here, and the resulting entry would tell Casanovo
+                // to initialise a base amino acid from a modification. Narrowed to the canonical
+                // twenty on purpose: a novel residue the user adds (selenocysteine, say) carries no
+                // bracket either, and it is exactly the case new_token_init exists to bridge.
+                continue;
             }
             for (Map.Entry<String, String> src : massByToken.entrySet()) {
                 if (NUMERIC_DELTA_TOKEN.matcher(src.getKey()).matches()
@@ -461,10 +508,20 @@ public class CasanovoConfig {
                     // aten::_nested_tensor_from_mask_left_aligned) do run, on the CPU, because the
                     // launcher sets PYTORCH_ENABLE_MPS_FALLBACK (see Os.applyNativeEnv), so a user
                     // who selects 'mps' or 'gpu' gets a working run rather than a crash.
-                    sb.append(key).append(": \"").append(v).append("\"\n");
+                    sb.append(key).append(": \"").append(escapeDoubleQuoted(v)).append("\"\n");
                 }
                 break;
         }
+    }
+
+    /**
+     * Escape a value for the double-quoted YAML scalar it is written into. YAML reads a backslash in
+     * that style as an escape, so an unescaped Windows path ({@code C:\Users\...} in a directory field)
+     * or a quote typed into a mod list produces a config no YAML parser will load. Backslash first,
+     * or the backslashes this adds would be escaped again.
+     */
+    private static String escapeDoubleQuoted(String v) {
+        return v.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private void appendBlock(StringBuilder sb, ConfigField f) {

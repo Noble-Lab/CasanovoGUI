@@ -52,6 +52,7 @@ import org.casanovo.gui.core.ExampleData;
 import org.casanovo.gui.core.Os;
 import org.casanovo.gui.core.RawFiles;
 import org.casanovo.gui.core.RawFileParserLauncher;
+import org.casanovo.gui.core.ModList;
 import org.casanovo.gui.core.Settings;
 import org.casanovo.gui.core.TimsTof;
 import org.casanovo.gui.core.UpdateChecker;
@@ -87,6 +88,11 @@ public class MainApp extends Application {
     private boolean timstofProfileActive;
     private String savedResidues;
     private String savedMaxPeaks;
+    private String savedFixedMods;
+    private String savedVarMods;
+    /** The mod lists as the timsTOF vocabulary last left them; null until the first switch back. */
+    private String timstofFixedMods;
+    private String timstofVarMods;
     /** Handle to the current run (local today; a remote SSH job later). Null until the first run. */
     private JobHandle currentJob;
     /** Persisted remote-execution config; selects the backend and drives the Remote settings dialog. */
@@ -1249,6 +1255,13 @@ public class MainApp extends Application {
      * the way back, restore them. Idempotent — only acts on transitions. Called just before the
      * config is consumed (the Parameters dialog and run-config generation), so the timsTOF
      * checkpoint's vocabulary check passes and the dialog reflects the timsTOF parameters.
+     *
+     * <p>The mod lists travel with the profile even though the profile doesn't set them: their entries
+     * name tokens from the vocabulary being swapped, so one picked while the timsTOF residues were
+     * active (an alias only that vocabulary defines) would point at nothing once the defaults come
+     * back, and Casanovo would reject the config. Each profile keeps its own pair, remembered across
+     * switches — the lists a user settles on for timsTOF are theirs to keep, not something the next
+     * mzML run quietly reverts.</p>
      */
     private boolean applyTimstofProfile(boolean timsTof) {
         if (timsTof && !timstofProfileActive) {
@@ -1260,15 +1273,46 @@ public class MainApp extends Application {
             }
             savedResidues = config.get("residues").getValue();
             savedMaxPeaks = config.get("max_peaks").getValue();
+            savedFixedMods = config.get("allowed_fixed_mods").getValue();
+            savedVarMods = config.get("allowed_var_mods").getValue();
             config.get("residues").setValue(prof.get().residues());
             config.get("max_peaks").setValue(prof.get().maxPeaks());
+            // Bring back the lists this vocabulary was last used with. Without it the profile is a
+            // one-way street: a correction made while timsTOF was active is dropped on the way out and
+            // never comes back, so the console asks for a fix that can never stick.
+            if (timstofFixedMods != null) {
+                config.get("allowed_fixed_mods").setValue(timstofFixedMods);
+                config.get("allowed_var_mods").setValue(timstofVarMods);
+            }
+            reportUnresolvableMods(prof.get().residues());
             timstofProfileActive = true;
         } else if (!timsTof && timstofProfileActive) {
+            timstofFixedMods = config.get("allowed_fixed_mods").getValue();
+            timstofVarMods = config.get("allowed_var_mods").getValue();
             config.get("residues").setValue(savedResidues);
             config.get("max_peaks").setValue(savedMaxPeaks);
+            config.get("allowed_fixed_mods").setValue(savedFixedMods);
+            config.get("allowed_var_mods").setValue(savedVarMods);
             timstofProfileActive = false;
         }
         return true;
+    }
+
+    /**
+     * Report mod-list entries the incoming timsTOF vocabulary can't resolve. The profile swaps the
+     * residues but not the mod lists, so an entry naming a token only the default vocabulary defines
+     * survives into the run. ConfigDialog runs the same check, but only if the user opens Parameters;
+     * a run started without opening it would otherwise reach Casanovo with no warning at all.
+     */
+    private void reportUnresolvableMods(String residues) {
+        List<String> tokens = CasanovoConfig.residueTokens(residues);
+        for (String key : List.of("allowed_fixed_mods", "allowed_var_mods")) {
+            for (String entry : ModList.unresolvable(config.get(key).getValue(), tokens)) {
+                console.appendLine("[timstof] \"" + entry + "\" (" + key + ") does not resolve against "
+                        + "the timsTOF residues; a database search will fail on it unless it is "
+                        + "changed in Parameters.");
+            }
+        }
     }
 
     /** True when {@code cmd} runs the timsTOF model (auto-selected for {@code .d} input, or set by hand). */

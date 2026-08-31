@@ -1,5 +1,6 @@
 package org.casanovo.gui.ui;
 
+import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.Alert;
@@ -22,10 +23,13 @@ import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import org.casanovo.gui.core.CasanovoConfig;
 import org.casanovo.gui.core.ConfigField;
+import org.casanovo.gui.core.ModList;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,6 +44,8 @@ public class ConfigDialog {
     private final CasanovoConfig config;
     private final Window owner;
     private final Map<String, Control> editors = new LinkedHashMap<>();
+    /** Tokens already unreferenced when the dialog opened; see {@link #newlyUnreferencedTokens}. */
+    private List<String> unreferencedAtOpen = List.of();
 
     public ConfigDialog(Window owner, CasanovoConfig config) {
         this.owner = owner;
@@ -52,6 +58,12 @@ public class ConfigDialog {
         for (String group : CasanovoConfig.GROUP_ORDER) {
             tabPane.getTabs().add(new Tab(group, buildGroupContent(group)));
         }
+        // What was already unreferenced before the user touched anything. Casanovo's shipped timsTOF
+        // vocabulary defines tokens its own default mod lists don't name ("C[Cysteinyl]",
+        // "[Carbamyl][Ammonia-loss]-"), so without this every timsTOF session would raise the
+        // unreferenced-token notice on a config nobody edited. Only what this session made
+        // unreferenced is worth saying.
+        unreferencedAtOpen = unreferencedTokens();
 
         Button reset = new Button("Reset to defaults");
         reset.setOnAction(e -> onReset());
@@ -80,6 +92,16 @@ public class ConfigDialog {
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
         dialog.getDialogPane().setContent(content);
 
+        // The mod lists name tokens from the residues vocabulary, and nothing else checks that they
+        // still exist — a run with a stale entry fails inside Casanovo with no hint of which value
+        // caused it. Checked here rather than only in ModListEditor, because the field can also be
+        // typed into directly, which that editor's own guards never see.
+        dialog.getDialogPane().lookupButton(ButtonType.OK).addEventFilter(ActionEvent.ACTION, e -> {
+            if (!confirmModLists(dialog.getDialogPane().getScene().getWindow())) {
+                e.consume();
+            }
+        });
+
         ButtonType result = dialog.showAndWait().orElse(ButtonType.CANCEL);
         if (result == ButtonType.OK) {
             readEditorsInto();
@@ -97,7 +119,9 @@ public class ConfigDialog {
                 form.addNote(f.getDescription());
                 form.addRow(f.getLabel() + ":", editor);
             } else {
-                form.addRow(f.getLabel() + ":", editor);
+                Button editList = f.getType() == ConfigField.Type.MOD_LIST
+                        ? modListButton(f, (TextField) editor) : null;
+                form.addRow(f.getLabel() + ":", editor, editList);
                 if (f.getDescription() != null && !f.getDescription().isEmpty()) {
                     form.addNote(f.getDescription());
                 }
@@ -136,6 +160,159 @@ public class ConfigDialog {
                 return tf;
             }
         }
+    }
+
+    /**
+     * "Edit list..." button for a {@link ConfigField.Type#MOD_LIST} field: opens {@link ModListEditor}
+     * pre-populated from the current "Residues & modifications" editor (every tab is built before the
+     * dialog is shown, so it reflects edits made earlier in this same dialog session, not just the
+     * saved value).
+     */
+    private Button modListButton(ConfigField f, TextField target) {
+        Button b = new Button("Edit list...");
+        b.setOnAction(e -> {
+            // Owned by this dialog's window, not by the window that owns this dialog: two modals
+            // sharing an owner are not guaranteed to stack in the order they were opened, and a
+            // mod-list dialog that opens behind the Parameters window blocks input invisibly.
+            ModListEditor.edit(target.getScene().getWindow(), f.getLabel(), residuesText(), target.getText())
+                    .ifPresent(target::setText);
+        });
+        return b;
+    }
+
+    /**
+     * Current text of the "Residues & modifications" editor. Blank when that field has no editor —
+     * only reachable if its group ever leaves {@link CasanovoConfig#GROUP_ORDER}, and a blank
+     * vocabulary is the answer the mod-list checks already handle.
+     */
+    private String residuesText() {
+        return editors.get("residues") instanceof TextArea area ? area.getText() : "";
+    }
+
+    /**
+     * The label of the first {@code MOD_LIST} field the user left with no entries at all, or null.
+     * A field with no editor is not "emptied by the user" and is skipped — reporting it would block
+     * OK with nothing the user could do about it.
+     */
+    private String emptyModList() {
+        for (ConfigField f : config.getFields()) {
+            if (f.getType() == ConfigField.Type.MOD_LIST
+                    && editors.get(f.getKey()) instanceof TextField tf
+                    && ModList.splitEntries(tf.getText()).isEmpty()) {
+                return f.getLabel();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Mod-list entries Casanovo could not resolve — not an 'aa:mod_residue' pair, or naming a token
+     * the residues vocabulary doesn't define — one per line, or null when there are none. Reachable by
+     * editing the vocabulary after the mod lists, or by typing an entry by hand, neither of which the
+     * "Edit list..." picker covers.
+     */
+    private String badModEntries() {
+        List<String> tokens = CasanovoConfig.residueTokens(residuesText());
+        List<String> bad = new ArrayList<>();
+        for (ConfigField f : config.getFields()) {
+            if (f.getType() != ConfigField.Type.MOD_LIST) {
+                continue;
+            }
+            for (String entry : ModList.unresolvable(modListText(f), tokens)) {
+                // Quoted: a stray space is one of the things reported here, and unquoted it would be
+                // invisible in the very message that exists to point it out.
+                bad.add("    " + f.getLabel() + ": \"" + entry + "\"");
+            }
+        }
+        return bad.isEmpty() ? null : String.join("\n", bad);
+    }
+
+    /**
+     * Run the mod-list checks and tell the caller whether to go ahead: false only when a problem has
+     * no sensible interpretation. Shared by OK and "Save to file" — both hand the values to Casanovo,
+     * and a check only OK performed would be one "Save to file" could walk straight past.
+     */
+    private boolean confirmModLists(Window self) {
+        String emptied = emptyModList();
+        if (emptied != null) {
+            // An empty list serialises to a YAML null, and Casanovo's Config.validate_param skips a
+            // null, so its own packaged default stays in force: the run does not search without
+            // modifications, it searches with all of Casanovo's while this dialog shows none (verified
+            // end to end against 5.2.1). Blocked rather than warned, because saving it is precisely
+            // what makes the dialog stop describing the run.
+            Alert empty = new Alert(Alert.AlertType.WARNING,
+                    "\"" + emptied + "\" is empty, and Casanovo has no setting for \"no "
+                            + "modifications\". A blank list does not turn them off — the search "
+                            + "falls back to Casanovo's own default modifications, and this dialog "
+                            + "would no longer show what the run uses. Restore an entry, or Cancel "
+                            + "to leave the parameters unchanged.",
+                    ButtonType.OK);
+            empty.setHeaderText(null);
+            empty.initOwner(self);
+            empty.showAndWait();
+            return false;
+        }
+        String bad = badModEntries();
+        if (bad != null) {
+            // Warn, but let the user save: the vocabulary this GUI knows about is not necessarily the
+            // one the run will use.
+            Alert warn = new Alert(Alert.AlertType.WARNING,
+                    "A database search will fail on these modification entries:\n\n"
+                            + bad + "\n\nEach must read 'aa:mod_residue' exactly — one colon, no "
+                            + "spaces, no commas — and the mod_residue must be a token defined in "
+                            + "\"Residues & modifications\". Save anyway?",
+                    ButtonType.OK, ButtonType.CANCEL);
+            warn.setHeaderText(null);
+            warn.initOwner(self);
+            if (warn.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+                return false;
+            }
+        }
+        String unused = newlyUnreferencedTokens();
+        if (unused != null) {
+            // The other direction, and only ever an FYI: the run succeeds, it just can't match
+            // peptides carrying these. Casanovo says the same thing, but not until the search has
+            // already started — here it is still one field away from being fixed.
+            Alert info = new Alert(Alert.AlertType.INFORMATION,
+                    "These modifications are defined in \"Residues & modifications\" but no mod "
+                            + "list uses them:\n\n" + unused + "\n\nCasanovo will skip peptides "
+                            + "carrying them. Add them to \"Allowed fixed mods\" or \"Allowed "
+                            + "variable mods\" to have them searched.",
+                    ButtonType.OK);
+            info.setHeaderText(null);
+            info.initOwner(self);
+            info.showAndWait();
+        }
+        return true;
+    }
+
+    /**
+     * Modified tokens this dialog session left unreferenced, one per line, or null when there are
+     * none. Only what changed here: a token the config already failed to reference on the way in is
+     * not this edit's doing, and saying so on every OK press would train the user to dismiss the
+     * notice unread. Informational either way — such a token doesn't fail a run, it just means
+     * peptides carrying it can never be matched. See {@link ModList#unreferencedTokens}.
+     */
+    private String newlyUnreferencedTokens() {
+        List<String> unused = new ArrayList<>(unreferencedTokens());
+        unused.removeAll(unreferencedAtOpen);
+        return unused.isEmpty() ? null : "    " + String.join("\n    ", unused);
+    }
+
+    /** Modified vocabulary tokens no {@code MOD_LIST} editor currently references. */
+    private List<String> unreferencedTokens() {
+        List<String> csvs = new ArrayList<>();
+        for (ConfigField f : config.getFields()) {
+            if (f.getType() == ConfigField.Type.MOD_LIST) {
+                csvs.add(modListText(f));
+            }
+        }
+        return ModList.unreferencedTokens(residuesText(), csvs.toArray(new String[0]));
+    }
+
+    /** The text of a {@code MOD_LIST} field's editor, or blank when the field has none. */
+    private String modListText(ConfigField f) {
+        return editors.get(f.getKey()) instanceof TextField tf ? tf.getText() : "";
     }
 
     private void readEditorsInto() {
@@ -197,6 +374,12 @@ public class ConfigDialog {
     }
 
     private void onSaveToFile() {
+        // Before readEditorsInto, not after: it writes the editors into the shared config, so an empty
+        // list saved from here would also outlive a subsequent Cancel and then block OK on every
+        // later visit to this dialog.
+        if (!confirmModLists(owner)) {
+            return;
+        }
         readEditorsInto();
         FileChooser chooser = new FileChooser();
         chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("YAML config", "*.yaml", "*.yml"));

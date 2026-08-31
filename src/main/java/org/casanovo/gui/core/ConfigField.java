@@ -20,6 +20,8 @@ public class ConfigField {
         CHOICE,
         /** Free-text string; serialised quoted, blank serialises to {@code None}. */
         STRING,
+        /** Comma-separated 'aa:mod_residue' modification list; serialised exactly like {@link #STRING}. */
+        MOD_LIST,
         /** Comma-separated integers; serialised as a YAML flow list, e.g. {@code [0, 1]}. */
         INT_LIST,
         /** A multi-line YAML mapping block (used for the residues vocabulary). */
