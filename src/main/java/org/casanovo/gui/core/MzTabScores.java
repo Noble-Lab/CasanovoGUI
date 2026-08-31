@@ -139,6 +139,36 @@ public final class MzTabScores {
     }
 
     /**
+     * True when {@code mzTab} carries no PSM row at all — a run that finished without reporting a
+     * single peptide. Stops at the first row, so a full result costs a few lines rather than a
+     * parse of the whole file.
+     *
+     * <p>Softer than {@link #read}, which also needs the individual columns: an empty result is a
+     * normal outcome to report on, not a malformed file. It still requires the {@code PSH} header
+     * {@code read} throws without, because {@code findNewestMzTab} picks whatever {@code .mztab} in
+     * the output folder is newest — a half-flushed or foreign file has no PSM section either, and
+     * calling that "no peptide at all" would blame the user's parameters for someone else's file.
+     * A file that cannot be read is not called empty for the same reason.</p>
+     */
+    public static boolean hasNoPsm(File mzTab) {
+        boolean sawHeader = false;
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(Files.newInputStream(mzTab.toPath()), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.startsWith("PSH\t")) {
+                    sawHeader = true;
+                } else if (sawHeader && line.startsWith("PSM\t")) {
+                    return false;
+                }
+            }
+            return sawHeader;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
      * Parse the PSM rows of an mzTab file into (sequence, score) pairs. Rows whose
      * score cell is missing, {@code null}, or unparseable are skipped.
      *

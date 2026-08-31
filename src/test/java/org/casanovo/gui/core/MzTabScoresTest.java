@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -31,10 +32,44 @@ class MzTabScoresTest {
             "");
 
     private static Path writeMzTab() throws IOException {
+        return write(MZTAB);
+    }
+
+    private static Path write(String content) throws IOException {
         Path f = Files.createTempFile("casanovogui_scores_", ".mztab");
         f.toFile().deleteOnExit();
-        Files.writeString(f, MZTAB, StandardCharsets.UTF_8);
+        Files.writeString(f, content, StandardCharsets.UTF_8);
         return f;
+    }
+
+    /**
+     * What Casanovo 5.2.1 writes when a parameter excludes every candidate: the PSM header, and
+     * nothing under it. Captured from a run with min_peptide_len 60 above max_peptide_len 10, which
+     * exits 0 and reports "Peptide Precision: 0.00%".
+     */
+    private static final String EMPTY_MZTAB = String.join("\n",
+            "MTD\tmzTab-version\t1.0.0",
+            "PSH\tsequence\tPSM_ID\tsearch_engine_score[1]\tspectra_ref\topt_global_aa_scores",
+            "");
+
+    @Test
+    @DisplayName("A result with the PSM header but no row under it is reported as empty")
+    void emptyResultIsDetected() throws IOException {
+        assertTrue(MzTabScores.hasNoPsm(write(EMPTY_MZTAB).toFile()));
+        assertFalse(MzTabScores.hasNoPsm(writeMzTab().toFile()),
+                "a result with PSMs must never be called empty");
+    }
+
+    @Test
+    @DisplayName("A file with no PSM section at all is not called empty")
+    void nonResultFileIsNotEmpty() throws IOException {
+        // findNewestMzTab takes whatever .mztab in the output folder is newest, so a half-flushed or
+        // foreign file can reach this. Reporting it as "no peptide at all" would blame the user's
+        // parameters for a file the run did not write; read() treats the same file as malformed.
+        assertFalse(MzTabScores.hasNoPsm(write("MTD\tmzTab-version\t1.0.0\n").toFile()));
+        assertFalse(MzTabScores.hasNoPsm(write("").toFile()), "a zero-byte file is not a result");
+        assertFalse(MzTabScores.hasNoPsm(new java.io.File("no_such_file_9d3f.mztab")),
+                "and neither is one that cannot be read");
     }
 
     @Test

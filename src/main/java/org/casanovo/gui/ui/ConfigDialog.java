@@ -22,6 +22,7 @@ import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import org.casanovo.gui.core.CasanovoConfig;
+import org.casanovo.gui.core.ConfigChecks;
 import org.casanovo.gui.core.ConfigField;
 import org.casanovo.gui.core.ModList;
 
@@ -44,6 +45,13 @@ public class ConfigDialog {
     private final CasanovoConfig config;
     private final Window owner;
     private final Map<String, Control> editors = new LinkedHashMap<>();
+    /**
+     * The Parameters window itself, set once it is showing. Alerts raised from inside the dialog are
+     * owned by it rather than by the window that owns it: two modals sharing an owner are not
+     * guaranteed to stack in the order they were opened, and one that comes up behind the
+     * Parameters window blocks input invisibly (see {@link #modListButton}).
+     */
+    private Window self;
     /** Tokens already unreferenced when the dialog opened; see {@link #newlyUnreferencedTokens}. */
     private List<String> unreferencedAtOpen = List.of();
 
@@ -92,16 +100,17 @@ public class ConfigDialog {
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
         dialog.getDialogPane().setContent(content);
 
-        // The mod lists name tokens from the residues vocabulary, and nothing else checks that they
-        // still exist — a run with a stale entry fails inside Casanovo with no hint of which value
-        // caused it. Checked here rather than only in ModListEditor, because the field can also be
-        // typed into directly, which that editor's own guards never see.
+        // Casanovo checks the types of these values and nothing else, so a value that is unreadable,
+        // or readable but impossible, reaches the run and fails there with no hint of which setting
+        // caused it. Checked here rather than only in the editors, because a field can also be typed
+        // into directly, which their own guards never see.
         dialog.getDialogPane().lookupButton(ButtonType.OK).addEventFilter(ActionEvent.ACTION, e -> {
-            if (!confirmModLists(dialog.getDialogPane().getScene().getWindow())) {
+            if (!confirmValues()) {
                 e.consume();
             }
         });
 
+        dialog.setOnShown(e -> self = dialog.getDialogPane().getScene().getWindow());
         ButtonType result = dialog.showAndWait().orElse(ButtonType.CANCEL);
         if (result == ButtonType.OK) {
             readEditorsInto();
@@ -228,9 +237,102 @@ public class ConfigDialog {
     }
 
     /**
+     * Run every check on the current values and tell the caller whether to go ahead: false only when
+     * a problem has no sensible interpretation. Shared by OK and "Save to file" — both hand the
+     * values to Casanovo, and a check only OK performed would be one "Save to file" could walk
+     * straight past.
+     *
+     * <p>Blocking checks first, so a value that cannot be read is reported before anything that
+     * merely reads it as impossible.</p>
+     */
+    private boolean confirmValues() {
+        Map<String, String> values = editorValues();
+        return confirmTypes(values) && confirmModLists(self) && confirmSanity(values);
+    }
+
+    /**
+     * Refuse values Casanovo cannot read as the field's type, or would read as something other than
+     * what this dialog shows. Blocked rather than warned: saving one either fails the run with a
+     * Python type error naming only the YAML key, or — for a fractional integer, which Casanovo
+     * truncates — leaves the dialog describing a value the run never used.
+     */
+    private boolean confirmTypes(Map<String, String> values) {
+        List<String> problems = ConfigChecks.typeErrors(config.getFields(), values);
+        if (problems.isEmpty()) {
+            return true;
+        }
+        Alert bad = new Alert(Alert.AlertType.ERROR,
+                "These parameters cannot be used as they are:\n\n    "
+                        + String.join("\n    ", problems)
+                        + "\n\nCorrect them, or clear a field to leave Casanovo's own default in "
+                        + "force.",
+                ButtonType.OK);
+        bad.setHeaderText(null);
+        bad.initOwner(self);
+        bad.showAndWait();
+        return false;
+    }
+
+    /**
+     * Report values Casanovo accepts and then cannot produce a result from — a minimum above its
+     * maximum, a count below one. Warn, but let the user save: the checks encode what the settings
+     * mean today, and the run is still theirs to start.
+     */
+    private boolean confirmSanity(Map<String, String> values) {
+        List<String> problems = ConfigChecks.sanityWarnings(config.getFields(), values);
+        if (problems.isEmpty()) {
+            return true;
+        }
+        Alert warn = new Alert(Alert.AlertType.WARNING,
+                "Casanovo will accept these parameters, but the run cannot return anything:\n\n    "
+                        + String.join("\n    ", problems)
+                        + "\n\nDepending on the setting the run either stops with a Python error or "
+                        + "finishes successfully with an empty result — neither names the setting. "
+                        + "Save anyway?",
+                ButtonType.OK, ButtonType.CANCEL);
+        warn.setHeaderText(null);
+        warn.initOwner(self);
+        return warn.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK;
+    }
+
+    /**
+     * Current editor text by config key, for {@link ConfigChecks}. Switched on the field's type,
+     * not on the widget class, so it reads each editor exactly where {@link #readEditorsInto}
+     * writes it back: a field whose widget changes is then either updated in both or broken in
+     * both, never silently dropped from the checks — a key missing here makes {@code typeErrors}
+     * skip that field entirely, and the value reaches Casanovo unchecked with no symptom.
+     */
+    private Map<String, String> editorValues() {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (ConfigField f : config.getFields()) {
+            Control editor = editors.get(f.getKey());
+            if (editor == null) {
+                continue;
+            }
+            switch (f.getType()) {
+                case BOOL:
+                    // Nothing checks a boolean; recorded anyway so the map is every field that has
+                    // an editor, rather than a subset each reader has to reason about.
+                    values.put(f.getKey(), ((CheckBox) editor).isSelected() ? "true" : "false");
+                    break;
+                case CHOICE:
+                    Object sel = ((ComboBox<?>) editor).getSelectionModel().getSelectedItem();
+                    values.put(f.getKey(), sel == null ? "" : sel.toString());
+                    break;
+                case TEXT_BLOCK:
+                    values.put(f.getKey(), ((TextArea) editor).getText());
+                    break;
+                default:
+                    values.put(f.getKey(), ((TextField) editor).getText());
+                    break;
+            }
+        }
+        return values;
+    }
+
+    /**
      * Run the mod-list checks and tell the caller whether to go ahead: false only when a problem has
-     * no sensible interpretation. Shared by OK and "Save to file" — both hand the values to Casanovo,
-     * and a check only OK performed would be one "Save to file" could walk straight past.
+     * no sensible interpretation.
      */
     private boolean confirmModLists(Window self) {
         String emptied = emptyModList();
@@ -377,7 +479,7 @@ public class ConfigDialog {
         // Before readEditorsInto, not after: it writes the editors into the shared config, so an empty
         // list saved from here would also outlive a subsequent Cancel and then block OK on every
         // later visit to this dialog.
-        if (!confirmModLists(owner)) {
+        if (!confirmValues()) {
             return;
         }
         readEditorsInto();
@@ -391,12 +493,12 @@ public class ConfigDialog {
                 Alert ok = new Alert(Alert.AlertType.INFORMATION,
                         "Saved configuration to:\n" + target.getAbsolutePath(), ButtonType.OK);
                 ok.setHeaderText(null);
-                ok.initOwner(owner);
+                ok.initOwner(self);
                 ok.showAndWait();
             } catch (IOException ex) {
                 Alert err = new Alert(Alert.AlertType.ERROR, "Failed to save: " + ex.getMessage(),
                         ButtonType.OK);
-                err.initOwner(owner);
+                err.initOwner(self);
                 err.showAndWait();
             }
         }

@@ -47,12 +47,15 @@ import org.casanovo.gui.core.remote.RemoteBackend;
 import org.casanovo.gui.core.remote.RemoteSettings;
 import org.casanovo.gui.core.CasanovoWeights;
 import org.casanovo.gui.core.ConfigCache;
+import org.casanovo.gui.core.ConfigChecks;
+import org.casanovo.gui.core.ConfigField;
 import org.casanovo.gui.core.DeviceProbe;
 import org.casanovo.gui.core.ExampleData;
 import org.casanovo.gui.core.Os;
 import org.casanovo.gui.core.RawFiles;
 import org.casanovo.gui.core.RawFileParserLauncher;
 import org.casanovo.gui.core.ModList;
+import org.casanovo.gui.core.MzTabScores;
 import org.casanovo.gui.core.Settings;
 import org.casanovo.gui.core.TimsTof;
 import org.casanovo.gui.core.UpdateChecker;
@@ -162,6 +165,18 @@ public class MainApp extends Application {
     /** Set while a Limelight upload runs: a busy state of its own, with no cancel. */
     private volatile boolean uploading = false; // limelight
     private volatile boolean checkpointErrorSeen = false;
+    /**
+     * The config key Casanovo named in a type error during this run, or null. Casanovo's message
+     * carries the YAML key and nothing the user recognises, so the key is kept to turn back into
+     * the field label the Parameters dialog shows.
+     */
+    private volatile String configErrorKey;
+    /**
+     * Set when the run died on depthcharge's empty-batch {@code StopIteration}. That traceback has
+     * no message at all, and a filtering parameter that discards every spectrum is one of the two
+     * ways to reach it (an empty or unreadable input file being the other).
+     */
+    private volatile boolean emptyInputErrorSeen = false;
 
     // The device check that precedes a run: it is asynchronous, so it counts as a busy state
     // of its own — otherwise a second Run click (or an install) lands in the gap between
@@ -1406,6 +1421,11 @@ public class MainApp extends Application {
             alert(Alert.AlertType.ERROR, "Cannot run", ex.getMessage());
             return;
         }
+        // Parameter checks last, on the command that was actually built: they need to know whether
+        // the GUI owns the configuration, and they must not run ahead of the guard above.
+        if (!confirmParameters(base)) {
+            return;
+        }
         checkDeviceThenRun(pane, base, guiOwnsConfig(base),
                 config.get("accelerator").getValue(),
                 config.get("predict_batch_size").getValue());
@@ -1831,6 +1851,8 @@ public class MainApp extends Application {
         lastProgressMs = 0L;
         lastBarMs = 0L;
         checkpointErrorSeen = false;
+        configErrorKey = null;
+        emptyInputErrorSeen = false;
 
         JobRequest request = new JobRequest(command, settings, workingDir,
                 collectInputs(command, spectra), pendingOutputDir);
@@ -1934,6 +1956,10 @@ public class MainApp extends Application {
         // FORCE_COLOR makes Rich stream progress live, but at the cost of embedded
         // colour/cursor escape codes — strip them so the console and parser see plain text.
         text = ANSI.matcher(text).replaceAll("");
+        // Before the progress filters below, not after: those drop whole chunks, and a failure that
+        // arrived interleaved with a live progress bar would then never be looked at — leaving the
+        // silent exit code this reporting exists to replace.
+        scanForFailureCause(text);
         // 1) A real tqdm "<pct>%|<bar>|" chunk (db-search "Scoring candidates", spectrum loading)
         //    is the live progress — show it as the single updating line, whether it arrived as a
         //    \r refresh or newline-terminated.
@@ -1964,6 +1990,31 @@ public class MainApp extends Application {
         }
         maybeCaptureSpectrumCount(text);
         console.appendLine(text);
+    }
+
+    /**
+     * Note anything in {@code text} that says why a run is about to fail, for
+     * {@link #reportConfigFailure} to turn into something the user can act on.
+     *
+     * <p>The empty-batch failure is matched as a traceback's own terminal line rather than anywhere
+     * the word appears: {@code StopIteration} shows up in a source comment on the frame of at least
+     * one unrelated failure (a pyarrow {@code ArrowInvalid}), and pointing that user at the
+     * spectrum filters would send them to three settings that are fine.</p>
+     */
+    private void scanForFailureCause(String text) {
+        // Cheap rejects first: this runs on every chunk, ahead of the progress throttle, and a live
+        // bar delivers thousands of them — none of which can carry either signature.
+        if (configErrorKey == null && text.indexOf("Incorrect type") >= 0) {
+            configErrorKey = ConfigChecks.typeErrorKey(text);
+        }
+        if (!emptyInputErrorSeen && text.indexOf("StopIteration") >= 0) {
+            for (String line : text.split("\\R")) {
+                if (line.strip().equals("StopIteration")) {
+                    emptyInputErrorSeen = true;
+                    return;
+                }
+            }
+        }
     }
 
     /** A progress chunk with no "%|" bar — a tqdm rate tail or Lightning's Rich "Predicting" bar. */
@@ -2071,6 +2122,81 @@ public class MainApp extends Application {
         return null;
     }
 
+    /**
+     * Check the parameters a run is about to use, once, on the built command. The Parameters dialog
+     * runs the same checks when the user presses OK, but it lets an impossible value through on a
+     * warning, and a session that saved one may be several runs past having read that warning — the
+     * console line here is what ties this run's empty result back to it. Same reason
+     * {@link #reportUnresolvableMods} repeats the mod-list check at run time.
+     *
+     * <p>Nothing here refuses a run outright: the checks encode what the settings mean today, and a
+     * value they call impossible is still the user's to send. They only make sure it is a decision
+     * rather than an accident.</p>
+     *
+     * @return false when the user chose to go back and change something
+     */
+    private boolean confirmParameters(CasanovoCommand base) {
+        if (!guiOwnsConfig(base)) {
+            return true; // the values come from a file the GUI does not hold
+        }
+        // The profile swaps max_peaks and the residues for a .d run, and effectiveCommand does not
+        // apply it until later — judging the config before that compares this run's "Min peaks"
+        // against the previous run's "Max peaks". openParameters syncs it first for the same reason.
+        // A profile that cannot be read is left to effectiveCommand, which fails the run with the
+        // detail; there is nothing useful to say about the values until then.
+        boolean synced = applyTimstofProfile(isTimstofCommand(base));
+        if (!confirmEvaluationMatches(base)) {
+            return false;
+        }
+        // Written after the last thing that can still send the user back: a warning about a run they
+        // then cancelled would sit in the console describing parameters nothing used.
+        if (synced) {
+            for (String problem : ConfigChecks.sanityWarnings(config.getFields(), Map.of())) {
+                console.appendLine("[config] " + problem);
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Warn before an evaluation run that would score more than one match per spectrum. Evaluation
+     * compares every reported match against the annotation, so the precision and recall then
+     * describe the beam rather than the model: verified against Casanovo 5.2.1, {@code top_match: 5}
+     * with {@code n_beams: 5} turns 78.00% peptide precision into 2.00% on the same 50 spectra — and
+     * the run still exits 0, so nothing downstream marks the number as meaningless.
+     *
+     * <p>What a spectrum actually reports is {@code min(top_match, n_beams)} — beam search caches at
+     * most {@code n_beams} peptides and then reports the {@code top_match} best of them — so at the
+     * default {@code n_beams: 1} a higher {@code top_match} changes nothing and is not worth
+     * stopping for (verified: identical metrics). Only for {@code --evaluate}; everywhere else more
+     * matches per spectrum is a legitimate thing to ask for.</p>
+     */
+    private boolean confirmEvaluationMatches(CasanovoCommand base) {
+        if (!base.getArguments().contains("--evaluate")) {
+            return true;
+        }
+        int matches = Math.min(
+                ConfigChecks.effectiveInt(config.getFields(), Map.of(), "top_match", 1),
+                ConfigChecks.effectiveInt(config.getFields(), Map.of(), "n_beams", 1));
+        if (matches <= 1) {
+            return true;
+        }
+        Alert warn = new Alert(Alert.AlertType.WARNING,
+                "This run reports " + matches + " matches per spectrum (\"Top matches per spectrum\" "
+                        + "and \"Number of beams\" in Parameters).\n\n"
+                        + "Evaluation scores every one of them against the annotation, so the "
+                        + "precision and recall it prints would describe the beam rather than the "
+                        + "model — and the run would still finish successfully, with no sign that "
+                        + "they are meaningless.\n\nRun anyway?",
+                ButtonType.OK, ButtonType.CANCEL);
+        warn.setTitle("Evaluation reports more than one match");
+        warn.setHeaderText(null);
+        if (stage != null) {
+            warn.initOwner(stage);
+        }
+        return warn.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK;
+    }
+
     private void onFinished(int exitCode, Throwable error) {
         updateRunningState(false);
         updateAnimation();
@@ -2085,7 +2211,7 @@ public class MainApp extends Application {
             consoleFrame.setState(ConsoleBorderEffect.State.SUCCESS);
             console.appendLine("[done] Casanovo finished successfully (exit 0).");
             statusLabel.setText("Finished successfully.");
-            captureResult();
+            reportEmptyResult(captureResult());
             if (pendingOutputDir != null && pendingOutputDir.isDirectory()) {
                 showOpenOutputLink(true);
             }
@@ -2097,10 +2223,60 @@ public class MainApp extends Application {
             consoleFrame.setState(ConsoleBorderEffect.State.ERROR);
             console.appendLine("[error] Casanovo exited with code " + exitCode + ".");
             statusLabel.setText("Exited with code " + exitCode + ".");
+            reportConfigFailure();
             if (checkpointErrorSeen) {
                 maybeOfferModelRepair();
             }
         }
+    }
+
+    /**
+     * After a failed run, say whether a configuration setting is what stopped it. Casanovo names
+     * the offending YAML key for the one thing it checks — the value's type — and says nothing at
+     * all for the rest: a parameter that leaves no spectrum to read surfaces as a bare {@code
+     * StopIteration} traceback (verified against 5.2.1 for {@code max_charge: -1}, {@code
+     * max_peaks: 0} and {@code min_peaks} above {@code max_peaks}). Neither reaches the user as
+     * anything but an exit code without this.
+     */
+    private void reportConfigFailure() {
+        if (configErrorKey != null) {
+            ConfigField field = config.get(configErrorKey);
+            String named = field != null ? "\"" + field.getLabel() + "\""
+                    : "\"" + configErrorKey + "\"";
+            console.appendLine("[config] The run was stopped by a parameter Casanovo could not read: "
+                    + named + ". Open Parameters to correct it, or press \"Reset to defaults\" there.");
+            statusLabel.setText("A parameter stopped the run: " + named + ".");
+        } else if (emptyInputErrorSeen) {
+            // Two causes, and the traceback distinguishes neither, so name both rather than guess.
+            console.appendLine("[config] Casanovo stopped with no spectrum left to read. Either the "
+                    + "input file is empty or unreadable, or a parameter discarded every spectrum — "
+                    + "check \"Min peaks\", \"Max peaks\" and \"Max charge\" in Parameters.");
+            statusLabel.setText("No spectra were left to read.");
+        }
+    }
+
+    /**
+     * After a run that exits 0 having reported nothing, say so. Several parameters reach this
+     * instead of an error — verified against 5.2.1, a {@code min_peptide_len} above {@code
+     * max_peptide_len}, {@code max_peptide_len: 0}, {@code top_match: 0} and {@code n_beams: 0} all
+     * finish successfully with an empty mzTab, and in evaluation mode print a 0.00% precision that
+     * reads like a result rather than a misconfiguration.
+     *
+     * <p>One message for every sub-command: which parameter emptied the result depends on what ran
+     * (a database search has its own ways to match nothing), and the run's command is not carried
+     * this far, so the message names each group rather than claiming one of them.</p>
+     */
+    private void reportEmptyResult(File mzTab) {
+        if (mzTab == null || !MzTabScores.hasNoPsm(mzTab)) {
+            return;
+        }
+        console.appendLine("[config] The run finished but reported no peptide at all — an empty "
+                + "result rather than a poor one, and an evaluation's figures read 0% for that "
+                + "reason. In Parameters, check what can exclude every candidate: the peptide-length "
+                + "bounds and the spectrum filters, \"Top matches per spectrum\" and \"Number of "
+                + "beams\" for a de novo run, and the enzyme, missed cleavages and tolerance for a "
+                + "database search.");
+        statusLabel.setText("Finished, but no peptide was reported.");
     }
 
     /**
@@ -2369,10 +2545,12 @@ public class MainApp extends Application {
     /**
      * After a successful run, find the produced mzTab and auto-fill the View tab's
      * peptides field. No-op when the run had no spectra input or wrote no mzTab.
+     *
+     * @return the run's mzTab, or null when this command produces none (training, or no spectra)
      */
-    private void captureResult() {
+    private File captureResult() {
         if (pendingSpectra == null || pendingSpectra.isEmpty() || pendingOutputDir == null) {
-            return;
+            return null;
         }
         File mztab = findNewestMzTab(pendingOutputDir, pendingRunStartMs);
         limelight.onResultReady(mztab); // limelight
@@ -2380,6 +2558,7 @@ public class MainApp extends Application {
             // Auto-fill the View tab's peptides field (mapping is run on demand).
             viewPane.setPeptides(mztab);
         }
+        return mztab;
     }
 
     /** Newest {@code *.mztab} in {@code dir} modified at/after {@code sinceMs}, or null. */

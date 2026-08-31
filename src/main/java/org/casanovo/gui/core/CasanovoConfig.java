@@ -458,6 +458,23 @@ public class CasanovoConfig {
         return yaml + (yaml.endsWith("\n") ? "" : "\n") + snippet + "\n";
     }
 
+    /**
+     * The entries of an {@link Type#INT_LIST} value as they are written to YAML: brackets dropped,
+     * split on commas, trimmed, blanks discarded. Shared with {@link ConfigChecks}, which has to
+     * judge exactly the entries this serialises — a checker splitting differently would approve a
+     * list the config then writes some other way.
+     */
+    static List<String> intListParts(String value) {
+        List<String> parts = new ArrayList<>();
+        for (String p : value.replace("[", "").replace("]", "").split(",")) {
+            String t = p.trim();
+            if (!t.isEmpty()) {
+                parts.add(t);
+            }
+        }
+        return parts;
+    }
+
     private void appendScalar(StringBuilder sb, ConfigField f, String value) {
         String key = f.getKey();
         String v = value == null ? "" : value.trim();
@@ -486,14 +503,8 @@ public class CasanovoConfig {
                 if (v.isEmpty()) {
                     sb.append(key).append(":\n");
                 } else {
-                    List<String> parts = new ArrayList<>();
-                    for (String p : v.replace("[", "").replace("]", "").split(",")) {
-                        String t = p.trim();
-                        if (!t.isEmpty()) {
-                            parts.add(t);
-                        }
-                    }
-                    sb.append(key).append(": [").append(String.join(", ", parts)).append("]\n");
+                    sb.append(key).append(": [").append(String.join(", ", intListParts(v)))
+                            .append("]\n");
                 }
                 break;
             case CHOICE:
