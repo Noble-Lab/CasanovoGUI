@@ -350,6 +350,10 @@ public final class AaScorePopup {
         table.getColumns().clear();
         int expIdx = indexOf(columns, "exp_mass_to_charge");
         int calcIdx = indexOf(columns, "calc_mass_to_charge");
+        // The geometric mean is computed from aa_scores, not a column the mzTab carries, so
+        // without this the table could be sorted by a number nowhere on screen.
+        int scoreIdx = indexOfPrefix(columns, "search_engine_score");
+        boolean showGeomMean = rows.stream().anyMatch(r -> !Double.isNaN(r.normScore()));
         for (int i = 0; i < columns.size(); i++) {
             String name = columns.get(i);
             if (emptyColumns != null && emptyColumns.contains(name)) {
@@ -375,8 +379,40 @@ public final class AaScorePopup {
             if (i == calcIdx && expIdx >= 0) {
                 table.getColumns().add(massErrorColumn(expIdx, calcIdx));
             }
+            // And beside the raw peptide score, the other score the rows can be sorted by.
+            if (i == scoreIdx && showGeomMean) {
+                table.getColumns().add(geometricMeanColumn());
+            }
+        }
+        if (showGeomMean && scoreIdx < 0) {
+            table.getColumns().add(geometricMeanColumn()); // no score column to sit beside
         }
         // Widths are set by TableUtils.autoSizeColumns once the rows are in (see show()).
+    }
+
+    /** A computed column: the geometric mean of the row's aa_scores, which no mzTab column holds. */
+    private static TableColumn<MzTabScores.PsmRow, String> geometricMeanColumn() {
+        TableColumn<MzTabScores.PsmRow, String> col =
+                new TableColumn<>(MzTabScores.ScoreType.NORMALIZED.label());
+        col.setCellValueFactory(d -> {
+            double mean = d.getValue().normScore();
+            return new ReadOnlyStringWrapper(Double.isNaN(mean) ? "" : formatDouble(mean));
+        });
+        return col;
+    }
+
+    /**
+     * First index of a column whose name starts with {@code prefix} (case-insensitive), or -1.
+     * The peptide score arrives as {@code search_engine_score[1]}, whose index the mzTab is free
+     * to number differently.
+     */
+    private static int indexOfPrefix(List<String> columns, String prefix) {
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).toLowerCase(Locale.ROOT).startsWith(prefix.toLowerCase(Locale.ROOT))) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /** First index of {@code name} in {@code columns} (case-insensitive), or -1 if absent. */
