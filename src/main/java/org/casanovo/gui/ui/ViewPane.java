@@ -1786,9 +1786,16 @@ public class ViewPane extends BorderPane {
         HBox runRow = new HBox(8, runButton, stopButton);
 
         Separator runSep = new Separator();
+        runSep.getStyleClass().add("section-rule");
         runSep.setStyle("-fx-padding: 0;");
         VBox.setMargin(runSep, new Insets(-3, 0, -3, 0));
-        VBox box = new VBox(8, title, grid, runSep, runRow);
+        // The panel title gets the same rule under it as every section heading has above it: the
+        // grid's own first section cannot draw one, since it starts at row 0.
+        Separator titleSep = new Separator();
+        titleSep.getStyleClass().add("section-rule");
+        titleSep.setStyle("-fx-padding: 0;");
+        VBox.setMargin(titleSep, new Insets(-3, 0, -3, 0));
+        VBox box = new VBox(8, title, titleSep, grid, runSep, runRow);
         box.setPadding(new Insets(0, 0, 0, 12));
         box.setFillWidth(true);
         settingsBox = box;
@@ -1936,9 +1943,15 @@ public class ViewPane extends BorderPane {
     private static int sectionHeader(GridPane g, int row, String text) {
         if (row > 0) {
             Separator sep = new Separator();
+            sep.getStyleClass().add("section-rule");
             sep.setStyle("-fx-padding: 0;"); // drop the theme's separator padding
             GridPane.setMargin(sep, new Insets(-3, 0, -3, 0)); // pull in the surrounding row gap
-            row = spanRow(g, row, sep);
+            // Added directly rather than through spanRow: that turns fillWidth off so a Label
+            // stays left, which on a Separator leaves a stub of its preferred width instead of a
+            // rule across the panel.
+            GridPane.setColumnSpan(sep, 2);
+            g.add(sep, 0, row);
+            row++;
         }
         Label l = new Label(text);
         l.setStyle("-fx-font-weight: bold;");
