@@ -504,4 +504,83 @@ class DeviceProbeTest {
         assertTrue(rocm.contains("ROCm device      : none visible"));
         assertTrue(DeviceProbe.environmentReport(null).contains("not available"));
     }
+
+    @Test
+    @DisplayName("The environment report names the machine, not just its instruction set")
+    void environmentReportDescribesTheHardware() {
+        // os.arch says "amd64" on every 64-bit x86 machine whoever built the chip, so the model
+        // and the memory sizes are what make one bug report distinguishable from another.
+        String report = DeviceProbe.environmentReport(cpuOnly());
+        assertTrue(report.contains("CPU              : "), report);
+        assertTrue(report.contains("System memory    : "), report);
+        // Both lookups are platform-specific and may legitimately fail. What must hold whatever
+        // this machine answers is that a failure reads as "unknown": a report about to be pasted
+        // into an issue may not carry a "null", an empty value or a stray newline.
+        DeviceProbe.environmentFields(cpuOnly()).forEach((label, value) -> {
+            assertNotNull(value, label);
+            assertFalse(value.isBlank(), label);
+            assertFalse(value.contains("null"), label + " = " + value);
+            assertEquals(value.strip(), value, label + " is padded or wrapped");
+        });
+        assertEquals("24.0 GB", DeviceProbe.gigabytes(24L << 30));
+    }
+
+    @Test
+    @DisplayName("A value spanning lines keeps the report aligned")
+    void multiLineValuesIndentToTheValueColumn() {
+        // The value most likely to span lines is the one a bug report is filed about: a failed
+        // probe carries the tail of the interpreter's traceback.
+        java.util.LinkedHashMap<String, String> fields = new java.util.LinkedHashMap<>();
+        fields.put("PyTorch", "not available (python exited with code 1\n"
+                + "Traceback (most recent call last):\n  ImportError)");
+        fields.put("CPU cores", "20");
+        String[] lines = DeviceProbe.formatFields(fields).split("\n");
+        assertEquals("PyTorch   : not available (python exited with code 1", lines[0]);
+        assertEquals("            Traceback (most recent call last):", lines[1]);
+        assertEquals("              ImportError)", lines[2]);
+        assertEquals("CPU cores : 20", lines[3]);
+    }
+
+    @Test
+    @DisplayName("GPU memory is reported when the probe measured it, and omitted when it did not")
+    void environmentReportShowsDeviceMemory() {
+        DeviceProbe.Report measured = new DeviceProbe.Report("2.13.0+cu130", "13.0", true,
+                "NVIDIA RTX 5000 Ada Generation", "sm_89", 32L << 30,
+                List.of("sm_89"), false, false, null);
+        assertTrue(DeviceProbe.environmentReport(measured).contains("GPU memory       : 32.0 GB"));
+        // An older PyTorch without get_device_properties reports 0: leave the line out rather
+        // than claim the card has none.
+        assertFalse(DeviceProbe.environmentReport(
+                cuda("2.13.0+cu130", "13.0", "sm_89", "sm_89")).contains("GPU memory"));
+    }
+
+    @Test
+    @DisplayName("Every line's colon sits in one column, including a row the caller adds")
+    void reportLinesAlignOnTheLongestLabel() {
+        // The dialog prepends its own "CasanovoGUI" row. With the width written into each line
+        // that row sat a column out of step; measuring the labels present is what fixes it.
+        java.util.LinkedHashMap<String, String> fields = new java.util.LinkedHashMap<>();
+        fields.put("CasanovoGUI", "1.3.1");
+        fields.putAll(DeviceProbe.environmentFields(
+                cuda("2.13.0+cu130", "13.0", "sm_89", "sm_89")));
+        String text = DeviceProbe.formatFields(fields);
+        assertEquals(1, text.lines().map(line -> line.indexOf(" : ")).distinct().count(),
+                "colons drift between rows:\n" + text);
+        assertTrue(text.startsWith("CasanovoGUI      : 1.3.1\n"), text);
+    }
+
+    @Test
+    @DisplayName("Device memory is parsed from the probe's byte count")
+    void parsesDeviceMemory() {
+        assertEquals(34359738368L, probe("""
+                torch=2.13.0+cu130
+                cuda_build=13.0
+                cuda_available=True
+                cuda_mem=34359738368
+                """).cudaMemoryBytes());
+        // A PyTorch that could not answer emits no line at all; one that answers strangely is
+        // not worth failing a report over.
+        assertEquals(0L, probe("torch=2.13.0+cpu").cudaMemoryBytes());
+        assertEquals(0L, probe("torch=2.13.0+cu130\ncuda_mem=lots").cudaMemoryBytes());
+    }
 }

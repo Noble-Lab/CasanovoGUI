@@ -50,6 +50,13 @@ if cuda_available:
         emit("cuda_arch", "sm_%d%d" % (major, minor))
     except Exception:
         pass
+    try:
+        # Total VRAM in bytes. The environment report prints it because "out of memory" is the
+        # other way a run dies on a perfectly compatible GPU, and the card's name does not say
+        # which variant (an 8 GB or a 16 GB board of the same model) the user has.
+        emit("cuda_mem", torch.cuda.get_device_properties(0).total_memory)
+    except Exception:
+        pass
 try:
     emit("arch_list", ";".join(torch.cuda.get_arch_list()))
 except Exception:

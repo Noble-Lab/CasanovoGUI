@@ -1,7 +1,11 @@
 package org.casanovo.gui.core;
 
+import com.sun.management.OperatingSystemMXBean;
+
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.management.ManagementFactory;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -56,6 +60,7 @@ public final class DeviceProbe {
      * @param cudaAvailable  {@code torch.cuda.is_available()}
      * @param cudaDeviceName name of CUDA device 0, or {@code null}
      * @param cudaArch       device 0's compute capability as {@code sm_XY}, or {@code null}
+     * @param cudaMemoryBytes device 0's total memory in bytes, or 0 when the probe could not say
      * @param archList       architectures the wheel was built for ({@code torch.cuda.get_arch_list()})
      * @param mpsBuilt       whether the wheel has the Metal backend compiled in
      * @param mpsAvailable   {@code torch.backends.mps.is_available()}
@@ -66,10 +71,19 @@ public final class DeviceProbe {
                          boolean cudaAvailable,
                          String cudaDeviceName,
                          String cudaArch,
+                         long cudaMemoryBytes,
                          List<String> archList,
                          boolean mpsBuilt,
                          boolean mpsAvailable,
                          String error) {
+
+        /** Without a device-memory figure: every report that has no CUDA device to measure. */
+        public Report(String torchVersion, String cudaBuild, boolean cudaAvailable,
+                      String cudaDeviceName, String cudaArch, List<String> archList,
+                      boolean mpsBuilt, boolean mpsAvailable, String error) {
+            this(torchVersion, cudaBuild, cudaAvailable, cudaDeviceName, cudaArch, 0L,
+                    archList, mpsBuilt, mpsAvailable, error);
+        }
 
         /** A wheel with no accelerator backend compiled in — the state that makes PyTorch's
          * "Cannot access accelerator device when none is available." reachable. */
@@ -775,6 +789,7 @@ public final class DeviceProbe {
                 Boolean.parseBoolean(values.getOrDefault("cuda_available", "false")),
                 emptyToNull(values.get("cuda_name")),
                 emptyToNull(values.get("cuda_arch")),
+                parseBytes(values.get("cuda_mem")),
                 List.copyOf(archList),
                 Boolean.parseBoolean(values.getOrDefault("mps_built", "false")),
                 Boolean.parseBoolean(values.getOrDefault("mps_available", "false")),
@@ -783,6 +798,15 @@ public final class DeviceProbe {
 
     private static String emptyToNull(String s) {
         return (s == null || s.isBlank()) ? null : s;
+    }
+
+    /** A byte count the probe emitted, or 0 when it emitted none this PyTorch could produce. */
+    private static long parseBytes(String s) {
+        try {
+            return (s == null || s.isBlank()) ? 0L : Long.parseLong(s.trim());
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
     }
 
     private static Report failed(String why) {
@@ -798,39 +822,219 @@ public final class DeviceProbe {
     // ------------------------------------------------------------------ reporting
 
     /**
-     * A multi-line environment report for the run log and Help &rarr; About, so a user filing a
-     * bug can paste the machine's actual device configuration rather than describing it.
+     * The whole environment report as one aligned block, so a user filing a bug can paste the
+     * machine's actual configuration rather than describing it. The dialog composes the two
+     * halves itself &mdash; {@link #environmentFields} to lay the rows out, {@link #formatFields}
+     * for what its Copy button puts on the clipboard &mdash; because it prepends a row of its own.
      */
     public static String environmentReport(Report r) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("Operating system : ").append(System.getProperty("os.name"))
-                .append(' ').append(System.getProperty("os.version"))
-                .append(" (").append(System.getProperty("os.arch")).append(")\n");
-        sb.append("CPU cores        : ").append(Runtime.getRuntime().availableProcessors()).append('\n');
+        return formatFields(environmentFields(r));
+    }
+
+    /**
+     * The same report as label &rarr; value pairs in display order, for a caller that lays the
+     * rows out itself (the dialog puts them in a grid, in the application's own font) rather
+     * than showing the aligned text {@link #formatFields} produces for the clipboard.
+     */
+    public static Map<String, String> environmentFields(Report r) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("Operating system", System.getProperty("os.name")
+                + " " + System.getProperty("os.version")
+                + " (" + System.getProperty("os.arch") + ")");
+        fields.put("CPU", cpuModel());
+        fields.put("CPU cores", String.valueOf(Runtime.getRuntime().availableProcessors()));
+        fields.put("System memory", systemMemory());
         if (r == null || r.error() != null) {
-            sb.append("PyTorch          : not available (")
-                    .append(r == null ? "probe did not run" : r.error()).append(")\n");
-            return sb.toString();
+            fields.put("PyTorch", "not available ("
+                    + (r == null ? "probe did not run" : r.error()) + ")");
+            return fields;
         }
-        sb.append("PyTorch          : ").append(r.torchVersion()).append('\n');
-        sb.append("PyTorch build    : ")
-                .append(r.cudaBuild() != null ? "CUDA " + r.cudaBuild()
-                        : r.isRocmBuild() ? "ROCm/HIP"
-                        : r.mpsBuilt() ? "Metal (MPS)" : "CPU-only")
-                .append('\n');
+        fields.put("PyTorch", r.torchVersion());
+        fields.put("PyTorch build", r.cudaBuild() != null ? "CUDA " + r.cudaBuild()
+                : r.isRocmBuild() ? "ROCm/HIP"
+                : r.mpsBuilt() ? "Metal (MPS)" : "CPU-only");
         if (r.cudaBuild() != null || r.isRocmBuild()) {
-            sb.append(r.isRocmBuild() ? "ROCm device      : " : "CUDA device      : ")
-                    .append(r.cudaAvailable()
+            fields.put(r.isRocmBuild() ? "ROCm device" : "CUDA device",
+                    r.cudaAvailable()
                             ? r.deviceDescription() + (r.cudaArch() == null ? "" : " (" + r.cudaArch() + ")")
-                            : "none visible")
-                    .append('\n');
+                            : "none visible");
+            if (r.cudaMemoryBytes() > 0) {
+                fields.put("GPU memory", gigabytes(r.cudaMemoryBytes()));
+            }
             if (!r.archList().isEmpty()) {
-                sb.append("Built for        : ").append(String.join(", ", r.archList())).append('\n');
+                fields.put("Built for", String.join(", ", r.archList()));
             }
         }
         if (r.mpsBuilt()) {
-            sb.append("MPS available    : ").append(r.mpsAvailable()).append('\n');
+            fields.put("MPS available", String.valueOf(r.mpsAvailable()));
         }
+        return fields;
+    }
+
+    /**
+     * Fields as {@code label : value} lines, every colon in one column. The width is measured
+     * from the labels present rather than written into each line, so a caller that adds a row of
+     * its own (the dialog prepends the GUI's version) cannot leave it a column out of step.
+     */
+    public static String formatFields(Map<String, String> fields) {
+        int width = fields.keySet().stream().mapToInt(String::length).max().orElse(0);
+        String continuation = " ".repeat(width + 3); // where the values start: label, " : ", value
+        StringBuilder sb = new StringBuilder();
+        fields.forEach((label, value) -> sb.append(String.format(Locale.ROOT, "%-" + width + "s", label))
+                .append(" : ")
+                // A value can span lines — a failed probe carries the tail of the interpreter's
+                // traceback — and a continuation line at column 0 would break the alignment this
+                // method exists to guarantee, on the one report that most needs to stay readable.
+                .append(value == null ? "" : value.replaceAll("\\R", "\n" + continuation))
+                .append('\n'));
         return sb.toString();
+    }
+
+    /** A byte count in GB, 1024-based — how both GPU vendors and the OS state memory sizes. */
+    static String gigabytes(long bytes) {
+        return String.format(Locale.ROOT, "%.1f GB", bytes / (double) (1L << 30));
+    }
+
+    /**
+     * The CPU's marketing name — "Intel(R) Core(TM) Ultra 7 265K", say. The OS line can only give
+     * {@code os.arch}, which names the instruction set ({@code amd64} on every 64-bit x86 chip,
+     * Intel's included) and so tells a bug report nothing about the machine. Java exposes no
+     * property for the model, so each platform is asked the way that platform answers.
+     *
+     * <p>Looked up once. Neither this nor {@link #systemMemory} can change while the JVM runs,
+     * and the lookup forks a process on two of the three platforms &mdash; too much to repeat
+     * every time a report is formatted.</p>
+     */
+    static String cpuModel() {
+        String known = cpuModel;
+        return known != null ? known : (cpuModel = lookUpCpuModel());
+    }
+
+    private static volatile String cpuModel;
+    private static volatile String systemMemory;
+
+    private static String lookUpCpuModel() {
+        try {
+            if (Os.isWindows()) {
+                // The registry value wmic used to report; wmic itself is gone from current Windows.
+                String out = runQuickly("reg", "query",
+                        "HKLM\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                        "/v", "ProcessorNameString");
+                int type = out == null ? -1 : out.indexOf("REG_SZ");
+                if (type >= 0) {
+                    return firstLine(out.substring(type + "REG_SZ".length()));
+                }
+            } else if (Os.isMac()) {
+                String out = runQuickly("/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string");
+                if (out != null && !out.isBlank()) {
+                    return firstLine(out);
+                }
+            } else {
+                // x86 only: an ARM board's cpuinfo has no model name, which is why every branch
+                // here falls through to "unknown" rather than asserting a value. Streamed, not
+                // read whole: the file repeats a block per logical CPU, and the line wanted is in
+                // the first one.
+                try (java.util.stream.Stream<String> lines = Files.lines(Path.of("/proc/cpuinfo"))) {
+                    Optional<String> model = lines
+                            .filter(line -> line.toLowerCase(Locale.ROOT).startsWith("model name")
+                                    && line.indexOf(':') > 0)
+                            .findFirst();
+                    if (model.isPresent()) {
+                        String line = model.get();
+                        return line.substring(line.indexOf(':') + 1).trim();
+                    }
+                }
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // A missing tool or an unreadable /proc costs one line of the report, nothing more.
+        }
+        return "unknown";
+    }
+
+    /** Total physical RAM, or "unknown" where the platform bean cannot supply it. Looked up once. */
+    static String systemMemory() {
+        String known = systemMemory;
+        return known != null ? known : (systemMemory = lookUpSystemMemory());
+    }
+
+    private static String lookUpSystemMemory() {
+        try {
+            if (ManagementFactory.getOperatingSystemMXBean() instanceof OperatingSystemMXBean os) {
+                long bytes = os.getTotalMemorySize();
+                if (bytes > 0) {
+                    return gigabytes(bytes);
+                }
+            }
+        } catch (RuntimeException | LinkageError ignored) {
+            // com.sun.management is an extension: absent from a trimmed runtime, and this is the
+            // one line of the report that would otherwise take the whole report down with it.
+        }
+        return "unknown";
+    }
+
+    /** The first non-blank line of {@code text}, trimmed. */
+    private static String firstLine(String text) {
+        for (String line : text.split("\\R")) {
+            if (!line.isBlank()) {
+                return line.trim();
+            }
+        }
+        return "unknown";
+    }
+
+    /** How long to wait for a host-fact lookup ({@code reg}, {@code sysctl}) before giving up. */
+    private static final long HOST_LOOKUP_TIMEOUT_SECONDS = 5;
+
+    /**
+     * Run a short informational command and return its output, or {@code null} if it fails.
+     *
+     * <p>Collected through a file rather than a pipe, for the reason {@link #runProbe} gives:
+     * reading a pipe to EOF blocks until the process exits, which would put the timeout below out
+     * of reach of the very hang it is there for. This runs on the thread the environment-report
+     * dialog waits on, and that thread holds the busy state the whole window depends on.</p>
+     */
+    private static String runQuickly(String... command) {
+        Path output = null;
+        Process process = null;
+        try {
+            output = Files.createTempFile("casanovo-gui-host", ".txt");
+            output.toFile().deleteOnExit();
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(true);
+            pb.redirectOutput(output.toFile());
+            // Immediate EOF: a tool that unexpectedly asks something must fail, not wait.
+            pb.redirectInput(ProcessBuilder.Redirect.from(new java.io.File(
+                    Os.isWindows() ? "NUL" : "/dev/null")));
+            process = pb.start();
+            if (!process.waitFor(HOST_LOOKUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return null;
+            }
+            // Decoded in the platform's native encoding, not UTF-8: a redirected console tool
+            // writes the OEM code page on Windows, which a UTF-8 decode turns into mojibake in
+            // the one field a bug report is read for.
+            return process.exitValue() == 0
+                    ? new String(Files.readAllBytes(output), nativeCharset())
+                    : null;
+        } catch (IOException | RuntimeException e) {
+            return null;
+        } catch (InterruptedException e) {
+            if (process != null) {
+                process.destroyForcibly(); // cancelled: do not leave the tool running behind us
+            }
+            Thread.currentThread().interrupt();
+            return null;
+        } finally {
+            deleteQuietly(output);
+        }
+    }
+
+    /** The encoding a console tool writes in; UTF-8 where the JVM does not say. */
+    private static Charset nativeCharset() {
+        try {
+            return Charset.forName(System.getProperty("native.encoding", "UTF-8"));
+        } catch (RuntimeException e) {
+            return StandardCharsets.UTF_8;
+        }
     }
 }

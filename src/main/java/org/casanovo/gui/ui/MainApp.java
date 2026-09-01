@@ -135,6 +135,11 @@ public class MainApp extends Application {
     private final SpectrumTrace spectrum = new SpectrumTrace();
     private final UpdateBanner updateBanner = new UpdateBanner();
 
+    /** The app's base font: the Carafe GUI's Segoe UI 13px, with cross-platform fallbacks. */
+    private static final String BASE_FONT_STYLE =
+            "-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif;"
+                    + " -fx-font-size: 13px;";
+
     private static final Pattern PCT = Pattern.compile("(\\d+)%\\|");
     /**
      * tqdm/Lightning-Rich "&lt;done&gt;/&lt;total&gt;" token. The total is a count when known,
@@ -295,8 +300,7 @@ public class MainApp extends Application {
         root.setTop(new VBox(buildMenuBar(), updateBanner));
         root.setCenter(split);
         root.setBottom(buildStatusBar());
-        // Match the Carafe GUI base font: Segoe UI 13px (with cross-platform fallbacks).
-        root.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif; -fx-font-size: 13px;");
+        root.setStyle(BASE_FONT_STYLE);
 
         wireActions();
         refreshSettingsLabel();
@@ -572,7 +576,7 @@ public class MainApp extends Application {
         // Read as a generated-command chip (inset background via app.css), not an editable field.
         commandPreview.getStyleClass().add("command-preview");
         // Match the console output: the app's sans-serif base font (not monospace).
-        commandPreview.setStyle("-fx-font-family: 'Segoe UI', 'Inter', 'SF Pro Text', 'Helvetica Neue', sans-serif; -fx-font-size: 13px;");
+        commandPreview.setStyle(BASE_FONT_STYLE);
         HBox.setHgrow(commandPreview, Priority.ALWAYS);
         HBox command = new HBox(8, new Label("Command:"), commandPreview, stopButton, runButton);
         command.setAlignment(Pos.CENTER_LEFT);
@@ -2591,17 +2595,61 @@ public class MainApp extends Application {
         if (refuseWhileBusy("The environment report")) {
             return;
         }
-        javafx.scene.control.TextArea area = new javafx.scene.control.TextArea("Querying PyTorch\u2026");
-        area.setEditable(false);
-        area.setPrefRowCount(12);
-        area.setPrefColumnCount(64);
-        area.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;");
+        // Label/value rows, so the report can use the application's own font: a padded text block
+        // would need a monospace one to line its colons up, and this dialog is the only place in
+        // the app that would then read in a different typeface.
+        javafx.scene.layout.GridPane rows = new javafx.scene.layout.GridPane();
+        rows.setHgap(16);
+        rows.setVgap(5);
+        rows.setPadding(new Insets(12));
+        javafx.scene.layout.ColumnConstraints labelColumn = new javafx.scene.layout.ColumnConstraints();
+        labelColumn.setMinWidth(Region.USE_PREF_SIZE); // never truncate a label to "\u2026"
+        javafx.scene.layout.ColumnConstraints valueColumn = new javafx.scene.layout.ColumnConstraints();
+        valueColumn.setHgrow(Priority.ALWAYS);
+        rows.getChildren().add(new Label("Querying PyTorch\u2026"));
+        rows.getColumnConstraints().addAll(labelColumn, valueColumn);
+
+        // Fixed size, and a scroll pane rather than a bare grid: the rows arrive from a background
+        // probe, so a container that sized itself to them on arrival would resize the dialog under
+        // the user \u2014 and one that could not scroll would clip whatever did not fit.
+        javafx.scene.control.ScrollPane frame = new javafx.scene.control.ScrollPane(rows);
+        frame.setFitToWidth(true);
+        frame.setPrefSize(560, 256); // the full report plus its padding, with nothing left over
 
         Alert dialog = new Alert(Alert.AlertType.INFORMATION);
         dialog.setTitle("Environment Report");
-        dialog.setHeaderText("Copy this into a bug report.");
-        dialog.getDialogPane().setContent(area);
+        // No header and no icon: the window title already says what this is, and the report
+        // itself is the content \u2014 a banner and a stock "i" would only push it down the dialog.
+        dialog.setHeaderText(null);
+        dialog.setGraphic(null);
+        dialog.getDialogPane().setContent(frame);
+        // On the pane, not on the content: the button bar is the content's sibling, so styling
+        // the content alone would leave Copy and OK in a different face from the report.
+        dialog.getDialogPane().setStyle(BASE_FONT_STYLE);
         dialog.setResizable(true);
+
+        // Selecting a dozen lines of a read-only text area to copy them is the fiddliest part of
+        // filing the bug report this dialog exists to help with. It goes in the button bar the
+        // dialog already has (left of OK, the ButtonBar's own place for an action that is not a
+        // response), rather than in a row of its own above it.
+        javafx.beans.property.StringProperty plain = new javafx.beans.property.SimpleStringProperty("");
+        ButtonType copyType = new ButtonType("Copy", ButtonBar.ButtonData.LEFT);
+        dialog.getDialogPane().getButtonTypes().add(copyType);
+        Button copy = (Button) dialog.getDialogPane().lookupButton(copyType);
+        copy.disableProperty().bind(plain.isEmpty()); // nothing to copy until the probe returns
+        copy.addEventFilter(javafx.event.ActionEvent.ACTION, e -> {
+            javafx.scene.input.ClipboardContent clip = new javafx.scene.input.ClipboardContent();
+            clip.putString(plain.get());
+            javafx.scene.input.Clipboard.getSystemClipboard().setContent(clip);
+            // Say so: the dialog deliberately stays open, and the rows are labels the user cannot
+            // select, so without this the click is indistinguishable from a dead button.
+            copy.setText("Copied");
+            javafx.animation.PauseTransition revert =
+                    new javafx.animation.PauseTransition(javafx.util.Duration.seconds(1.2));
+            revert.setOnFinished(done -> copy.setText("Copy"));
+            revert.play();
+            e.consume(); // a button bar button closes the dialog otherwise
+        });
         // Not the Alert default (APPLICATION_MODAL): the probe this waits on can hang — a wedged
         // driver, a stalled `conda run` — and a modal dialog would block input to the owner
         // window, taking with it the Stop button that is the only way to cancel the probe.
@@ -2612,19 +2660,22 @@ public class MainApp extends Application {
 
         // The probe launches an interpreter on its first call, so keep it off the FX thread.
         Thread worker = new Thread(() -> {
-            String text;
+            Map<String, String> fields = new LinkedHashMap<>();
             try {
-                text = "CasanovoGUI     : " + UpdateChecker.guiVersion() + "\n"
-                        + DeviceProbe.environmentReport(DeviceProbe.probe(settings));
+                fields.put("CasanovoGUI", UpdateChecker.guiVersion());
+                fields.putAll(DeviceProbe.environmentFields(DeviceProbe.probe(settings)));
             } catch (Throwable t) {
                 // Nothing else ever fills this dialog, so an unguarded throw would leave it on
                 // "Querying PyTorch…" for good. Why it failed is itself worth reporting.
-                text = "Environment report failed: " + t;
+                fields.put("Report failed", String.valueOf(t));
             }
-            String result = text;
             Platform.runLater(() -> {
+                // Fill first, release the busy state second: endDeviceCheck() touches half the
+                // window (busy state, run controls, the preview), and a throw from any of it must
+                // not be what leaves this dialog on "Querying PyTorch…" for good.
+                plain.set(DeviceProbe.formatFields(fields)); // the clipboard still gets aligned text
+                fillReportRows(rows, fields);
                 endDeviceCheck();
-                area.setText(result);
             });
         }, "environment-report");
         // This launches an interpreter against the configured environment, exactly as a pre-run
@@ -2635,11 +2686,30 @@ public class MainApp extends Application {
         try {
             worker.start();
         } catch (Throwable t) {
+            // One map for both, as the worker path does: what the user copies has to be what the
+            // dialog shows, and why it failed is worth pasting too.
+            Map<String, String> failure = new LinkedHashMap<>();
+            failure.put("CasanovoGUI", UpdateChecker.guiVersion());
+            failure.put("Report failed", String.valueOf(t));
+            plain.set(DeviceProbe.formatFields(failure));
+            fillReportRows(rows, failure);
             endDeviceCheck();
-            area.setText("Environment report failed: " + t);
         }
 
         dialog.show();
+    }
+
+    /** Fill the environment report's grid: one label/value row per field, long values wrapping. */
+    private static void fillReportRows(javafx.scene.layout.GridPane grid, Map<String, String> fields) {
+        grid.getChildren().clear();
+        int row = 0;
+        for (Map.Entry<String, String> field : fields.entrySet()) {
+            Label value = new Label(field.getValue());
+            value.setWrapText(true); // the arch list is long enough to need a second line
+            grid.add(new Label(field.getKey()), 0, row);
+            grid.add(value, 1, row);
+            row++;
+        }
     }
 
     private void showAbout() {
