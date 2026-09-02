@@ -100,6 +100,111 @@ class RemoteInstallScriptTest {
         return new Result(p.exitValue(), out, uvCalls);
     }
 
+    /** How {@code ldd} behaves on the host under test. */
+    private enum Ldd {
+        /** Runs and answers (the normal case). */
+        WORKS,
+        /** Runs and fails, as it does on a file it cannot map or under a noexec mount. */
+        FAILS,
+        /** Not installed on the host at all. */
+        ABSENT
+    }
+
+    /**
+     * {@code ldd} as a shell function: reports every soname listed in {@code $MISSING_FILE} as not
+     * found, or fails the way glibc's does. {@code command} is wrapped so {@link Ldd#ABSENT} can be
+     * tested on a machine that does have an ldd.
+     */
+    private static final String STUB_LDD = """
+            ldd() {
+              if [ -n "${LDD_FAILS:-}" ]; then echo 'not a dynamic executable' >&2; return 1; fi
+              if [ -s "$MISSING_FILE" ]; then
+                while read -r so; do printf '\\t%s => not found\\n' "$so"; done < "$MISSING_FILE"
+              fi
+              printf '\\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x0)\\n'
+            }
+            command() {
+              if [ -n "${LDD_ABSENT:-}" ] && [ "$1" = "-v" ] && [ "$2" = "ldd" ]; then return 1; fi
+              builtin command "$@"
+            }
+            """;
+
+    /** The two files the stub consists of, as the script would leave them in the venv. */
+    private record Stub(Path py, Path pth) {
+        boolean present() {
+            return Files.exists(py) || Files.exists(pth);
+        }
+    }
+
+    private static Stub stubIn(Path dir) {
+        Path sitePackages = dir.resolve("venv/lib/python3.11/site-packages");
+        return new Stub(sitePackages.resolve(RemoteInstaller.DRAW_STUB + ".py"),
+                sitePackages.resolve(RemoteInstaller.DRAW_STUB + ".pth"));
+    }
+
+    /** What {@link #runDrawCheck} seeds into site-packages before running the script. */
+    private static final String STALE_PY = "# a stub from an older Casanovo GUI";
+    private static final String STALE_PTH = "import something_else";
+
+    /**
+     * Run {@link RemoteInstaller#rdkitDrawStubLines()} against the stub {@code ldd}, with the given
+     * sonames missing, optionally with an rdkit module and a previously written stub in the venv.
+     */
+    private static Result runDrawCheck(Path dir, boolean rdkitPresent, boolean stubPresent,
+                                       List<String> missing, Ldd ldd)
+            throws IOException, InterruptedException {
+        Path sitePackages = dir.resolve("venv/lib/python3.11/site-packages");
+        Files.createDirectories(sitePackages);
+        if (rdkitPresent) {
+            Path draw = sitePackages.resolve("rdkit/Chem/Draw");
+            Files.createDirectories(draw);
+            Files.writeString(draw.resolve("rdMolDraw2D.so"), "", StandardCharsets.UTF_8);
+        }
+        if (stubPresent) {
+            Stub stub = stubIn(dir);
+            Files.writeString(stub.py(), STALE_PY, StandardCharsets.UTF_8);
+            Files.writeString(stub.pth(), STALE_PTH, StandardCharsets.UTF_8);
+        }
+        Files.writeString(dir.resolve("missing.txt"),
+                missing.isEmpty() ? "" : String.join(SEP, missing) + SEP, StandardCharsets.UTF_8);
+        Path bashWorkDir = dir.getParent();
+        String bashDir = bashWorkDir.relativize(dir).toString().replace('\\', '/');
+
+        List<String> script = new ArrayList<>();
+        script.add("set -e");
+        script.add("export MISSING_FILE=" + RemoteShell.shq(bashDir + "/missing.txt"));
+        if (ldd == Ldd.FAILS) {
+            script.add("export LDD_FAILS=1");
+        }
+        if (ldd == Ldd.ABSENT) {
+            script.add("export LDD_ABSENT=1");
+        }
+        script.add(STUB_LDD);
+        script.add("VENV=" + RemoteShell.shq(bashDir + "/venv"));
+        script.addAll(RemoteInstaller.rdkitDrawStubLines());
+        Path file = dir.resolve("draw.sh");
+        Files.writeString(file, String.join("\n", script) + "\n", StandardCharsets.UTF_8);
+
+        ProcessBuilder pb = new ProcessBuilder(BASH, bashDir + "/draw.sh");
+        pb.directory(bashWorkDir.toFile());
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertTrue(p.waitFor(60, TimeUnit.SECONDS), "the stub check should finish promptly");
+        // No temp file may outlive the script, whichever branch it took.
+        try (var entries = Files.list(dir.resolve("venv/lib/python3.11/site-packages"))) {
+            assertTrue(entries.noneMatch(e -> e.getFileName().toString().endsWith(".tmp")),
+                    "the atomic write must leave no .tmp behind");
+        }
+        return new Result(p.exitValue(), out, List.of());
+    }
+
+    /** The common case: an ldd that works and a venv with no stub in it yet. */
+    private static Result runDrawCheck(Path dir, boolean rdkitPresent, boolean stubPresent,
+                                       List<String> missing) throws IOException, InterruptedException {
+        return runDrawCheck(dir, rdkitPresent, stubPresent, missing, Ldd.WORKS);
+    }
+
     private static Map<String, String> failing(String output, int code) {
         Map<String, String> env = new HashMap<>();
         env.put("FAIL_OUTPUT", output);
@@ -293,5 +398,141 @@ class RemoteInstallScriptTest {
 
         assertEquals(5, r.exitCode(), "exit 5 says the failure was not the flag's fault");
         assertEquals(1, r.uvCalls().size(), "and nothing is retried: " + r.uvCalls());
+    }
+
+    // ---------------------------------------------------------------- rdkit.Chem.Draw stub
+
+    @Test
+    @DisplayName("A host that can load rdkit.Chem.Draw is left alone")
+    void loadableDrawLeavesTheVenvAlone(@TempDir Path dir) throws Exception {
+        requireBash();
+        Result r = runDrawCheck(dir, true, false, List.of());
+
+        assertEquals(0, r.exitCode(), r.output());
+        assertFalse(stubIn(dir).present(), "no stub where the real module loads");
+        assertFalse(r.output().contains("rdkit.Chem.Draw"), "and nothing to say about it: " + r.output());
+    }
+
+    @Test
+    @DisplayName("Where rdkit.Chem.Draw cannot load, the stub is written into site-packages")
+    void unloadableDrawGetsTheStub(@TempDir Path dir) throws Exception {
+        requireBash();
+        // The shape of the EC2 failure: the venv is fine, the image is headless, and ldd on the
+        // one module that fails to import names both missing libraries at once.
+        Result r = runDrawCheck(dir, true, false, List.of("libXrender.so.1", "libXext.so.6"));
+
+        assertEquals(0, r.exitCode(), r.output());
+        Stub stub = stubIn(dir);
+        assertEquals("import " + RemoteInstaller.DRAW_STUB + SEP,
+                Files.readString(stub.pth(), StandardCharsets.UTF_8),
+                "the .pth is what makes Python run the stub at every start");
+        assertEquals(RemoteInstaller.DRAW_STUB_PY, Files.readString(stub.py(), StandardCharsets.UTF_8),
+                "the heredoc must deliver the Python byte for byte");
+        assertTrue(r.output().contains("libXrender.so.1") && r.output().contains("libXext.so.6"),
+                "the log says which libraries are missing: " + r.output());
+        assertTrue(r.output().contains("Casanovo does not use it"), r.output());
+    }
+
+    @Test
+    @DisplayName("A stub from an earlier run is rewritten, not trusted")
+    void existingStubIsRefreshed(@TempDir Path dir) throws Exception {
+        requireBash();
+        Result r = runDrawCheck(dir, true, true, List.of("libXrender.so.1"));
+
+        assertEquals(0, r.exitCode(), r.output());
+        Stub stub = stubIn(dir);
+        assertEquals(RemoteInstaller.DRAW_STUB_PY, Files.readString(stub.py(), StandardCharsets.UTF_8));
+        // The .pth is the half that makes Python load the stub, so it has to be refreshed too:
+        // without this the seeded stale .pth would still be there and the stub inert.
+        assertEquals("import " + RemoteInstaller.DRAW_STUB + SEP,
+                Files.readString(stub.pth(), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    @DisplayName("Once the libraries exist the stub is removed and the real module is back")
+    void stubIsRemovedWhenDrawLoadsAgain(@TempDir Path dir) throws Exception {
+        requireBash();
+        Result r = runDrawCheck(dir, true, true, List.of());
+
+        assertEquals(0, r.exitCode(), r.output());
+        assertFalse(stubIn(dir).present(), "both files gone: " + r.output());
+        assertTrue(r.output().contains("removed the stub"), r.output());
+    }
+
+    @Test
+    @DisplayName("No rdkit module in the venv means there is nothing to stub")
+    void noRdkitModuleIsNothingToStub(@TempDir Path dir) throws Exception {
+        requireBash();
+        Result r = runDrawCheck(dir, false, false, List.of("libXrender.so.1"));
+
+        assertEquals(0, r.exitCode(), r.output());
+        assertFalse(stubIn(dir).present());
+    }
+
+    @Test
+    @DisplayName("A stub left behind after rdkit is gone is cleaned up")
+    void leftoverStubWithoutRdkitIsRemoved(@TempDir Path dir) throws Exception {
+        requireBash();
+        // Nothing to shadow today, but the finder intercepts rdkit.Chem.Draw unconditionally, so
+        // leaving it would silently stub out a future rdkit install in this venv.
+        Result r = runDrawCheck(dir, false, true, List.of());
+
+        assertEquals(0, r.exitCode(), r.output());
+        assertFalse(stubIn(dir).present(), "both files gone: " + r.output());
+        assertTrue(r.output().contains("leftover"), r.output());
+    }
+
+    @Test
+    @DisplayName("An ldd that fails is not evidence that the libraries are there")
+    void failedLddKeepsTheStub(@TempDir Path dir) throws Exception {
+        requireBash();
+        // The dangerous direction. ldd's status used to be discarded by the pipeline, so a failed
+        // probe read as "nothing missing" and deleted a stub the host still needed — leaving the
+        // next run to die on the original ImportError.
+        Result r = runDrawCheck(dir, true, true, List.of("libXrender.so.1"), Ldd.FAILS);
+
+        assertEquals(0, r.exitCode(), r.output());
+        assertTrue(stubIn(dir).present(), "the stub survives an unusable probe: " + r.output());
+        assertEquals(STALE_PY, Files.readString(stubIn(dir).py(), StandardCharsets.UTF_8),
+                "and is left exactly as it was, not rewritten on a guess");
+        assertTrue(r.output().contains("keeping the stub"), r.output());
+    }
+
+    @Test
+    @DisplayName("A host with no ldd at all also keeps the stub it has")
+    void absentLddKeepsTheStub(@TempDir Path dir) throws Exception {
+        requireBash();
+        Result r = runDrawCheck(dir, true, true, List.of("libXrender.so.1"), Ldd.ABSENT);
+
+        assertEquals(0, r.exitCode(), r.output());
+        assertTrue(stubIn(dir).present(), r.output());
+        assertTrue(r.output().contains("keeping the stub"), r.output());
+    }
+
+    @Test
+    @DisplayName("Without a stub and without a usable ldd, nothing is written on a guess")
+    void absentLddWritesNothing(@TempDir Path dir) throws Exception {
+        requireBash();
+        Result r = runDrawCheck(dir, true, false, List.of("libXrender.so.1"), Ldd.ABSENT);
+
+        assertEquals(0, r.exitCode(), r.output());
+        assertFalse(stubIn(dir).present(), "no stub invented for an unprobeable host: " + r.output());
+    }
+
+    @Test
+    @DisplayName("The stub the script writes is the Python that was verified to work")
+    void theStubIsValidPython(@TempDir Path dir) throws Exception {
+        requireBash();
+        runDrawCheck(dir, true, false, List.of("libXrender.so.1"));
+
+        String py = Files.readString(stubIn(dir).py(), StandardCharsets.UTF_8);
+        // The traps this stub exists to avoid, asserted on the text that lands on the host: an
+        // ImportError here is fatal under hasattr(), importlib.abc costs typing at every start,
+        // and a package spec would fabricate submodules instead of failing.
+        assertTrue(py.contains("raise AttributeError"), py);
+        assertFalse(py.contains("raise ImportError"), py);
+        assertFalse(py.contains("importlib.abc\n") || py.contains("import importlib.abc"), py);
+        assertFalse(py.contains("is_package"), py);
+        assertTrue(py.contains("%r"), "the error names the attribute that was wanted: " + py);
     }
 }
