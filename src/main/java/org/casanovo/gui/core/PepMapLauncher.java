@@ -240,10 +240,13 @@ public final class PepMapLauncher {
                 + "Retry later, or set a local pepmap jar in Settings.";
     }
 
-    /** Mapping options, mirroring pepmap's CLI flags. */
+    /**
+     * Mapping options, mirroring the pepmap CLI flags the GUI actually sends. {@code -l} is not
+     * among them: the View panel's "Min peptide length" filters the peptide list itself, so the
+     * file handed to pepmap already honours it and the flag could never fire.
+     */
     public static final class Options {
         public boolean i2l = false;     // -i2l
-        public int minLength = 0;       // -l
         public int mismatches = 0;      // -mm
         public double xShare = 0.0;     // -x
         public int cpus = 0;            // -c  (0 = all available)
@@ -308,10 +311,6 @@ public final class PepMapLauncher {
         if (opts.xShare > 0) {
             cmd.add("-x");
             cmd.add(String.valueOf(opts.xShare));
-        }
-        if (opts.minLength > 0) {
-            cmd.add("-l");
-            cmd.add(String.valueOf(opts.minLength));
         }
         if (opts.cpus > 0) {
             cmd.add("-c");
