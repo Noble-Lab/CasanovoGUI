@@ -1743,8 +1743,7 @@ public class ViewPane extends BorderPane {
                 "Skip peptides shorter than this many residues. Like the score cutoff, they are "
                         + "dropped from the run, so they appear in neither the mapped nor the "
                         + "unmapped table. Defaults to " + DEFAULT_MIN_PEPTIDE_LEN + ", Casanovo's "
-                        + "own minimum; short peptides match a reference proteome largely by "
-                        + "chance. 0 = no minimum length.");
+                        + "own minimum. 0 = no length filtering.");
 
         // ---- Peptide mapping: how the surviving peptides are matched against the reference FASTA.
         // The heading carries the tooltip for the whole section: JavaFX delivers no tooltip on a
