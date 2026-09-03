@@ -147,7 +147,8 @@ class Result:
     peak_host_gb: float
     peak_gpu_mib: int | None          # device memory attributed to this run
     gpu_per_process: bool             # False when measured as a rise above baseline
-    gpu_baseline_mib: int             # other GPU use at launch; small means the delta is sound
+    gpu_baseline_mib: int | None      # other GPU use at launch; small means the delta is
+                                      # sound, None when nvidia-smi did not answer
     peak_gpu_tensors_mib: int | None  # tensor bytes PyTorch allocated (Casanovo's report)
     exit_code: int
 
@@ -189,11 +190,17 @@ def gpu_process_memory(pids: set[int]) -> int | None:
     return total if matched else None
 
 
-def gpu_total_memory() -> int:
-    """Total device memory in use, in MiB, across everything on the card."""
+def gpu_total_memory() -> int | None:
+    """Total device memory in use, in MiB, across everything on the card, or None.
+
+    None when nvidia-smi could not be asked, or answered with something that is not a
+    number. A failed probe must not read as an idle card: this figure is the baseline
+    every later sample is measured against, so a wrong 0 would publish the card's whole
+    in-use total as this run's peak -- under a baseline claiming the card was idle.
+    """
     out = _run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"])
     line = out.splitlines()[0] if out else ""
-    return int(line) if line.strip().isdigit() else 0
+    return int(line) if line.strip().isdigit() else None
 
 
 #: Sampling period. Memory peaks here are plateaus lasting minutes, so a coarse period
@@ -300,10 +307,15 @@ def measure(casanovo: Path, config: Path, spectra_file: Path, out_dir: Path,
                         if attributed is None:
                             # WDDM: attribute the rise above the pre-run baseline instead. Sound
                             # only while nothing else is using the card, which is why the
-                            # baseline is reported alongside the result.
+                            # baseline is reported alongside the result. Without a baseline to
+                            # measure against, take no sample at all: the card's whole in-use
+                            # total is not this run's peak, and a gap beats a wrong figure.
                             gpu_per_process = False
-                            attributed = max(0, gpu_total_memory() - gpu_baseline)
-                        peak_gpu = max(peak_gpu, attributed)
+                            total_now = gpu_total_memory()
+                            if gpu_baseline is not None and total_now is not None:
+                                attributed = max(0, total_now - gpu_baseline)
+                        if attributed is not None:
+                            peak_gpu = max(peak_gpu, attributed)
                 except psutil.Error:
                     pass
                 if proc.poll() is not None:
@@ -361,7 +373,10 @@ def render(results: list[Result], context: dict[str, str]) -> str:
         if r.device != "cpu" and not r.gpu_per_process:
             reason = "no NVIDIA tooling on this platform" if r.device == "mps" \
                 else "per-process accounting unavailable in this driver mode"
-            lines.append(f"- **GPU memory baseline before the run:** {r.gpu_baseline_mib:,} MiB"
+            baseline = ("unavailable, nvidia-smi did not answer"
+                        if r.gpu_baseline_mib is None
+                        else f"{r.gpu_baseline_mib:,} MiB")
+            lines.append(f"- **GPU memory baseline before the run:** {baseline}"
                          f" ({reason})")
     lines.append("")
     lines += [
