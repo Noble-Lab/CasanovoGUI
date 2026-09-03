@@ -185,7 +185,13 @@ public class ViewPane extends BorderPane {
     private final RadioButton normalizedScoreRadio =
             new RadioButton(MzTabScores.ScoreType.NORMALIZED.label());
     private final Spinner<Double> scoreSpin = new Spinner<>(0.0, 1.0, 0.0, 0.05);
-    private final Spinner<Integer> minLenSpin = new Spinner<>(0, 100, 0);
+    // Defaults to DEFAULT_MIN_PEPTIDE_LEN, matching Casanovo's own min_peptide_len: a run rarely
+    // reports anything shorter, and peptides that short match a reference proteome largely by
+    // chance. 0 turns the cutoff off. A fixed default on purpose — deriving it per file needs a
+    // background scan whose interaction with a hand-set value proved a reliable source of silent
+    // data loss. The tooltip names the value, so read it from here rather than repeating it.
+    private static final int DEFAULT_MIN_PEPTIDE_LEN = 6;
+    private final Spinner<Integer> minLenSpin = new Spinner<>(0, 100, DEFAULT_MIN_PEPTIDE_LEN);
     private final Spinner<Integer> mismatchSpin = new Spinner<>(0, 5, 0);
     private final Spinner<Double> xShareSpin = new Spinner<>(0.0, 1.0, 0.0, 0.05);
     private final Spinner<Integer> cpusSpin = new Spinner<>(0, 256, 0);
@@ -423,8 +429,9 @@ public class ViewPane extends BorderPane {
         topControls.setMaxWidth(Double.MAX_VALUE);
         topBox = new VBox(4, topControls, topCell);
 
-        // Score plot (from the former View tab): cumulative PSM / peptide counts vs peptide score, over
-        // ALL PSMs in the mzTab (independent of the Min peptide score setting).
+        // Score plot (from the former View tab): cumulative PSM / peptide counts vs peptide score,
+        // over every length-admitted PSM. Independent of the Min peptide score setting, which is
+        // the axis — but not of Min peptide length, which is non-zero by default.
         scoreChart.setLegendVisible(false);
         scoreChart.setAnimated(false);
         scoreChart.setCreateSymbols(true);
@@ -1735,7 +1742,9 @@ public class ViewPane extends BorderPane {
         gridRow(grid, r++, "Min peptide length", minLenSpin,
                 "Skip peptides shorter than this many residues. Like the score cutoff, they are "
                         + "dropped from the run, so they appear in neither the mapped nor the "
-                        + "unmapped table. 0 = no minimum length.");
+                        + "unmapped table. Defaults to " + DEFAULT_MIN_PEPTIDE_LEN + ", Casanovo's "
+                        + "own minimum; short peptides match a reference proteome largely by "
+                        + "chance. 0 = no minimum length.");
 
         // ---- Peptide mapping: how the surviving peptides are matched against the reference FASTA.
         // The heading carries the tooltip for the whole section: JavaFX delivers no tooltip on a
@@ -1751,7 +1760,9 @@ public class ViewPane extends BorderPane {
                         + "since I and L are identical in mass."));
         r = spanRow(grid, r, i2lCheck);
         Label mismatchLabel = gridRow(grid, r++, "Allowed mismatches", mismatchSpin,
-                "Maximum number of mismatched residues allowed between a peptide and a protein. 0 = exact matches only.");
+                "Maximum number of mismatched residues allowed between a peptide and a protein. 0 = exact matches only. "
+                        + "Note that allowing mismatches makes short peptides much more likely to map to reference "
+                        + "proteins by chance, in particular peptides as short as 6 residues.");
         Label xShareLabel = gridRow(grid, r++, "Allowed X fraction", xShareSpin,
                 "Maximum fraction of the aligned region (the peptide-length window on the protein) that may consist of X (unknown) residues, range 0–1. 0 = disallow X positions.");
         Label cpusLabel = gridRow(grid, r++, "CPUs", cpusSpin,
@@ -2231,15 +2242,22 @@ public class ViewPane extends BorderPane {
             }
             if (bareSeqs.isEmpty()) {
                 Platform.runLater(() -> {
-                    String limits = (minScore > 0 ? "score ≥ " + minScore : "")
-                            + (minScore > 0 && minLength > 0 ? " and " : "")
-                            + (minLength > 0 ? "length ≥ " + minLength : "");
+                    // Name only the cutoffs that actually removed a PSM: the length cutoff is
+                    // non-zero by default, so reporting it unconditionally would send the user to
+                    // change a setting that may have removed nothing.
+                    boolean byLength = longEnough.size() < all.size();
+                    // No minScore > 0 guard: with the cutoff at 0, psms IS longEnough, so the
+                    // size comparison is already false. Same rule as byLength, written the same.
+                    boolean byScore = psms.size() < longEnough.size();
+                    String limits = (byScore ? "score ≥ " + minScore : "")
+                            + (byScore && byLength ? " and " : "")
+                            + (byLength ? "length ≥ " + minLength : "");
                     String msg = limits.isEmpty()
                             ? "No peptides found in the mzTab."
                             : "No peptides at " + limits + ".";
                     // Only when a score cutoff is what could have emptied the run: with the cutoff
                     // at 0 nothing is judged on score, so "set the cutoff to 0" is no remedy at all.
-                    if (noAaScores && minScore > 0) {
+                    if (noAaScores && byScore) {
                         msg += " mzTab has no aa_scores column, so \"" + MzTabScores.ScoreType.NORMALIZED.label()
                                 + "\" cannot be computed — switch to \"" + MzTabScores.ScoreType.PEPTIDE.label()
                                 + "\" or set the cutoff to 0.";
@@ -2267,7 +2285,12 @@ public class ViewPane extends BorderPane {
                     bestByPeptide = bestMap;
                     loadedMzTab = mzTab;
                     applyResults(res);
-                    status("No reference FASTA — loaded " + totalInput + " peptides as unmapped.");
+                    // Name the dropped PSMs: the length cutoff is non-zero by default, so a
+                    // count reported without them looks like the whole mzTab when it is not.
+                    int dropped = all.size() - psms.size();
+                    status("No reference FASTA — loaded " + totalInput + " peptides as unmapped."
+                            + (dropped > 0 ? " " + dropped + " PSMs were below the score or "
+                                    + "length cutoff and skipped." : ""));
                     setRunning(false);
                 });
                 return;
@@ -2777,7 +2800,9 @@ public class ViewPane extends BorderPane {
             cards.add(statCard("PSMs mapped", fmt(r.mappedPsms()),
                     String.format(Locale.US, "%.1f%% of %,d", psmRate * 100, r.totalPsms()), psmRate));
         } else {
-            cards.add(statCard("Peptides", fmt(total), "loaded from the mzTab", null));
+            // Not "loaded from the mzTab": the score and length cutoffs have already run, and
+            // the length one is non-zero by default, so this is what came through them.
+            cards.add(statCard("Peptides", fmt(total), "passing the filters", null));
             cards.add(statCard("PSMs", fmt(r.totalPsms()), null, null));
         }
         for (int i = 0; i < cards.size(); i++) {

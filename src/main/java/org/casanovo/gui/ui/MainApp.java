@@ -2559,7 +2559,10 @@ public class MainApp extends Application {
         File mztab = findNewestMzTab(pendingOutputDir, pendingRunStartMs);
         limelight.onResultReady(mztab); // limelight
         if (mztab != null) {
-            // Auto-fill the View tab's peptides field (mapping is run on demand).
+            // Auto-fill the View tab's peptides field (mapping is run on demand). Its minimum
+            // peptide length is left alone: this config is not necessarily the one the run used
+            // (an external --config, or "Use GUI parameters" off), and min_peptide_len counts
+            // tokens where the panel counts residues, so it is no safer a source than the default.
             viewPane.setPeptides(mztab);
         }
         return mztab;
