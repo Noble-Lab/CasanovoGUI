@@ -42,6 +42,9 @@ your results in the **View** tab — see
 **[Getting Started: Graphical User Interface](https://casanovo.readthedocs.io/en/latest/getting_started_gui.html)**
 in the [Casanovo documentation](https://casanovo.readthedocs.io/en/latest/).
 
+How long a run takes on a GPU or a CPU, and how much memory it needs, is
+measured for each major Casanovo release in **[Performance](docs/performance.md)**.
+
 
 ## How to cite
 
