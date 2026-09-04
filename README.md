@@ -10,7 +10,10 @@ console. The GUI wraps Casanovo's command-line sub-commands — *de novo* sequen
 database search, evaluation, and training — each as its own tab, plus a **View** tab
 to explore your results: map peptides to a reference proteome, inspect score
 distributions and per-residue confidence, and open spectra in
-[PDV](https://github.com/wenbostar/PDV) for annotated-spectrum visualization.
+[PDV](https://github.com/wenbostar/PDV) for annotated-spectrum visualization. An
+**FDR** tab controls the false discovery rate of your *de novo* peptides with
+[glissade](https://github.com/Noble-Lab/glissade), given a database search of the
+same spectra.
 
 <img src="docs/images/CasanovoGUI.png" alt="CasanovoGUI" width="70%">
 

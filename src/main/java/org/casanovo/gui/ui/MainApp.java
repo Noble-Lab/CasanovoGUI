@@ -115,6 +115,8 @@ public class MainApp extends Application {
     private ViewPane viewPane;
     /** The View tab header; kept as a field so tab-locking can treat it specially (its mapping Run/Stop live inside it). */
     private Tab viewTab;
+    private FdrPane fdrPane; // fdr
+    private Tab fdrTab; // fdr
 
     private final Label settingsLabel = new Label();
     /** The Casanovo version, in its own readout label so a long executable path can't truncate it away. */
@@ -217,6 +219,8 @@ public class MainApp extends Application {
     // Inputs + output dir captured at run start, resolved when the run finishes so the
     // produced mzTab can auto-fill the View tab.
     private List<File> pendingSpectra;
+    /** Whether the run in flight was de novo sequencing (not Evaluate) — the only glissade input. */
+    private boolean pendingWasDenovo; // fdr
     private File pendingOutputDir;
     private long pendingRunStartMs;
     /** Drives open PDV windows (e.g. peptide-click -> select PSM) over their control port. */
@@ -267,6 +271,12 @@ public class MainApp extends Application {
         viewTab.setTooltip(FxUtils.tooltip("Map the de novo peptides in an mzTab back to proteins in a reference "
                 + "FASTA, with coverage and per-protein views."));
         tabs.getTabs().add(viewTab);
+        fdrPane = new FdrPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s), validation); // fdr
+        fdrPane.runningProperty().addListener((o, a, b) -> { updateChromeForTab(); refreshPreview(); refreshTabLock(isJobRunning() || convertingRaw); consoleFrame.setState(b ? ConsoleBorderEffect.State.RUNNING : ConsoleBorderEffect.State.IDLE); }); // fdr
+        fdrTab = new Tab("FDR", fdrPane); // fdr
+        fdrTab.setTooltip(FxUtils.tooltip("Control the false discovery rate of de novo peptides with glissade: needs the de novo result, a Percolator search of the same spectra, and the reference FASTA.")); // fdr
+        fdrTab.setOnSelectionChanged(e -> { if (fdrTab.isSelected()) fdrPane.refreshInstallState(); }); // fdr: Casanovo reinstalls clear the shared venv, so re-check on entry
+        tabs.getTabs().add(fdrTab); // fdr
         tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
             clearValidationError();
             refreshPreview();
@@ -330,6 +340,8 @@ public class MainApp extends Application {
                 () -> {
                     if (isViewTab()) {
                         viewPane.fireRun();
+                    } else if (isFdrTab()) { // fdr
+                        fdrPane.fireRun(); // fdr
                     } else if (!runButton.isDisabled()) {
                         runButton.fire();
                     }
@@ -339,6 +351,8 @@ public class MainApp extends Application {
                 () -> {
                     if (isViewTab()) {
                         viewPane.fireStop();
+                    } else if (isFdrTab()) { // fdr
+                        fdrPane.fireStop(); // fdr
                     } else if (!stopButton.isDisabled()) {
                         stopButton.fire();
                     }
@@ -763,6 +777,7 @@ public class MainApp extends Application {
                 : convertingRaw ? "a file conversion is in progress"
                 : checkingDevice ? "the compute device is being checked"
                 : viewPane.runningProperty().get() ? "a mapping is in progress"
+                : fdrPane.runningProperty().get() ? "an FDR analysis is in progress" // fdr
                 : null;
     }
 
@@ -830,11 +845,12 @@ public class MainApp extends Application {
         // The View tab streams pepmap output to the shared console; show it only while a mapping
         // runs, and size it to sit just below the Run button so the settings panel stays unscrolled.
         boolean mapping = isViewTab() && viewPane.runningProperty().get();
+        boolean fdr = isFdrTab() && fdrPane.runningProperty().get(); // fdr
         paramsRow.setVisible(commandTab);
         paramsRow.setManaged(commandTab);
         cmdRow.setVisible(commandTab);
         cmdRow.setManaged(commandTab);
-        if (commandTab || mapping) {
+        if (commandTab || mapping || fdr) { // fdr
             boolean added = false;
             if (!split.getItems().contains(consoleView)) {
                 split.getItems().add(consoleView);
@@ -872,6 +888,11 @@ public class MainApp extends Application {
         Tab t = tabs.getSelectionModel().getSelectedItem();
         return t != null && t.getContent() == viewPane;
     }
+
+    private boolean isFdrTab() { // fdr
+        Tab t = tabs.getSelectionModel().getSelectedItem(); // fdr
+        return t != null && t.getContent() == fdrPane; // fdr
+    } // fdr
 
     /**
      * Confirm the selected accelerator is actually usable before launching Casanovo.
@@ -1836,6 +1857,7 @@ public class MainApp extends Application {
         File workingDir = inferWorkingDir(command);
         // Remember the inputs + where the result will land so "Open in PDV" can load it directly.
         pendingSpectra = spectra;
+        pendingWasDenovo = "sequence".equals(command.getSubcommand()) && !command.getArguments().contains("--evaluate"); // fdr
         pendingOutputDir = (workingDir != null) ? workingDir : new File(System.getProperty("user.dir"));
         limelight.onRunStarted(command, spectra); // limelight
         pendingRunStartMs = System.currentTimeMillis() - 3000L; // small clock-skew buffer
@@ -2511,9 +2533,14 @@ public class MainApp extends Application {
         }
         tabs.setDisable(false);
         boolean mapping = viewPane.runningProperty().get();
+        boolean fdr = fdrPane.runningProperty().get(); // fdr
         for (Tab t : tabs.getTabs()) {
-            if (t != viewTab) {
-                t.setDisable(mapping); // lock the command tabs while a mapping runs
+            if (t == viewTab) {
+                t.setDisable(fdr); // fdr: a mapping leaves View operable; an FDR run locks it
+            } else if (t == fdrTab) { // fdr
+                t.setDisable(mapping); // fdr: and vice versa, so each pane's own Stop stays reachable
+            } else {
+                t.setDisable(mapping || fdr); // lock the command tabs while either job runs
             }
         }
     }
@@ -2564,6 +2591,9 @@ public class MainApp extends Application {
             // (an external --config, or "Use GUI parameters" off), and min_peptide_len counts
             // tokens where the panel counts residues, so it is no safer a source than the default.
             viewPane.setPeptides(mztab);
+            if (pendingWasDenovo) { // fdr: Evaluate and DB-search mzTabs are not glissade inputs
+                fdrPane.setDenovoResult(mztab); // fdr
+            } // fdr
         }
         return mztab;
     }
