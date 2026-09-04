@@ -64,6 +64,9 @@ public class FdrPane extends BorderPane {
     /** Where results land: beside the de novo file, mirroring the View tab's {@code _pepmap}. */
     private static final String OUTPUT_SUFFIX = "_glissade";
 
+    /** q-value the results table is filtered to until the user says otherwise. */
+    private static final double DEFAULT_Q_CUTOFF = 0.05;
+
     private final Window owner;
     private final Settings settings;
     private final Label sharedStatus;
@@ -136,17 +139,17 @@ public class FdrPane extends BorderPane {
 
     private VBox buildInputs() {
         VBox rows = new VBox(6,
-                inputRow("De novo results:", denovoField, denovoBrowse,
+                inputRow("PSMs (de novo):", denovoField, denovoBrowse,
                         "Required. The de novo result to control: a Casanovo .mzTab, an InstaNovo "
                                 + ".csv or a DeepNovo .tab. Auto-filled after a sequencing run."),
-                inputRow("Database PSMs:", psmField, psmBrowse,
+                inputRow("PSMs (database search):", psmField, psmBrowse,
                         "Required. Percolator PSM output for the SAME spectra (e.g. "
                                 + "percolator.target.psms.txt). glissade recognises Percolator output "
                                 + "only by the word 'percolator' in the path."),
-                inputRow("Database peptides:", peptideField, peptideBrowse,
+                inputRow("Peptides (database search):", peptideField, peptideBrowse,
                         "Required. Percolator peptide output for the same search (e.g. "
                                 + "percolator.target.peptides.txt)."),
-                inputRow("Reference FASTA:", fastaField, fastaBrowse,
+                inputRow("Protein database (FASTA):", fastaField, fastaBrowse,
                         "Required. The protein database the search used. De novo peptides found in "
                                 + "it are treated as already known, not as discoveries."));
         rows.setPadding(new Insets(0, 0, 4, 0));
@@ -155,7 +158,7 @@ public class FdrPane extends BorderPane {
 
     private HBox inputRow(String labelText, TextField field, Button browse, String help) {
         Label label = new Label(labelText);
-        label.setMinWidth(150);
+        label.setMinWidth(190); // fits the longest label, "Peptides (database search):"
         field.setPromptText("Required.");
         field.getStyleClass().add("prompt-required");
         HBox.setHgrow(field, Priority.ALWAYS);
@@ -175,7 +178,7 @@ public class FdrPane extends BorderPane {
                         + "steadier and slower; 1000 is glissade's own default."));
 
         cutoffSpin.setValueFactory(new SpinnerValueFactory.DoubleSpinnerValueFactory(
-                0.001, 1.0, 0.01, 0.01));
+                0.001, 1.0, DEFAULT_Q_CUTOFF, 0.01));
         cutoffSpin.setPrefWidth(100);
         cutoffSpin.setEditable(true);
         cutoffSpin.valueProperty().addListener((o, a, b) -> applyCutoff());
@@ -576,7 +579,7 @@ public class FdrPane extends BorderPane {
     }
 
     private void applyCutoff() {
-        double cutoff = cutoffSpin.getValue() == null ? 0.01 : cutoffSpin.getValue();
+        double cutoff = cutoffSpin.getValue() == null ? DEFAULT_Q_CUTOFF : cutoffSpin.getValue();
         shown.setAll(allRows.stream().filter(r -> r.q() <= cutoff).toList());
         TableUtils.autoSizeColumns(table, 60);
         if (allRows.isEmpty()) {

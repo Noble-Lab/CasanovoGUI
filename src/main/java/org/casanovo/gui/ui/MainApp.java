@@ -270,13 +270,13 @@ public class MainApp extends Application {
         viewTab = new Tab("View", viewPane);
         viewTab.setTooltip(FxUtils.tooltip("Map the de novo peptides in an mzTab back to proteins in a reference "
                 + "FASTA, with coverage and per-protein views."));
-        tabs.getTabs().add(viewTab);
         fdrPane = new FdrPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s), validation); // fdr
         fdrPane.runningProperty().addListener((o, a, b) -> { updateChromeForTab(); refreshPreview(); refreshTabLock(isJobRunning() || convertingRaw); consoleFrame.setState(b ? ConsoleBorderEffect.State.RUNNING : ConsoleBorderEffect.State.IDLE); }); // fdr
-        fdrTab = new Tab("FDR", fdrPane); // fdr
+        fdrTab = new Tab("FDR Control", fdrPane); // fdr
         fdrTab.setTooltip(FxUtils.tooltip("Control the false discovery rate of de novo peptides with glissade: needs the de novo result, a Percolator search of the same spectra, and the reference FASTA.")); // fdr
         fdrTab.setOnSelectionChanged(e -> { if (fdrTab.isSelected()) fdrPane.refreshInstallState(); }); // fdr: Casanovo reinstalls clear the shared venv, so re-check on entry
-        tabs.getTabs().add(fdrTab); // fdr
+        tabs.getTabs().add(fdrTab); // fdr: sits between the command tabs and View, so the workflow reads sequence -> control -> view
+        tabs.getTabs().add(viewTab);
         tabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
             clearValidationError();
             refreshPreview();
