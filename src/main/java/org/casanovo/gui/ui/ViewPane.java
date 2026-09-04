@@ -30,7 +30,6 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Spinner;
-import javafx.scene.control.SpinnerValueFactory;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
@@ -57,7 +56,6 @@ import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import javafx.scene.input.MouseButton;
 import javafx.util.Duration;
-import javafx.util.StringConverter;
 import org.casanovo.gui.core.MzTabScores;
 import org.casanovo.gui.core.TimsTof;
 import org.casanovo.gui.core.PdvController;
@@ -1869,46 +1867,7 @@ public class ViewPane extends BorderPane {
         s.getEditor().setPrefColumnCount(4);
         s.getEditor().setAlignment(Pos.CENTER_RIGHT);
         s.setMaxWidth(Region.USE_PREF_SIZE);
-        // Spinner.setEditable(true) does NOT commit typed text to the value on focus loss, so a value
-        // typed but not confirmed with Enter would be silently ignored when the spinner is read at Run
-        // time. Commit (and clamp) the editor text through the value factory whenever focus leaves.
-        s.focusedProperty().addListener((obs, was, focused) -> {
-            if (!focused) {
-                commitSpinner(s);
-            }
-        });
-    }
-
-    /** Parse the spinner editor's current text into its value factory, clamped to range (JavaFX does
-        not commit editable-spinner text on focus loss). Unparseable text keeps the last valid value. */
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void commitSpinner(Spinner<?> s) {
-        SpinnerValueFactory factory = s.getValueFactory();
-        if (!s.isEditable() || factory == null || factory.getConverter() == null) {
-            return;
-        }
-        StringConverter converter = factory.getConverter();
-        try {
-            Object parsed = converter.fromString(s.getEditor().getText());
-            if (parsed != null) {
-                factory.setValue(clampSpinnerValue(factory, parsed));
-            }
-        } catch (RuntimeException ignored) {
-            // keep the last valid value
-        }
-        // Normalize the editor text back to the committed (possibly clamped) value.
-        s.getEditor().setText(converter.toString(factory.getValue()));
-    }
-
-    /** Clamp a parsed value to the Integer/Double factory's [min, max]; other factory types unchanged. */
-    private static Object clampSpinnerValue(SpinnerValueFactory<?> factory, Object value) {
-        if (factory instanceof SpinnerValueFactory.IntegerSpinnerValueFactory f && value instanceof Integer v) {
-            return Math.max(f.getMin(), Math.min(f.getMax(), v));
-        }
-        if (factory instanceof SpinnerValueFactory.DoubleSpinnerValueFactory f && value instanceof Double v) {
-            return Math.max(f.getMin(), Math.min(f.getMax(), v));
-        }
-        return value;
+        FxUtils.commitOnFocusLoss(s);
     }
 
     /** Total physical RAM in whole GB (floored), for capping the max-memory spinner. */

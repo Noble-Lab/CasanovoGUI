@@ -105,6 +105,8 @@ public class FdrPane extends BorderPane {
     private Path runLog;
     private long runStartMs;
     private boolean cancelled;
+    /** True while installThenMaybeRun is working; the install itself cannot be interrupted. */
+    private boolean installing;
     /** The executable found by the last {@link #refreshInstallState()}, or null when missing. */
     private volatile Path glissadeExe;
     /** Whether the GUI may install: true only for the environment it manages itself. */
@@ -173,6 +175,7 @@ public class FdrPane extends BorderPane {
     private VBox buildOptions() {
         bootstrapSpin.setPrefWidth(100);
         bootstrapSpin.setEditable(true);
+        FxUtils.commitOnFocusLoss(bootstrapSpin);
         Tooltip.install(bootstrapSpin, FxUtils.tooltip(
                 "How many bootstrap samples glissade draws while fitting (its -n option). More is "
                         + "steadier and slower; 1000 is glissade's own default."));
@@ -181,6 +184,7 @@ public class FdrPane extends BorderPane {
                 0.001, 1.0, DEFAULT_Q_CUTOFF, 0.01));
         cutoffSpin.setPrefWidth(100);
         cutoffSpin.setEditable(true);
+        FxUtils.commitOnFocusLoss(cutoffSpin);
         cutoffSpin.valueProperty().addListener((o, a, b) -> applyCutoff());
         Tooltip.install(cutoffSpin, FxUtils.tooltip(
                 "Display filter: which q-value to list peptides down to. glissade has no threshold "
@@ -360,6 +364,8 @@ public class FdrPane extends BorderPane {
 
     /** Install glissade off-thread, then optionally continue straight into the run. */
     private void installThenMaybeRun(boolean runAfter) {
+        cancelled = false;
+        installing = true;
         setRunning(true);
         status("Installing glissade…");
         String exe = settings.getCasanovoExecutable();
@@ -378,6 +384,7 @@ public class FdrPane extends BorderPane {
             Optional<Path> found = GlissadeInstaller.findInstalledExe(exe, conda);
             Optional<String> ref = GlissadeInstaller.installedRef();
             Platform.runLater(() -> {
+                installing = false;
                 glissadeExe = found.orElse(null);
                 paintInstallState(found.isPresent(), managedEnvironment, ref);
                 setRunning(false);
@@ -388,6 +395,12 @@ public class FdrPane extends BorderPane {
                                     + "\n\nFull log: "
                                     + GlissadeInstaller.glissadeDir().resolve("logs")
                                     .resolve("install.log"));
+                    return;
+                }
+                if (cancelled && runAfter) {
+                    // The install cannot be interrupted, but a Stop pressed during it still means
+                    // "do not run" — without this the queued run would start regardless.
+                    status("glissade installed; the run was stopped.");
                     return;
                 }
                 status("glissade ready.");
@@ -596,7 +609,7 @@ public class FdrPane extends BorderPane {
 
     private void stop() {
         cancelled = true;
-        status("Stopping…");
+        status(installing ? "The install must finish; the run will not start." : "Stopping…");
         runner.cancel();
     }
 

@@ -6,6 +6,8 @@ import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Control;
 import javafx.scene.control.Label;
+import javafx.scene.control.Spinner;
+import javafx.scene.control.SpinnerValueFactory;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.ColumnConstraints;
@@ -17,6 +19,7 @@ import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import javafx.util.Duration;
+import javafx.util.StringConverter;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -366,5 +369,52 @@ final class FxUtils {
             return f;
         }
         return (parent != null && parent.isDirectory()) ? parent : null;
+    }
+
+    /**
+     * Make an editable spinner commit its typed text whenever focus leaves it.
+     *
+     * <p>{@code Spinner.setEditable(true)} does NOT commit typed text to the value on focus loss,
+     * so a value typed but not confirmed with Enter would be silently ignored when the spinner is
+     * read at Run time.</p>
+     */
+    static void commitOnFocusLoss(Spinner<?> s) {
+        s.focusedProperty().addListener((obs, was, focused) -> {
+            if (!focused) {
+                commitSpinner(s);
+            }
+        });
+    }
+
+    /** Parse the spinner editor's current text into its value factory, clamped to range (JavaFX does
+        not commit editable-spinner text on focus loss). Unparseable text keeps the last valid value. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    static void commitSpinner(Spinner<?> s) {
+        SpinnerValueFactory factory = s.getValueFactory();
+        if (!s.isEditable() || factory == null || factory.getConverter() == null) {
+            return;
+        }
+        StringConverter converter = factory.getConverter();
+        try {
+            Object parsed = converter.fromString(s.getEditor().getText());
+            if (parsed != null) {
+                factory.setValue(clampSpinnerValue(factory, parsed));
+            }
+        } catch (RuntimeException ignored) {
+            // keep the last valid value
+        }
+        // Normalize the editor text back to the committed (possibly clamped) value.
+        s.getEditor().setText(converter.toString(factory.getValue()));
+    }
+
+    /** Clamp a parsed value to the Integer/Double factory's [min, max]; other factory types unchanged. */
+    private static Object clampSpinnerValue(SpinnerValueFactory<?> factory, Object value) {
+        if (factory instanceof SpinnerValueFactory.IntegerSpinnerValueFactory f && value instanceof Integer v) {
+            return Math.max(f.getMin(), Math.min(f.getMax(), v));
+        }
+        if (factory instanceof SpinnerValueFactory.DoubleSpinnerValueFactory f && value instanceof Double v) {
+            return Math.max(f.getMin(), Math.min(f.getMax(), v));
+        }
+        return value;
     }
 }

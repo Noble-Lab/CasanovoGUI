@@ -74,6 +74,11 @@ public class GlissadeRunner {
                 ProcessBuilder pb = new ProcessBuilder(command);
                 pb.redirectErrorStream(true);
                 Os.applyNativeEnv(pb);
+                // applyNativeEnv sets FORCE_COLOR (for the run console's live Rich progress), but
+                // the FDR console does not strip ANSI and parsePi0 reads these lines verbatim — a
+                // colour escape next to the number would make it unparseable. NO_COLOR overrides
+                // FORCE_COLOR, giving glissade plain text.
+                pb.environment().put("NO_COLOR", "1");
                 if (workDir != null && workDir.isDirectory()) {
                     pb.directory(workDir);
                 }
