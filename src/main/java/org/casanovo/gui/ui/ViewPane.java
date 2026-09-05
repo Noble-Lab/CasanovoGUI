@@ -228,7 +228,7 @@ public class ViewPane extends BorderPane {
     // at every score: the plot sweeps the score cutoff, so that one filter alone is left off.
     private MzTabScores.Curve scoreCurve;
     /** The score the loaded results were computed under; labels the plots and their axes. */
-    private MzTabScores.ScoreType loadedScoreType = MzTabScores.ScoreType.NORMALIZED;
+    private MzTabScores.ScoreType loadedScoreType = MzTabScores.ScoreType.PEPTIDE;
     private VBox cutoffBox; // the mapping (cutoff) plot cell — hidden when there is no mapping
     private VBox topBox;    // the top-proteins plot cell — hidden when there is no mapping
     private javafx.scene.layout.FlowPane chartsFlow; // wraps the plots; kept ≥2 columns when mapping
@@ -434,7 +434,7 @@ public class ViewPane extends BorderPane {
         scoreChart.setAnimated(false);
         scoreChart.setCreateSymbols(true);
         NumberAxis scoreX = (NumberAxis) scoreChart.getXAxis();
-        scoreX.setLabel(MzTabScores.ScoreType.NORMALIZED.label());
+        scoreX.setLabel(MzTabScores.ScoreType.PEPTIDE.label());
         scoreX.setAutoRanging(false);
         scoreX.setLowerBound(0.0);
         scoreX.setUpperBound(1.0);
@@ -1728,12 +1728,12 @@ public class ViewPane extends BorderPane {
         // stranded beside a gap. Vertical room here is plentiful, horizontal room is not.
         peptideScoreRadio.setToggleGroup(scoreTypeGroup);
         normalizedScoreRadio.setToggleGroup(scoreTypeGroup);
-        normalizedScoreRadio.setSelected(true);
+        peptideScoreRadio.setSelected(true);
         peptideScoreRadio.setTooltip(tip(
                 "Casanovo's own peptide score, search_engine_score[1] in the mzTab."));
         normalizedScoreRadio.setTooltip(tip(
                 "The geometric mean of that PSM's per-residue aa_scores, exp(mean(log(aa_scores)))."));
-        VBox scoreTypeRow = new VBox(4, normalizedScoreRadio, peptideScoreRadio);
+        VBox scoreTypeRow = new VBox(4, peptideScoreRadio, normalizedScoreRadio);
         // Pulled up, so the pair reads as belonging to the cutoff row above it.
         GridPane.setMargin(scoreTypeRow, new Insets(-4, 0, 0, 0));
         r = spanRow(grid, r, scoreTypeRow);
