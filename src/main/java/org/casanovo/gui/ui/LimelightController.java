@@ -117,8 +117,7 @@ public final class LimelightController {
      * Call on the FX thread.
      */
     public void onRunStarted(CasanovoCommand command, List<File> spectra) {
-        lastWasDenovo = "sequence".equals(command.getSubcommand())
-                && !command.getArguments().contains("--evaluate");
+        lastWasDenovo = command.isDenovoSequencing();
         lastSpectra = spectra == null ? new ArrayList<>() : new ArrayList<>(spectra);
         lastConfig = configArgOf(command);
         lastMzTab = null;

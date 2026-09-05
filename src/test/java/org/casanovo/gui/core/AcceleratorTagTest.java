@@ -12,7 +12,9 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The accelerator a run will use is not a command-line argument: it is a tag carried alongside
@@ -240,5 +242,13 @@ class AcceleratorTagTest {
         ConfigFile.RunValues values = ConfigFile.forRun(withConfig(file), false, null, null);
         assertEquals(512, values.predictBatchSize());
         assertEquals("cpu", values.accelerator());
+    }
+
+    @Test
+    @DisplayName("De novo sequencing is 'sequence' without --evaluate; both features ask this once")
+    void denovoSequencingPredicate() {
+        assertTrue(new CasanovoCommand("sequence", List.of("in.mgf")).isDenovoSequencing());
+        assertFalse(new CasanovoCommand("sequence", List.of("--evaluate", "in.mgf")).isDenovoSequencing());
+        assertFalse(new CasanovoCommand("db-search", List.of("in.mgf")).isDenovoSequencing());
     }
 }

@@ -37,6 +37,16 @@ public class CasanovoCommand {
     }
 
     /**
+     * Whether this command is a de novo sequencing run, as opposed to Evaluate or a database
+     * search. Both De novo and Evaluate emit the {@code sequence} subcommand, so Evaluate is told
+     * apart by its {@code --evaluate} argument. One copy, because more than one feature keys off
+     * it and a rename upstream must not fix only some of them.
+     */
+    public boolean isDenovoSequencing() {
+        return "sequence".equals(subcommand) && !arguments.contains("--evaluate");
+    }
+
+    /**
      * The Casanovo {@code accelerator} this run will use, or {@code null} when the run sets none
      * and Casanovo's own default ({@code auto}) therefore applies. An external config file that
      * the GUI could not read yields {@link DeviceProbe#UNKNOWN} instead: "nobody knows" is a

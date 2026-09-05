@@ -1,11 +1,9 @@
 package org.casanovo.gui.core;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
 /**
@@ -22,9 +20,7 @@ import java.util.function.BiConsumer;
  */
 public class GlissadeRunner {
 
-    private volatile Process process;
-    private volatile boolean cancelled;
-    private volatile boolean active;
+    private final ProcessSession session = new ProcessSession();
 
     /**
      * The command line, as a pure function of its inputs so it can be asserted in a test and
@@ -48,7 +44,7 @@ public class GlissadeRunner {
 
     /** True while a glissade process is running (or about to be). */
     public boolean isRunning() {
-        return active;
+        return session.isRunning();
     }
 
     /**
@@ -58,76 +54,24 @@ public class GlissadeRunner {
      * @param onFinished receives (exitCode, throwable); 130 after {@link #cancel()}, and exit
      *                   code -1 with a non-null throwable when the process could not start
      */
-    public synchronized void start(List<String> command, File workDir,
-                                   BiConsumer<String, Boolean> onOutput,
-                                   BiConsumer<Integer, Throwable> onFinished) {
-        if (active) {
-            throw new IllegalStateException("A glissade process is already running.");
-        }
-        cancelled = false;
-        active = true;
+    public void start(List<String> command, File workDir,
+                      BiConsumer<String, Boolean> onOutput,
+                      BiConsumer<Integer, Throwable> onFinished) {
+        session.start(command, workDir, GlissadeRunner::applyEnv, "glissade", "",
+                onOutput, onFinished);
+    }
 
-        Thread worker = new Thread(() -> {
-            int exitCode = -1;
-            Throwable error = null;
-            try {
-                ProcessBuilder pb = new ProcessBuilder(command);
-                pb.redirectErrorStream(true);
-                Os.applyNativeEnv(pb);
-                // applyNativeEnv sets FORCE_COLOR (for the run console's live Rich progress), but
-                // the FDR console does not strip ANSI and parsePi0 reads these lines verbatim — a
-                // colour escape next to the number would make it unparseable. NO_COLOR overrides
-                // FORCE_COLOR, giving glissade plain text.
-                pb.environment().put("NO_COLOR", "1");
-                if (workDir != null && workDir.isDirectory()) {
-                    pb.directory(workDir);
-                }
-                process = pb.start();
-                // Stop can be pressed before the process exists — start() returns as soon as the
-                // worker is spawned. Without this the cancel would be silently dropped and the run
-                // would continue to completion with the UI already saying "stopped".
-                if (cancelled) {
-                    process.destroy();
-                }
-                OutputPump.pump(process.getInputStream(), onOutput);
-                exitCode = process.waitFor();
-            } catch (IOException e) {
-                error = new IOException("Failed to start glissade.\n" + e.getMessage(), e);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                error = e;
-            } finally {
-                Process finished = process;
-                process = null;
-                active = false;
-                if (cancelled) {
-                    onFinished.accept(130, null);
-                } else {
-                    onFinished.accept(error == null ? exitCode : -1, error);
-                }
-                if (finished != null && finished.isAlive()) {
-                    finished.destroy();
-                }
-            }
-        }, "glissade-runner");
-        worker.setDaemon(true);
-        worker.start();
+    private static void applyEnv(ProcessBuilder pb) {
+        Os.applyNativeEnv(pb);
+        // applyNativeEnv sets FORCE_COLOR (for the run console's live Rich progress), but the FDR
+        // console does not strip ANSI and parsePi0 reads these lines verbatim — a colour escape
+        // next to the number would make it unparseable. NO_COLOR overrides FORCE_COLOR, giving
+        // glissade plain text.
+        pb.environment().put("NO_COLOR", "1");
     }
 
     /** Terminate the running process, if any. */
-    public synchronized void cancel() {
-        cancelled = true;
-        Process p = process;
-        if (p != null && p.isAlive()) {
-            p.destroy();
-            try {
-                if (!p.waitFor(3, TimeUnit.SECONDS)) {
-                    p.destroyForcibly();
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                p.destroyForcibly();
-            }
-        }
+    public void cancel() {
+        session.cancel();
     }
 }

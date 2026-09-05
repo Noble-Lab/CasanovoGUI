@@ -6,17 +6,11 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -26,8 +20,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.function.Consumer;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 /**
  * Self-contained installer for Casanovo and its Python runtime.
@@ -194,25 +186,15 @@ public final class CasanovoInstaller {
         log.info("Install root: " + installRoot.toAbsolutePath());
 
         // ---- 1. Download uv ----
-        String uvUrl;
-        if (isWindows) {
-            uvUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip";
-        } else if (isMac) {
-            String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
-            uvUrl = (arch.contains("aarch64") || arch.contains("arm"))
-                    ? "https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz"
-                    : "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-apple-darwin.tar.gz";
-        } else {
-            uvUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz";
-        }
-        Path uvArchive = uvDir.resolve(isWindows ? "uv.zip" : "uv.tar.gz");
+        String uvUrl = Downloads.uvDownloadUrl();
+        Path uvArchive = uvDir.resolve(Downloads.uvArchiveName());
         log.info("Downloading uv from: " + uvUrl);
-        download(uvUrl, uvArchive);
+        Downloads.download(uvUrl, uvArchive);
 
         // ---- 2. Unpack uv ----
         if (isWindows) {
             log.info("Extracting uv...");
-            unzip(uvArchive, uvDir);
+            Downloads.unzip(uvArchive, uvDir);
         } else {
             log.info("Extracting uv...");
             cmd.run(List.of("tar", "-xzf", uvArchive.toString(), "-C", uvDir.toString()), installRoot);
@@ -794,55 +776,10 @@ public final class CasanovoInstaller {
 
     // ---------------------------------------------------------------- helpers
 
-    private static void download(String url, Path target) throws IOException, InterruptedException {
-        HttpClient http = HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.ALWAYS)
-                .connectTimeout(Duration.ofSeconds(30))
-                .build();
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofMinutes(10))
-                .GET()
-                .build();
-        HttpResponse<Path> resp = http.send(req, HttpResponse.BodyHandlers.ofFile(target,
-                StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));
-        if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
-            throw new IOException("Download failed (HTTP " + resp.statusCode() + "): " + url);
-        }
-    }
-
-    private static void unzip(Path zip, Path destDir) throws IOException {
-        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zip))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                if (entry.isDirectory()) {
-                    continue;
-                }
-                Path out = destDir.resolve(entry.getName()).normalize();
-                if (!out.startsWith(destDir)) {
-                    throw new IOException("Unsafe zip entry: " + entry.getName());
-                }
-                Files.createDirectories(out.getParent());
-                try (OutputStream os = Files.newOutputStream(out,
-                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
-                    zis.transferTo(os);
-                }
-                zis.closeEntry();
-            }
-        }
-    }
-
+    /** Where a caller wants a hard failure: {@link Downloads#findExecutable} with the name in the error. */
     private static Path findExecutable(Path root, String name) throws IOException {
-        Path direct = root.resolve(name);
-        if (Files.isRegularFile(direct)) {
-            return direct;
-        }
-        try (var walk = Files.walk(root)) {
-            return walk.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().equalsIgnoreCase(name))
-                    .findFirst()
-                    .orElseThrow(() -> new FileNotFoundException(name + " not found under " + root));
-        }
+        return Downloads.findExecutable(root, name)
+                .orElseThrow(() -> new FileNotFoundException(name + " not found under " + root));
     }
 
     /**

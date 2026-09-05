@@ -2,26 +2,16 @@ package org.casanovo.gui.core;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 /**
  * Installs <a href="https://github.com/Noble-Lab/glissade">glissade</a> &mdash; FDR control for de
@@ -220,9 +210,9 @@ public final class GlissadeInstaller {
         String url = String.format(ARCHIVE_URL, GLISSADE_REF);
         log.info("Downloading glissade from: " + url);
         Path archive = root.resolve("glissade.zip");
-        download(url, archive);
+        Downloads.download(url, archive);
         log.info("Extracting glissade...");
-        unzip(archive, srcRoot);
+        Downloads.unzip(archive, srcRoot);
 
         // The archive holds a single top-level folder; its src/ is the installable project.
         Path project = singleChild(srcRoot).resolve("src");
@@ -321,33 +311,23 @@ public final class GlissadeInstaller {
         Path uvDir = installRoot.resolve("uv");
         Files.createDirectories(uvDir);
         String exeName = Os.isWindows() ? "uv.exe" : "uv";
-        Optional<Path> existing = findExecutable(uvDir, exeName);
+        Optional<Path> existing = Downloads.findExecutable(uvDir, exeName);
         if (existing.isPresent()) {
             log.info("Using uv: " + existing.get().toAbsolutePath());
             return existing.get();
         }
 
-        String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
-        String uvUrl;
-        if (Os.isWindows()) {
-            uvUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip";
-        } else if (Os.isMac()) {
-            uvUrl = (arch.contains("aarch64") || arch.contains("arm"))
-                    ? "https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz"
-                    : "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-apple-darwin.tar.gz";
-        } else {
-            uvUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz";
-        }
-        Path archive = uvDir.resolve(Os.isWindows() ? "uv.zip" : "uv.tar.gz");
+        String uvUrl = Downloads.uvDownloadUrl();
+        Path archive = uvDir.resolve(Downloads.uvArchiveName());
         log.info("Downloading uv from: " + uvUrl);
-        download(uvUrl, archive);
+        Downloads.download(uvUrl, archive);
         log.info("Extracting uv...");
         if (Os.isWindows()) {
-            unzip(archive, uvDir);
+            Downloads.unzip(archive, uvDir);
         } else {
             cmd.run(List.of("tar", "-xzf", archive.toString(), "-C", uvDir.toString()), installRoot);
         }
-        Path uvExe = findExecutable(uvDir, exeName)
+        Path uvExe = Downloads.findExecutable(uvDir, exeName)
                 .orElseThrow(() -> new FileNotFoundException(exeName + " not found under " + uvDir));
         try {
             uvExe.toFile().setExecutable(true);
@@ -355,51 +335,6 @@ public final class GlissadeInstaller {
             // best effort; a non-executable uv fails loudly on first use anyway
         }
         return uvExe;
-    }
-
-    /**
-     * Download {@code url} to {@code target}, writing to a {@code .part} file first so an
-     * interrupted download can never be mistaken for a complete one.
-     */
-    private static void download(String url, Path target) throws IOException, InterruptedException {
-        Path part = target.resolveSibling(target.getFileName() + ".part");
-        HttpClient http = HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.ALWAYS)
-                .connectTimeout(Duration.ofSeconds(30))
-                .build();
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofMinutes(10))
-                .GET()
-                .build();
-        HttpResponse<Path> resp = http.send(req, HttpResponse.BodyHandlers.ofFile(part,
-                StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));
-        if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
-            Files.deleteIfExists(part);
-            throw new IOException("Download failed (HTTP " + resp.statusCode() + "): " + url);
-        }
-        Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
-    }
-
-    private static void unzip(Path zip, Path destDir) throws IOException {
-        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zip))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                if (entry.isDirectory()) {
-                    continue;
-                }
-                Path out = destDir.resolve(entry.getName()).normalize();
-                if (!out.startsWith(destDir)) {
-                    throw new IOException("Unsafe zip entry: " + entry.getName());
-                }
-                Files.createDirectories(out.getParent());
-                try (OutputStream os = Files.newOutputStream(out,
-                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
-                    zis.transferTo(os);
-                }
-                zis.closeEntry();
-            }
-        }
     }
 
     /** The single directory inside {@code dir} (a GitHub source archive has exactly one). */
@@ -411,21 +346,6 @@ public final class GlissadeInstaller {
                         + dirs.size() + " in " + dir);
             }
             return dirs.get(0);
-        }
-    }
-
-    private static Optional<Path> findExecutable(Path root, String name) throws IOException {
-        Path direct = root.resolve(name);
-        if (Files.isRegularFile(direct)) {
-            return Optional.of(direct);
-        }
-        if (!Files.isDirectory(root)) {
-            return Optional.empty();
-        }
-        try (var walk = Files.walk(root)) {
-            return walk.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().equalsIgnoreCase(name))
-                    .findFirst();
         }
     }
 

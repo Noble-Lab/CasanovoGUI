@@ -1,8 +1,6 @@
 package org.casanovo.gui.core;
 
 import java.io.File;
-import java.io.IOException;
-import java.util.List;
 import java.util.function.BiConsumer;
 
 /**
@@ -21,22 +19,11 @@ import java.util.function.BiConsumer;
  */
 public class CasanovoRunner {
 
-    private volatile Process process;
-    private volatile Thread worker;
-    private volatile boolean cancelled;
-    /**
-     * Set true synchronously inside {@link #start} (before the worker is even
-     * spawned), cleared in the worker's {@code finally}. {@link #isRunning}
-     * reflects this flag so callers see a coherent "busy" state immediately
-     * after {@code start} returns, closing the race in which {@link #process}
-     * is still {@code null} because the worker has not yet called
-     * {@code ProcessBuilder.start()}.
-     */
-    private volatile boolean active;
+    private final ProcessSession session = new ProcessSession();
 
     /** True while a process is currently executing (or about to). */
     public boolean isRunning() {
-        return active;
+        return session.isRunning();
     }
 
     /**
@@ -49,73 +36,23 @@ public class CasanovoRunner {
      * @param onFinished receives (exitCode, throwable); throwable non-null only on
      *                   start/interrupt failure (exitCode -1 in that case)
      */
-    public synchronized void start(CasanovoCommand command,
-                                   Settings settings,
-                                   File workingDir,
-                                   BiConsumer<String, Boolean> onOutput,
-                                   BiConsumer<Integer, Throwable> onFinished) {
-        if (active) {
-            throw new IllegalStateException("A Casanovo process is already running.");
-        }
-        cancelled = false;
-        active = true;
-        final List<String> osCommand = command.toProcessCommand(settings);
-
-        worker = new Thread(() -> {
-            int exitCode = -1;
-            Throwable error = null;
-            try {
-                ProcessBuilder pb = new ProcessBuilder(osCommand);
-                pb.redirectErrorStream(true);
+    public void start(CasanovoCommand command,
+                      Settings settings,
+                      File workingDir,
+                      BiConsumer<String, Boolean> onOutput,
+                      BiConsumer<Integer, Throwable> onFinished) {
+        session.start(command.toProcessCommand(settings), workingDir,
                 // Per-platform subprocess environment: the Windows-only guard against the hard
                 // access-violation crash (0xC0000005) from the Intel MKL/OpenMP clash, the
                 // Apple Silicon MPS CPU fallback, and — for a CPU run — hiding every GPU so
                 // nothing in the stack can bind one (see Os.applyNativeEnv).
-                Os.applyNativeEnv(pb, command.getAccelerator());
-                if (workingDir != null && workingDir.isDirectory()) {
-                    pb.directory(workingDir);
-                }
-                process = pb.start();
-                OutputPump.pump(process.getInputStream(), onOutput);
-                exitCode = process.waitFor();
-            } catch (IOException e) {
-                error = new IOException("Failed to start Casanovo. Check the executable path "
-                        + "and Conda settings.\n" + e.getMessage(), e);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                error = e;
-            } finally {
-                Process finished = process;
-                process = null;
-                active = false;
-                if (cancelled) {
-                    onFinished.accept(130, null);
-                } else {
-                    onFinished.accept(error == null ? exitCode : -1, error);
-                }
-                if (finished != null && finished.isAlive()) {
-                    finished.destroy();
-                }
-            }
-        }, "casanovo-runner");
-        worker.setDaemon(true);
-        worker.start();
+                pb -> Os.applyNativeEnv(pb, command.getAccelerator()),
+                "Casanovo", "Check the executable path and Conda settings.",
+                onOutput, onFinished);
     }
 
     /** Forcibly terminate the running process, if any. */
-    public synchronized void cancel() {
-        cancelled = true;
-        Process p = process;
-        if (p != null && p.isAlive()) {
-            p.destroy();
-            try {
-                if (!p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
-                    p.destroyForcibly();
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                p.destroyForcibly();
-            }
-        }
+    public void cancel() {
+        session.cancel();
     }
 }
