@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -71,6 +72,33 @@ class GlissadeDiscoveriesTest {
         assertTrue(GlissadeDiscoveries.parsePi0("Total matched scores: 1840").isEmpty());
         assertTrue(GlissadeDiscoveries.parsePi0("Inferred pi0: nonsense").isEmpty());
         assertTrue(GlissadeDiscoveries.parsePi0(null).isEmpty());
+    }
+
+    @Test
+    @DisplayName("The output folder keeps the extension, so two tools on one experiment cannot collide")
+    void outputFolderKeepsExtension() {
+        // The real case: Casanovo and DeepNovo results for one run differ only by extension, and
+        // folding it away sent both to LFQ_Orbitrap_DDA_Human_01_glissade -- the second overwrote
+        // the first, silently, because glissade has no output-directory flag.
+        assertEquals("LFQ_Orbitrap_DDA_Human_01_mztab_glissade",
+                GlissadeDiscoveries.outputFolderName("LFQ_Orbitrap_DDA_Human_01.mztab"));
+        assertEquals("LFQ_Orbitrap_DDA_Human_01_tab_glissade",
+                GlissadeDiscoveries.outputFolderName("LFQ_Orbitrap_DDA_Human_01.tab"));
+        assertNotEquals(GlissadeDiscoveries.outputFolderName("x.mztab"),
+                GlissadeDiscoveries.outputFolderName("x.tab"));
+    }
+
+    @Test
+    @DisplayName("Odd names still produce one usable folder name")
+    void outputFolderEdgeCases() {
+        assertEquals("preds_csv_glissade", GlissadeDiscoveries.outputFolderName("preds.csv"));
+        assertEquals("noext_glissade", GlissadeDiscoveries.outputFolderName("noext"));
+        // A dotted stem keeps every dot but the last, which is the one naming the format.
+        assertEquals("run.2026-09-04_mztab_glissade",
+                GlissadeDiscoveries.outputFolderName("run.2026-09-04.mztab"));
+        // A leading dot is the whole name, not an extension: do not leave the folder starting "_".
+        assertEquals(".hidden_glissade", GlissadeDiscoveries.outputFolderName(".hidden"));
+        assertEquals("_glissade", GlissadeDiscoveries.outputFolderName(null));
     }
 
     private static Path write(Path dir, String text) throws IOException {

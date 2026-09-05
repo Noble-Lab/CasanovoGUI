@@ -23,6 +23,28 @@ public final class GlissadeDiscoveries {
     /** The file glissade writes, in whatever directory it was run from. */
     public static final String OUTPUT_FILE = "glissade_discoveries.tsv";
 
+    /**
+     * The folder a run on {@code denovoFileName} writes into, beside that file.
+     *
+     * <p>The extension is part of the name, not stripped off, because the three de novo tools are
+     * routinely run on one experiment and named after it: {@code X.mztab} (Casanovo) and
+     * {@code X.tab} (DeepNovo) differ only by extension, so folding it away gave both the same
+     * folder and the second run silently overwrote the first. glissade offers no output-directory
+     * flag, so this name is the only thing keeping two results apart.</p>
+     *
+     * @param denovoFileName the de novo file's name, without its directory
+     * @return e.g. {@code X_mztab_glissade} for {@code X.mztab}, {@code X_glissade} for {@code X}
+     */
+    public static String outputFolderName(String denovoFileName) {
+        String base = denovoFileName == null ? "" : denovoFileName.trim();
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) {
+            // "X.mztab" -> "X_mztab": the dot would read as an extension on the folder itself.
+            base = base.substring(0, dot) + "_" + base.substring(dot + 1);
+        }
+        return base + "_glissade";
+    }
+
     /** One accepted peptide: the sequence as glissade reports it, its log score and its q-value. */
     public record Row(String peptide, double score, double q) {
     }

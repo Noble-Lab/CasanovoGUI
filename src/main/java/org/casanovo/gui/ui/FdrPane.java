@@ -65,8 +65,6 @@ import java.util.function.Function;
  */
 public class FdrPane extends BorderPane {
 
-    /** Where results land: beside the de novo file, mirroring the View tab's {@code _pepmap}. */
-    private static final String OUTPUT_SUFFIX = "_glissade";
 
     /** q-value the results table is filtered to until the user says otherwise. */
     private static final double DEFAULT_Q_CUTOFF = 0.05;
@@ -95,6 +93,12 @@ public class FdrPane extends BorderPane {
     private final Button installButton = new Button("Install");
 
     private final TableView<GlissadeDiscoveries.Row> table = new TableView<>();
+    /**
+     * What an empty table says. Every real run so far ends with nothing under the cutoff, so
+     * leaving the pre-run wording there made a finished run look like one that never started.
+     */
+    private final Label tablePlaceholder =
+            new Label("Run glissade to list de novo peptides with their q-values.");
     private final ObservableList<GlissadeDiscoveries.Row> shown = FXCollections.observableArrayList();
     private final Label summary = new Label();
 
@@ -103,6 +107,8 @@ public class FdrPane extends BorderPane {
 
     /** Every row of the last successful run; the cutoff spinner filters this in memory. */
     private List<GlissadeDiscoveries.Row> allRows = List.of();
+    /** Whether {@link #allRows} came from a finished run — an empty table means different things. */
+    private boolean hasResult;
     /** The pi0 glissade printed on its console line, if it got that far. */
     private OptionalDouble pi0 = OptionalDouble.empty();
     private File outputDir;
@@ -231,7 +237,8 @@ public class FdrPane extends BorderPane {
                 numberCol("q-value", GlissadeDiscoveries.Row::q, FdrPane::formatQ);
         table.getColumns().setAll(List.of(pep, score, q));
         table.setItems(shown);
-        table.setPlaceholder(new Label("Run glissade to list de novo peptides with their q-values."));
+        tablePlaceholder.setWrapText(true);
+        table.setPlaceholder(tablePlaceholder);
         TableUtils.enableCellCopy(table);
         VBox.setVgrow(table, Priority.ALWAYS);
 
@@ -542,9 +549,13 @@ public class FdrPane extends BorderPane {
         cancelled = false;
         setRunning(true);
         allRows = List.of();
+        hasResult = false;
         pi0 = OptionalDouble.empty();
         shown.clear();
         summary.setText("");
+        // Clear the last run's verdict too: a failed run must not leave "No peptides at q ≤ …"
+        // from the previous one standing under an empty table.
+        tablePlaceholder.setText("Running glissade…");
         console(System.lineSeparator() + "$ " + String.join(" ", command));
         status("Running glissade (this can take several minutes; the fit prints nothing until it "
                 + "finishes)…");
@@ -553,22 +564,18 @@ public class FdrPane extends BorderPane {
                 (exit, err) -> Platform.runLater(() -> onFinished(exit, err, tsv)));
     }
 
-    /** {@code <de novo dir>/<base>_glissade/}, or a temp folder when that cannot be created. */
+    /** {@code <de novo dir>/<name>_glissade/}, or a temp folder when that cannot be created. */
     private File resolveOutputDir(File denovo) {
-        String base = denovo.getName();
-        int dot = base.lastIndexOf('.');
-        if (dot > 0) {
-            base = base.substring(0, dot);
-        }
+        String name = GlissadeDiscoveries.outputFolderName(denovo.getName());
         File parent = denovo.getAbsoluteFile().getParentFile();
         if (parent != null) {
-            File dir = new File(parent, base + OUTPUT_SUFFIX);
+            File dir = new File(parent, name);
             if (dir.isDirectory() || dir.mkdirs()) {
                 return dir;
             }
         }
         try {
-            return Files.createTempDirectory(base + OUTPUT_SUFFIX).toFile();
+            return Files.createTempDirectory(name).toFile();
         } catch (IOException e) {
             return null;
         }
@@ -645,6 +652,9 @@ public class FdrPane extends BorderPane {
     private void onFinished(int exit, Throwable error, File tsv) {
         closeLog();
         setRunning(false);
+        // Every path below except the successful one leaves the table empty with no result behind
+        // it; the successful one repaints this from applyCutoff().
+        tablePlaceholder.setText(placeholderText(cutoffValue()));
         if (cancelled) {
             status("glissade stopped.");
             if (tsv.isFile() && !tsv.delete()) {
@@ -669,6 +679,7 @@ public class FdrPane extends BorderPane {
         }
         try {
             allRows = GlissadeDiscoveries.read(tsv);
+            hasResult = true;
         } catch (IOException e) {
             status("Could not read " + tsv.getName() + ": " + e.getMessage());
             return;
@@ -678,9 +689,10 @@ public class FdrPane extends BorderPane {
     }
 
     private void applyCutoff() {
-        double cutoff = cutoffSpin.getValue() == null ? DEFAULT_Q_CUTOFF : cutoffSpin.getValue();
+        double cutoff = cutoffValue();
         shown.setAll(GlissadeDiscoveries.atOrBelow(allRows, cutoff));
         TableUtils.autoSizeColumns(table, 60);
+        tablePlaceholder.setText(placeholderText(cutoff));
         if (allRows.isEmpty()) {
             summary.setText("");
             return;
@@ -691,6 +703,34 @@ public class FdrPane extends BorderPane {
         summary.setText(shown.size() + " of " + allRows.size() + " peptides at q ≤ " + cutoff
                 + pi + " · output: "
                 + new File(outputDir, GlissadeDiscoveries.OUTPUT_FILE).getAbsolutePath());
+    }
+
+    /**
+     * The empty-table message for the current state: nothing run yet, a run that returned nothing
+     * at all, or -- the usual case on real data -- a result whose q-values all sit above the
+     * cutoff, where the fix is to raise it rather than to run again.
+     */
+    private String placeholderText(double cutoff) {
+        if (!hasResult) {
+            return "Run glissade to list de novo peptides with their q-values.";
+        }
+        if (allRows.isEmpty()) {
+            return "glissade reported no de novo peptides for these inputs.";
+        }
+        return String.format(Locale.ROOT,
+                "No peptides at q ≤ %s. glissade scored %,d, the best at q = %s — "
+                        + "raise the cutoff to see them.",
+                cutoff, allRows.size(), formatQ(bestQ()));
+    }
+
+    /** The cutoff in force, falling back to the default while the editable spinner is mid-edit. */
+    private double cutoffValue() {
+        return cutoffSpin.getValue() == null ? DEFAULT_Q_CUTOFF : cutoffSpin.getValue();
+    }
+
+    /** The smallest q-value in the result; the table is sorted by score, not by q. */
+    private double bestQ() {
+        return allRows.stream().mapToDouble(GlissadeDiscoveries.Row::q).min().orElse(Double.NaN);
     }
 
     private void stop() {
