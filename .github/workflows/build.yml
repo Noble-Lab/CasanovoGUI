@@ -181,7 +181,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          menu=/usr/share/applications/casanovogui-CasanovoGUI.desktop
+          entry_name=casanovogui-CasanovoGUI.desktop
+          # xdg-desktop-menu registers into the FIRST writable $XDG_DATA_DIRS/applications, which
+          # is /usr/local/share/applications on this runner image and /usr/share/applications on a
+          # system without it. Look in both rather than pinning the one an older image happened to
+          # use: which of them wins says nothing about the package.
+          menu_dirs='/usr/local/share/applications /usr/share/applications'
+          menu_entry() {
+            for d in $menu_dirs; do
+              if [ -f "$d/$entry_name" ]; then echo "$d/$entry_name"; return 0; fi
+            done
+            return 1
+          }
+          # xdg-desktop-menu(1) settles where *.directory files go before it looks at the .desktop
+          # file it was handed, and in system mode aborts with "No writable system menu directory
+          # found." unless one of /usr/share/desktop-directories, /usr/share/applnk or
+          # /usr/share/gnome/apps exists. The image has none of them (20260816.277 was the last
+          # image this passed on; it fails from 20260831.293), and the postinst swallows that
+          # failure by design -- so create the directory and this step goes back to testing our
+          # package rather than the image's desktop stack.
+          sudo install -d /usr/share/desktop-directories
           # `apt install ./file.deb`, not `dpkg -i || apt-get -f install`: it resolves the
           # xdg-utils dependency the same way the README tells users to, and it does not mask a
           # failing postinst behind a repair step that can "succeed" by removing the package.
@@ -190,16 +209,21 @@ jobs:
             || { echo '::error::casanovogui is not on PATH after installation'; exit 1; }
           # The postinst deliberately swallows xdg-desktop-menu failures so a headless box can
           # still install, which means only this can prove registration actually happened.
-          [ -f "$menu" ] \
-            || { echo "::error::no menu entry at $menu: the desktop registration silently failed"; exit 1; }
+          entry="$(menu_entry)" || {
+            echo "::error::no menu entry in $menu_dirs: the desktop registration silently failed"
+            ls -ld /usr/share/desktop-directories /usr/share/applnk /usr/share/gnome/apps $menu_dirs || true
+            exit 1
+          }
+          echo "menu entry registered at $entry"
           sudo apt-get remove -y casanovogui
           # -L as well as -e: dpkg deletes /opt/casanovogui before postrm runs, so a leftover
           # link is DANGLING, and `command -v` / `-e` alone report it as absent.
           if [ -L /usr/bin/casanovogui ] || [ -e /usr/bin/casanovogui ]; then
             echo '::error::the /usr/bin entry survived removal'; exit 1
           fi
-          [ ! -f "$menu" ] \
-            || { echo "::error::the menu entry at $menu survived removal"; exit 1; }
+          if entry="$(menu_entry)"; then
+            echo "::error::the menu entry at $entry survived removal"; exit 1
+          fi
           # purge reaches the postrm branch that plain remove never enters.
           sudo dpkg -P casanovogui
           echo 'install, remove and purge all complete; menu and PATH entries added and cleaned up'
