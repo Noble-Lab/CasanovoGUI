@@ -40,6 +40,24 @@ class GlissadeChecksTest {
     }
 
     @Test
+    @DisplayName("Where the extension and glissade's path matching disagree, the run is refused")
+    void ambiguousPathIsCaught() {
+        // glissade tests '.mztab' before '.csv' before '.tab', on the WHOLE path, so an earlier
+        // marker anywhere wins: this InstaNovo CSV would be handed to the mzTab reader.
+        String hijacked = "/data/results.mztab/preds.csv";
+        assertEquals(GlissadeChecks.DenovoFormat.CSV, GlissadeChecks.denovoFormat(hijacked));
+        assertEquals(GlissadeChecks.DenovoFormat.MZTAB, GlissadeChecks.glissadeDenovoFormat(hijacked));
+        assertFalse(GlissadeChecks.formatIsUnambiguous(hijacked));
+        // A double extension does it too, with no folder involved.
+        assertFalse(GlissadeChecks.formatIsUnambiguous("/data/run.mztab.csv"));
+        // The reverse order is harmless: '.mztab' is tested first, so it still wins and both agree.
+        assertTrue(GlissadeChecks.formatIsUnambiguous("/data/results.csv/run.mztab"));
+        assertTrue(GlissadeChecks.formatIsUnambiguous("/data/run 1/out.mzTab"));
+        assertTrue(GlissadeChecks.formatIsUnambiguous("/data/preds.csv"));
+        assertEquals(GlissadeChecks.DenovoFormat.UNSUPPORTED, GlissadeChecks.glissadeDenovoFormat(null));
+    }
+
+    @Test
     @DisplayName("Percolator inputs are recognised exactly as glissade recognises them")
     void percolatorSubstring() {
         assertTrue(GlissadeChecks.looksLikePercolator("/data/percolator.target.psms.txt"));

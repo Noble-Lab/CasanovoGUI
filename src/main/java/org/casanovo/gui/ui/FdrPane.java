@@ -2,6 +2,7 @@ package org.casanovo.gui.ui;
 
 import javafx.application.Platform;
 import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -15,6 +16,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.Spinner;
 import javafx.scene.control.SpinnerValueFactory;
+import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
@@ -34,6 +36,7 @@ import org.casanovo.gui.core.Settings;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,7 +47,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.OptionalDouble;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 /**
  * The FDR tab: false-discovery-rate control for de novo peptides, via
@@ -71,7 +75,7 @@ public class FdrPane extends BorderPane {
     private final Settings settings;
     private final Label sharedStatus;
     private final ProgressBar sharedProgress;
-    private final Consumer<String> consoleOut;
+    private final BiConsumer<String, Boolean> consoleOut;
     private final InlineValidation validation;
 
     private final TextField denovoField = new TextField();
@@ -102,18 +106,22 @@ public class FdrPane extends BorderPane {
     /** The pi0 glissade printed on its console line, if it got that far. */
     private OptionalDouble pi0 = OptionalDouble.empty();
     private File outputDir;
-    private Path runLog;
     private long runStartMs;
     private boolean cancelled;
     /** True while installThenMaybeRun is working; the install itself cannot be interrupted. */
     private boolean installing;
+    /** True once anything has been written to the shared console, so it stays attached. */
+    private boolean consoleUsed;
+    /** Open for the duration of a run; written from the runner thread, guarded by logLock. */
+    private Writer runLogWriter;
+    private final Object logLock = new Object();
     /** The executable found by the last {@link #refreshInstallState()}, or null when missing. */
     private volatile Path glissadeExe;
     /** Whether the GUI may install: true only for the environment it manages itself. */
     private volatile boolean managedEnvironment;
 
     public FdrPane(Window owner, Settings settings, Label sharedStatus, ProgressBar sharedProgress,
-                   Consumer<String> consoleOut, InlineValidation validation) {
+                   BiConsumer<String, Boolean> consoleOut, InlineValidation validation) {
         this.owner = owner;
         this.settings = settings;
         this.sharedStatus = sharedStatus;
@@ -214,12 +222,13 @@ public class FdrPane extends BorderPane {
         TableColumn<GlissadeDiscoveries.Row, String> pep = new TableColumn<>("Peptide");
         pep.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(
                 c.getValue().peptide()));
-        TableColumn<GlissadeDiscoveries.Row, String> score = new TableColumn<>("Score");
-        score.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(
-                String.format(Locale.ROOT, "%.3f", c.getValue().score())));
-        TableColumn<GlissadeDiscoveries.Row, String> q = new TableColumn<>("q-value");
-        q.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(
-                formatQ(c.getValue().q())));
+        // Typed Double, formatted in the cell: a String column would sort "-1.500" before
+        // "-12.300" and put a "1.00e-05" q-value after "0.0500".
+        TableColumn<GlissadeDiscoveries.Row, Double> score =
+                numberCol("Score", GlissadeDiscoveries.Row::score,
+                        v -> String.format(Locale.ROOT, "%.3f", v));
+        TableColumn<GlissadeDiscoveries.Row, Double> q =
+                numberCol("q-value", GlissadeDiscoveries.Row::q, FdrPane::formatQ);
         table.getColumns().setAll(List.of(pep, score, q));
         table.setItems(shown);
         table.setPlaceholder(new Label("Run glissade to list de novo peptides with their q-values."));
@@ -230,6 +239,26 @@ public class FdrPane extends BorderPane {
         VBox box = new VBox(6, summary, table);
         VBox.setVgrow(box, Priority.ALWAYS);
         return box;
+    }
+
+    /** A right-aligned numeric column that sorts on the number and shows {@code text} of it. */
+    private static TableColumn<GlissadeDiscoveries.Row, Double> numberCol(
+            String name, Function<GlissadeDiscoveries.Row, Double> getter,
+            Function<Double, String> text) {
+        TableColumn<GlissadeDiscoveries.Row, Double> col = new TableColumn<>(name);
+        col.setCellValueFactory(c -> new ReadOnlyObjectWrapper<>(getter.apply(c.getValue())));
+        col.setCellFactory(c -> new TableCell<>() {
+            @Override
+            protected void updateItem(Double v, boolean empty) {
+                super.updateItem(v, empty);
+                setText(empty || v == null ? "" : text.apply(v));
+            }
+        });
+        // Size on what is displayed, not on Double.toString().
+        col.getProperties().put(TableUtils.DISPLAY_TEXT,
+                (Function<GlissadeDiscoveries.Row, String>) r -> text.apply(getter.apply(r)));
+        col.setStyle("-fx-alignment: CENTER-RIGHT;");
+        return col;
     }
 
     private static String formatQ(double q) {
@@ -266,6 +295,11 @@ public class FdrPane extends BorderPane {
         t.start();
     }
 
+    /**
+     * @param ref the commit recorded for the environment the GUI manages; meaningless for a
+     *            glissade the user installed in their own environment, so it is only read when
+     *            {@code managed} is true
+     */
     private void paintInstallState(boolean installed, boolean managed, Optional<String> ref) {
         if (!installed) {
             installLabel.setText("glissade: not installed");
@@ -274,7 +308,7 @@ public class FdrPane extends BorderPane {
             installButton.setManaged(managed);
             return;
         }
-        String current = ref.orElse("");
+        String current = managed ? ref.orElse("") : "";
         boolean outdated = managed && !current.isEmpty()
                 && !current.equals(GlissadeInstaller.GLISSADE_REF);
         if (outdated) {
@@ -430,15 +464,26 @@ public class FdrPane extends BorderPane {
         if (e != null) {
             return e;
         }
-        String denovo = denovoField.getText().trim();
+        // The absolute path, because that is what GlissadeRunner.command passes and therefore the
+        // only string glissade's own substring checks ever see. A relative "psms.txt" typed while
+        // sitting in a percolator/ folder is accepted by glissade and must be accepted here.
+        String denovo = absolutePath(denovoField);
         if (GlissadeChecks.denovoFormat(denovo) == GlissadeChecks.DenovoFormat.UNSUPPORTED) {
             return new ValidationError("glissade reads .mzTab (Casanovo), .csv (InstaNovo) and "
                     + ".tab (DeepNovo) de novo results.", denovoField);
         }
-        if (!GlissadeChecks.looksLikePercolator(psmField.getText().trim())) {
+        if (!GlissadeChecks.formatIsUnambiguous(denovo)) {
+            return new ValidationError("Another format's extension appears earlier in this path ("
+                    + denovo + "), and glissade picks its reader from the whole path — it would "
+                    + "read this file as "
+                    + GlissadeChecks.glissadeDenovoFormat(denovo).toString().toLowerCase(Locale.ROOT)
+                    + " and exit without writing anything. Rename the file or the folder.",
+                    denovoField);
+        }
+        if (!GlissadeChecks.looksLikePercolator(absolutePath(psmField))) {
             return new ValidationError(percolatorMessage(), psmField);
         }
-        if (!GlissadeChecks.looksLikePercolator(peptideField.getText().trim())) {
+        if (!GlissadeChecks.looksLikePercolator(absolutePath(peptideField))) {
             return new ValidationError(percolatorMessage(), peptideField);
         }
         if (GlissadeChecks.denovoFormat(denovo) == GlissadeChecks.DenovoFormat.MZTAB
@@ -448,6 +493,12 @@ public class FdrPane extends BorderPane {
                     + "mzML/mzXML input.", denovoField);
         }
         return null;
+    }
+
+    /** The field's text as the absolute path the command line will carry. */
+    private static String absolutePath(TextField field) {
+        String text = field.getText() == null ? "" : field.getText().trim();
+        return text.isEmpty() ? "" : new File(text).getAbsolutePath();
     }
 
     private static String percolatorMessage() {
@@ -477,7 +528,7 @@ public class FdrPane extends BorderPane {
             console("[warning] The FASTA has Windows (CRLF) line endings. glissade strips only the "
                     + "newline, so a peptide spanning a line wrap may be missed in the reference.");
         }
-        if (GlissadeChecks.denovoFormat(denovoField.getText().trim())
+        if (GlissadeChecks.denovoFormat(absolutePath(denovoField))
                 != GlissadeChecks.DenovoFormat.MZTAB) {
             console("[warning] glissade's tail model is hard-coded to Casanovo's profile, so a "
                     + "DeepNovo/InstaNovo result is scored with that profile.");
@@ -486,8 +537,7 @@ public class FdrPane extends BorderPane {
         List<String> command = GlissadeRunner.command(glissadeExe, denovo, psms, peptides, fasta,
                 bootstrapSpin.getValue());
         runStartMs = System.currentTimeMillis() - 3000L; // small clock-skew buffer
-        runLog = outputDir.toPath().resolve("glissade.log");
-        writeLogHeader(command);
+        openLog(command);
 
         cancelled = false;
         setRunning(true);
@@ -499,8 +549,7 @@ public class FdrPane extends BorderPane {
         status("Running glissade (this can take several minutes; the fit prints nothing until it "
                 + "finishes)…");
 
-        runner.start(command, outputDir,
-                (text, isTransient) -> Platform.runLater(() -> onOutput(text)),
+        runner.start(command, outputDir, this::onOutput,
                 (exit, err) -> Platform.runLater(() -> onFinished(exit, err, tsv)));
     }
 
@@ -525,39 +574,76 @@ public class FdrPane extends BorderPane {
         }
     }
 
-    private void writeLogHeader(List<String> command) {
-        appendLog("=== glissade run " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+    /** Open glissade.log for the run and write its header. One handle, held until the end. */
+    private void openLog(List<String> command) {
+        Path runLog = outputDir.toPath().resolve("glissade.log");
+        synchronized (logLock) {
+            try {
+                runLogWriter = Files.newBufferedWriter(runLog, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            } catch (IOException e) {
+                runLogWriter = null; // the console still has it all; a log is not worth failing a run
+                return;
+            }
+        }
+        logLine("=== glissade run " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
                 + " ===");
-        appendLog("glissade: " + glissadeExe
+        logLine("glissade: " + glissadeExe
                 + GlissadeInstaller.installedRef().map(r -> " (" + GlissadeInstaller.shortRef(r) + ")")
                 .orElse(""));
-        appendLog("$ " + String.join(" ", command));
+        logLine("$ " + String.join(" ", command));
     }
 
-    private void appendLog(String line) {
-        if (runLog == null) {
-            return;
-        }
-        try {
-            Files.writeString(runLog, line + System.lineSeparator(), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (IOException ignored) {
-            // The console still has everything; a missing log file must not fail the run.
+    private void logLine(String line) {
+        synchronized (logLock) {
+            if (runLogWriter == null) {
+                return;
+            }
+            try {
+                runLogWriter.write(line);
+                runLogWriter.write(System.lineSeparator());
+            } catch (IOException ignored) {
+                // A log that stops being writable must not fail the run.
+            }
         }
     }
 
-    private void onOutput(String text) {
-        console(text);
-        appendLog(text);
+    private void closeLog() {
+        synchronized (logLock) {
+            if (runLogWriter == null) {
+                return;
+            }
+            try {
+                runLogWriter.close();
+            } catch (IOException ignored) {
+                // nothing useful to do at the end of a run
+            }
+            runLogWriter = null;
+        }
+    }
+
+    /**
+     * One chunk of glissade output, on the runner thread: the file write and the parse happen here
+     * so the FX thread only does the UI. Progress refreshes are not logged - the log wants the
+     * committed lines, not every redraw of a bar.
+     */
+    private void onOutput(String text, boolean isTransient) {
+        if (!isTransient) {
+            logLine(text);
+        }
         OptionalDouble p = GlissadeDiscoveries.parsePi0(text);
-        if (p.isPresent()) {
-            pi0 = p;
-            status(String.format(Locale.ROOT, "Fitting done (inferred π0 = %.3f); writing results…",
-                    p.getAsDouble()));
-        }
+        Platform.runLater(() -> {
+            console(text, isTransient);
+            if (p.isPresent()) {
+                pi0 = p;
+                status(String.format(Locale.ROOT,
+                        "Fitting done (inferred π0 = %.3f); writing results…", p.getAsDouble()));
+            }
+        });
     }
 
     private void onFinished(int exit, Throwable error, File tsv) {
+        closeLog();
         setRunning(false);
         if (cancelled) {
             status("glissade stopped.");
@@ -593,7 +679,7 @@ public class FdrPane extends BorderPane {
 
     private void applyCutoff() {
         double cutoff = cutoffSpin.getValue() == null ? DEFAULT_Q_CUTOFF : cutoffSpin.getValue();
-        shown.setAll(allRows.stream().filter(r -> r.q() <= cutoff).toList());
+        shown.setAll(GlissadeDiscoveries.atOrBelow(allRows, cutoff));
         TableUtils.autoSizeColumns(table, 60);
         if (allRows.isEmpty()) {
             summary.setText("");
@@ -628,8 +714,29 @@ public class FdrPane extends BorderPane {
         }
     }
 
+    /** A committed console line (a warning, the echoed command line). */
     private void console(String line) {
-        consoleOut.accept(line);
+        console(line, false);
+    }
+
+    /**
+     * One chunk of console output. A transient chunk is a carriage-return progress refresh: it
+     * overwrites the previous one instead of being committed, which is what keeps a bootstrap
+     * progress bar from filling the console with thousands of lines and trimming the real output
+     * out of it.
+     */
+    private void console(String line, boolean isTransient) {
+        consoleUsed = true;
+        consoleOut.accept(line, isTransient);
+    }
+
+    /**
+     * Whether this pane has written anything to the shared console. MainApp keeps the console
+     * attached while this is true, so "see the console" after a failed run still points at
+     * something the user can read.
+     */
+    public boolean hasConsoleOutput() {
+        return consoleUsed;
     }
 
     private void status(String message) {

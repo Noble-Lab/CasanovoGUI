@@ -74,9 +74,9 @@ public final class GlissadeDiscoveries {
         return rows;
     }
 
-    /** How many rows are accepted at a q-value cutoff. */
-    public static long countAtOrBelow(List<Row> rows, double cutoff) {
-        return rows.stream().filter(row -> row.q() <= cutoff).count();
+    /** The rows accepted at a q-value cutoff, inclusive of the cutoff itself. */
+    public static List<Row> atOrBelow(List<Row> rows, double cutoff) {
+        return rows.stream().filter(row -> row.q() <= cutoff).toList();
     }
 
     /**

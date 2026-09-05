@@ -52,15 +52,16 @@ class GlissadeDiscoveriesTest {
     }
 
     @Test
-    @DisplayName("Counting at a cutoff is inclusive of the cutoff itself")
-    void countAtCutoff() {
+    @DisplayName("Filtering at a cutoff is inclusive of the cutoff itself")
+    void filterAtCutoff() {
         List<GlissadeDiscoveries.Row> rows = List.of(
                 new GlissadeDiscoveries.Row("A", -1, 0.005),
                 new GlissadeDiscoveries.Row("B", -2, 0.010),
                 new GlissadeDiscoveries.Row("C", -3, 0.011));
-        assertEquals(2, GlissadeDiscoveries.countAtOrBelow(rows, 0.01));
-        assertEquals(3, GlissadeDiscoveries.countAtOrBelow(rows, 1.0));
-        assertEquals(0, GlissadeDiscoveries.countAtOrBelow(rows, 0.001));
+        assertEquals(List.of("A", "B"),
+                GlissadeDiscoveries.atOrBelow(rows, 0.01).stream().map(GlissadeDiscoveries.Row::peptide).toList());
+        assertEquals(3, GlissadeDiscoveries.atOrBelow(rows, 1.0).size());
+        assertTrue(GlissadeDiscoveries.atOrBelow(rows, 0.001).isEmpty());
     }
 
     @Test

@@ -270,7 +270,7 @@ public class MainApp extends Application {
         viewTab = new Tab("View", viewPane);
         viewTab.setTooltip(FxUtils.tooltip("Map the de novo peptides in an mzTab back to proteins in a reference "
                 + "FASTA, with coverage and per-protein views."));
-        fdrPane = new FdrPane(primaryStage, settings, statusLabel, progressBar, s -> console.appendLine(s), validation); // fdr
+        fdrPane = new FdrPane(primaryStage, settings, statusLabel, progressBar, (text, isTransient) -> { if (isTransient) console.showProgress(text); else console.appendLine(text); }, validation); // fdr
         fdrPane.runningProperty().addListener((o, a, b) -> { updateChromeForTab(); refreshPreview(); refreshTabLock(isJobRunning() || convertingRaw); consoleFrame.setState(b ? ConsoleBorderEffect.State.RUNNING : ConsoleBorderEffect.State.IDLE); }); // fdr
         fdrTab = new Tab("FDR Control", fdrPane); // fdr
         fdrTab.setTooltip(FxUtils.tooltip("Control the false discovery rate of de novo peptides with glissade: needs the de novo result, a Percolator search of the same spectra, and the reference FASTA.")); // fdr
@@ -845,7 +845,9 @@ public class MainApp extends Application {
         // The View tab streams pepmap output to the shared console; show it only while a mapping
         // runs, and size it to sit just below the Run button so the settings panel stays unscrolled.
         boolean mapping = isViewTab() && viewPane.runningProperty().get();
-        boolean fdr = isFdrTab() && fdrPane.runningProperty().get(); // fdr
+        // Not just while it runs: a failed run's status line says "see the console", and the
+        // console holding glissade's traceback must still be there when the user looks. // fdr
+        boolean fdr = isFdrTab() && (fdrPane.runningProperty().get() || fdrPane.hasConsoleOutput()); // fdr
         paramsRow.setVisible(commandTab);
         paramsRow.setManaged(commandTab);
         cmdRow.setVisible(commandTab);
@@ -1857,7 +1859,7 @@ public class MainApp extends Application {
         File workingDir = inferWorkingDir(command);
         // Remember the inputs + where the result will land so "Open in PDV" can load it directly.
         pendingSpectra = spectra;
-        pendingWasDenovo = "sequence".equals(command.getSubcommand()) && !command.getArguments().contains("--evaluate"); // fdr
+        pendingWasDenovo = command.isDenovoSequencing(); // fdr
         pendingOutputDir = (workingDir != null) ? workingDir : new File(System.getProperty("user.dir"));
         limelight.onRunStarted(command, spectra); // limelight
         pendingRunStartMs = System.currentTimeMillis() - 3000L; // small clock-skew buffer
