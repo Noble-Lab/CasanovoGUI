@@ -1722,8 +1722,10 @@ public class ViewPane extends BorderPane {
         // ---- Peptide filtering: which de novo peptides are handed to the mapper at all.
         r = sectionHeader(grid, r, "Peptide filtering");
         gridRow(grid, r++, "Min peptide score", scoreSpin,
-                "Only map peptides whose best PSM scores at least this value, under the score "
-                        + "selected below. 0 maps every peptide.");
+                "Drop peptides whose best PSM scores below this value, under the score selected "
+                        + "below. They leave the run entirely, so they appear in neither the mapped "
+                        + "nor the unmapped table, with or without a reference FASTA. 0 = no score "
+                        + "filtering.");
         // Which score the cutoff above means. Two radios stacked on a column-spanning row, so the
         // pair costs the sidebar no width: a combo (or the radios side by side) is wider than the
         // label + spinner columns and would widen the whole settings panel, leaving every spinner
