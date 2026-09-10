@@ -24,8 +24,17 @@
     -fx-pref-height: 26px;
     -fx-min-height: 26px;
 }
-.result-tabs .table-view .column-header .label {
+/* Direct child only: the header's own label. A descendant selector would also hit the title
+   Label that headerTip() installs as the column graphic, charging the padding twice and
+   clipping short header names ("Start", "Pre") that the width estimate sized for one. */
+.result-tabs .table-view .column-header > .label {
     -fx-padding: 0 5px 0 5px;
+}
+/* That title Label carries the padding of the theme's own .column-header .label rule otherwise,
+   which is the same double charge by another route. The header's label above pads it already.
+   Deliberately unscoped, so it travels with the class to any table built with headerTip(). */
+.column-header-title {
+    -fx-padding: 0;
 }
 /* Visually smaller sort arrow. Scale only — overriding its -fx-shape makes the arrow disappear. */
 .result-tabs .table-view .column-header .arrow {

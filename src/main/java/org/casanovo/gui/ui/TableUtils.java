@@ -46,13 +46,16 @@ public final class TableUtils {
     private static final double HEADER_PAD_TIGHT = 14; // unsorted header: text + insets only (no arrow shown)
     private static final double CELL_PAD = 16;    // cell insets
     private static final double MIN_W = 40;       // never narrower than this
+    private static final double MAX_W = 400;      // auto-size ceiling (prefWidth only, no maxWidth)
 
     private TableUtils() {
     }
 
     /**
      * Size every column to fit the wider of its header and its content (measured over the table's
-     * current rows), but never wider than {@code capChars} characters. A formatted column may register
+     * current rows), but never wider than {@code capChars} characters nor than {@link #MAX_W} pixels
+     * (the pixel ceiling is on the preferred width only, so a column can still be dragged wider — until
+     * the next call re-sizes it; a {@link #NO_CAP} column is exempt from both). A formatted column may register
      * a {@code Function<S,String>} under {@link #DISPLAY_TEXT} so the displayed (not raw) text is
      * measured; otherwise the cell value's {@code toString()} is used. Call after the rows are set
      * (e.g. after a page changes) — the table must use {@code UNCONSTRAINED_RESIZE_POLICY} for the
@@ -76,7 +79,8 @@ public final class TableUtils {
             }
             return;
         }
-        int colCap = Boolean.TRUE.equals(col.getProperties().get(NO_CAP)) ? Integer.MAX_VALUE : cap;
+        boolean noCap = Boolean.TRUE.equals(col.getProperties().get(NO_CAP));
+        int colCap = noCap ? Integer.MAX_VALUE : cap;
         String header = col.getText();
         if ((header == null || header.isEmpty()) && col.getGraphic() instanceof Labeled lbl) {
             header = lbl.getText(); // headerTip moves the title into a header-graphic Label
@@ -86,7 +90,8 @@ public final class TableUtils {
         // tight. A plain probe / always-on arrow padding left them too narrow or too wide. Callers re-run
         // this on sort-order changes so a freshly-sorted column grows to fit its arrow.
         double headerPad = table.getSortOrder().contains(col) ? HEADER_PAD : HEADER_PAD_TIGHT;
-        double w = textWidth(headerProbe, clip(header, colCap)) + headerPad;
+        double headerW = textWidth(headerProbe, clip(header, colCap)) + headerPad;
+        double w = headerW;
         Object fn = col.getProperties().get(DISPLAY_TEXT);
         for (S item : table.getItems()) {
             String s;
@@ -100,7 +105,13 @@ public final class TableUtils {
             }
             w = Math.max(w, textWidth(probe, clip(s, colCap)) + CELL_PAD);
         }
-        col.setPrefWidth(Math.max(MIN_W, w));
+        // Cap the content-driven width so one long-text column (a protein list, say) can't push the
+        // rest off screen. Only the preferred width is capped — no maxWidth is set, so the user can
+        // drag the column as wide as they like, until the next call re-sizes it (a sort or new data).
+        // A column never drops below its own header, and a NO_CAP column (which asked for its full
+        // text) is exempt.
+        double limit = noCap ? Double.MAX_VALUE : Math.max(MAX_W, headerW);
+        col.setPrefWidth(Math.max(MIN_W, Math.min(w, limit)));
     }
 
     private static double textWidth(Text probe, String s) {
