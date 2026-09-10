@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#  Casanovo GUI - build a self-contained native app with jpackage.
+#  CasanovoGUI - build a self-contained native app with jpackage.
 #  Run this ON the target OS - jpackage cannot cross-build.
 #
 #    ./packaging/package.sh              app-image only

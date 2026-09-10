@@ -347,7 +347,7 @@ public class MainApp extends Application {
         scene.getAccelerators().put(
                 new KeyCodeCombination(KeyCode.P, KeyCombination.SHORTCUT_DOWN),
                 this::openParameters);
-        primaryStage.setTitle("Casanovo GUI");
+        primaryStage.setTitle("CasanovoGUI");
         primaryStage.setScene(scene);
         primaryStage.setMinWidth(Math.min(780, screen.getWidth()));
         primaryStage.setMinHeight(Math.min(640, screen.getHeight()));
@@ -2719,7 +2719,7 @@ public class MainApp extends Application {
         String casa = (installedCasanovoVersion == null || installedCasanovoVersion.isEmpty())
                 ? "not found" : installedCasanovoVersion;
 
-        Label versions = new Label("Casanovo GUI " + UpdateChecker.guiVersion() + "\nCasanovo " + casa);
+        Label versions = new Label("CasanovoGUI " + UpdateChecker.guiVersion() + "\nCasanovo " + casa);
         // "de novo" italicised (Latin term of art), in the theme's default foreground.
         javafx.scene.text.TextFlow desc = italicPhrase("A GUI for Casanovo ", "de novo",
                 " peptide sequencing.\nConfigure inputs, run, and visualize the results.",
@@ -2760,7 +2760,7 @@ public class MainApp extends Application {
         content.setMaxWidth(480);
 
         Alert a = new Alert(Alert.AlertType.INFORMATION);
-        a.setTitle("About Casanovo GUI");
+        a.setTitle("About CasanovoGUI");
         a.setHeaderText(null);
         a.getDialogPane().setContent(content);
         if (stage != null) {

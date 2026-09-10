@@ -27,7 +27,7 @@ import java.util.regex.Pattern;
  * per-target skipped version):
  *
  * <ul>
- *   <li><b>Casanovo GUI</b> — this application. Its own version comes from the
+ *   <li><b>CasanovoGUI</b> — this application. Its own version comes from the
  *       Maven-filtered {@code project.properties} resource; the latest is the
  *       newest GitHub release of {@code Noble-Lab/CasanovoGUI}.</li>
  *   <li><b>Casanovo</b> — the Python tool the GUI drives. The <em>installed</em>
@@ -118,7 +118,7 @@ public final class UpdateChecker {
     /** Outcome for a single product: current vs latest, and whether newer exists. */
     public static final class UpdateInfo {
         public final Target target;
-        public final String displayName;     // "Casanovo GUI" / "Casanovo"
+        public final String displayName;     // "CasanovoGUI" / "Casanovo"
         public final String currentVersion;
         public final String latestVersion;
         public final String releaseDate;     // YYYY-MM-DD of the latest release, or null
@@ -358,13 +358,13 @@ public final class UpdateChecker {
         List<UpdateInfo> infos = new ArrayList<>();
         boolean networkError = false;
 
-        // --- Casanovo GUI (self) ---
+        // --- CasanovoGUI (self) ---
         try {
             Optional<ReleaseInfo> rel = fetchLatestGuiRelease();
             if (rel.isPresent()) {
                 String current = guiVersion();
                 boolean newer = isNewer(rel.get().tagName, current);
-                infos.add(new UpdateInfo(Target.GUI, "Casanovo GUI", current,
+                infos.add(new UpdateInfo(Target.GUI, "CasanovoGUI", current,
                         stripLeadingV(rel.get().tagName), rel.get().publishedDate,
                         rel.get().htmlUrl, newer));
             }
