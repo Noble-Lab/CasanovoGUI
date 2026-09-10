@@ -34,6 +34,19 @@ for you** — it downloads a private Python and Casanovo automatically (no Pytho
 > **Intel Macs:** use the cross-platform `CasanovoGUI-<version>.jar` from the
 > Releases page instead (it needs a Java 23+ runtime installed).
 
+### Tested configurations
+
+We have tested CasanovoGUI on the operating systems and computers listed below.
+
+| | Configuration |
+|---|---|
+| **Windows workstation** | Windows 11 (build 26200) · Intel Core Ultra 7 265K, 20 cores · 127 GB RAM · NVIDIA RTX 5000 Ada Generation · PyTorch 2.5.1 (CUDA 12.1) |
+| **Linux server** (remote execution) | Ubuntu 22.04.5 LTS · Intel Core i9-10980XE, 18 cores / 36 threads · 125 GB RAM · NVIDIA RTX A4000 16 GB (driver 560.35) |
+| **macOS laptop** (M5) | macOS Tahoe 26.6.2 · MacBook Air (15-inch, M5) · Apple M5 · 16 GB RAM |
+| **macOS laptop** (M4 Pro) | macOS Sequoia 15.7.4 · MacBook Pro (14-inch, 2024) · Apple M4 Pro · 48 GB RAM |
+| **Windows server** | Windows Server 2022 Standard, 21H2 (build 20348) · 2 × Intel Xeon Gold 6354 @ 3.00 GHz · 512 GB RAM |
+
+
 ## Documentation
 
 For a complete guide to using CasanovoGUI — installing it, running each task
