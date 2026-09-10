@@ -143,7 +143,7 @@ class RemoteInstallScriptTest {
     }
 
     /** What {@link #runDrawCheck} seeds into site-packages before running the script. */
-    private static final String STALE_PY = "# a stub from an older Casanovo GUI";
+    private static final String STALE_PY = "# a stub from an older CasanovoGUI";
     private static final String STALE_PTH = "import something_else";
 
     /**

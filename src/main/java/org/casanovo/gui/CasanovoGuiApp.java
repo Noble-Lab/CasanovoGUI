@@ -4,7 +4,7 @@ import javafx.application.Application;
 import org.casanovo.gui.ui.MainApp;
 
 /**
- * Launcher for the Casanovo GUI.
+ * Launcher for CasanovoGUI.
  *
  * <p>This class deliberately does <b>not</b> extend {@link Application}. When a
  * JavaFX application's main class extends {@code Application} and is launched

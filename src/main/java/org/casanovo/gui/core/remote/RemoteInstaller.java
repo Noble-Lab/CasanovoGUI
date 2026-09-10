@@ -222,7 +222,7 @@ public final class RemoteInstaller {
      * {@code AttributeError} should anything ever call them. Nothing in a Casanovo run does; see {@link #rdkitDrawStubLines()}.
      */
     static final String DRAW_STUB_PY = """
-            \"\"\"Written by Casanovo GUI. Stands in for rdkit.Chem.Draw on a host that lacks the X11
+            \"\"\"Written by CasanovoGUI. Stands in for rdkit.Chem.Draw on a host that lacks the X11
             libraries it links against (libXrender, libXext). Casanovo never draws a molecule; the
             module is merely imported, by DepthCharge. Delete this file and the .pth beside it to
             restore the real module.\"\"\"

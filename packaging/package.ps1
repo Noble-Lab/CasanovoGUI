@@ -1,5 +1,5 @@
 # ============================================================
-#  Casanovo GUI - build a self-contained Windows app with jpackage.
+#  CasanovoGUI - build a self-contained Windows app with jpackage.
 #  CI-friendly twin of build-exe.bat (no hardcoded paths: uses mvn and
 #  jpackage from PATH, or $env:JAVA_HOME). App-image by default;
 #  -Installer adds a .msi (requires the WiX Toolset).
