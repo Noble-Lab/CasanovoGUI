@@ -1373,6 +1373,8 @@ public class ViewPane extends BorderPane {
      */
     private static <S, T> void headerTip(TableColumn<S, T> col, String name, String description, boolean rightAligned) {
         Label header = new Label(name);
+        header.getStyleClass().add("column-header-title"); // settings.css zeroes its padding — the
+        // header's own label already supplies it, and paying it twice clips short names.
         header.setTooltip(tip(description));
         header.setMaxWidth(Double.MAX_VALUE); // fill the header so alignment within it takes effect
         header.setAlignment(rightAligned ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
@@ -1384,7 +1386,8 @@ public class ViewPane extends BorderPane {
         // here. prefWidth overrides the data-oriented widths set above; minWidth keeps headers from
         // clipping. Harmless on group columns (their width is the sum of their leaves).
         javafx.scene.text.Text probe = new javafx.scene.text.Text(name);
-        probe.setFont(javafx.scene.text.Font.font(13));
+        // Headers render bold, so measure bold — a plain probe under-measures and clips short names.
+        probe.setFont(javafx.scene.text.Font.font(null, javafx.scene.text.FontWeight.BOLD, 13));
         double headerWidth = probe.getLayoutBounds().getWidth() * 1.15 + 20;
         col.setMinWidth(headerWidth);
         col.setPrefWidth(headerWidth);
