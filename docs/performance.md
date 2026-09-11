@@ -1,98 +1,107 @@
 # Performance
 
-How fast Casanovo runs, and how much memory it needs, measured with the same
-Casanovo installation that CasanovoGUI sets up. **A GPU is not required**: it
-makes a run faster, not possible.
+CPU/GPU speed and memory use, measured in CasanovoGUI-managed environments.
+Casanovo runs on either CPU or GPU.
 
-The figures below are re-measured for each major Casanovo release on the same
-workstation, so that the performance of the current release is always on record
-and can be compared with earlier ones. The script that produces them is
-[`.github/scripts/speed_benchmark.py`](../.github/scripts/speed_benchmark.py).
+Repeat the test for each major Casanovo or CasanovoGUI release with
+[speed_benchmark.py](../.github/scripts/speed_benchmark.py), using the same input
+and workstation.
 
 ## Test data
 
-One complete data-dependent acquisition run of a HeLa tryptic digest acquired on
-an Orbitrap Eclipse (`Loo_20240205_BoAI_46_DDA_HeLa01`, ProteomeXchange
+One complete data-dependent acquisition run of a HeLa tryptic digest
+(`Loo_20240205_BoAI_46_DDA_HeLa01`, ProteomeXchange
 [PXD066485](https://proteomecentral.proteomexchange.org/cgi/GetDataset?ID=PXD066485)),
-converted to mzML. The 50-spectrum example bundled with CasanovoGUI is an excerpt
-of this run. Each device sequences the whole file with Casanovo's default
-parameters, so the numbers are what a user would see for a run of this size
-without any tuning.
-
-## Latest results
+converted to mzML. The mzML header identifies the instrument as an Orbitrap Eclipse.
+Both CPU and GPU tests use the whole file.
 
 <!-- BENCHMARK:BEGIN -->
+## Casanovo benchmark
+
+- **Benchmarked:** 2026-09-01 to 2026-09-02 (America/Los_Angeles)
 - **Input:** Loo_20240205_BoAI_46_DDA_HeLa01.mzML
 - **Operating system:** Windows 11 (build 26200)
 - **CPU:** Intel(R) Core(TM) Ultra 7 265K (20 cores / 20 threads)
-- **System memory:** 127 GB
+- **System memory:** 127 GiB
 - **GPU:** NVIDIA RTX 5000 Ada Generation (driver 595.95)
-- **PyTorch:** 2.5.1+cu121 (CUDA 12.1)
 - **Casanovo:** 5.2.1
-- **Benchmarked:** 2026-09-01
+- **PyTorch:** 2.5.1+cu121 (CUDA 12.1)
+- **Model:** casanovo_orbitrap_v5-2-0.ckpt
+- **Settings:** batch size: 1024; beams: 1; precision: 32-true
 
-- **GPU memory baseline before the run:** 0 MiB (per-process accounting unavailable in this driver mode)
+| Device | MS/MS spectra | Total time | Spectra/s | Peak private RAM |
+|---|---:|---:|---:|---:|
+| GPU | 86,311 | 530 s | 163 | 1.71 GiB |
+| CPU | 86,311 | 10,926 s | 8 | 5.69 GiB |
 
-| Device | Hardware | MS/MS spectra | Total time | Prediction time | Spectra/s (total) | Spectra/s (prediction) | Peak host RAM | Peak GPU memory | GPU tensors |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| GPU | NVIDIA RTX 5000 Ada Generation | 86,311 | 530 s | 380 s | 163 | 227 | 1.71 GB | 20,108 MiB | 2,226 MiB |
-| CPU | Intel(R) Core(TM) Ultra 7 265K | 86,311 | 10,926 s | 10,784 s | 8 | 8 | 5.69 GB | n/a | n/a |
+Total time includes model loading and result writing. These are single runs per device.
 
-*Total time* covers the whole invocation, including model loading and writing results;
-*prediction time* is Casanovo's own reported figure, which excludes writing the mzTab.
+Private RAM excludes shared pages; the operating system and other applications need extra RAM.
+The sampler uses resident memory (RSS) where private memory (USS) is unavailable.
+RAM is sampled about every two seconds; brief peaks may be missed.
 
-All memory figures are for the Casanovo process tree alone, not the machine. *Peak host
-RAM* is the unique set size, so pages shared between worker processes are counted once.
-*Peak GPU memory* is the figure to compare against a card's capacity, since it
-includes the CUDA context and the caching allocator's reserved blocks; where the driver
-cannot attribute memory per process (WDDM mode on Windows) it is measured as the rise
-above the pre-run baseline, which is reported so the reader can see the card was
-otherwise idle. *GPU tensors* is Casanovo's own
-`torch.cuda.max_memory_allocated()`, which counts live tensor bytes only and is
-necessarily smaller.
 <!-- BENCHMARK:END -->
 
-## Reproducing the measurement
+<!-- GPU-MEMORY:BEGIN -->
+## GPU memory budget test
 
-1. Let CasanovoGUI install Casanovo (start any analysis once), or use your own
-   Casanovo environment. The GUI's installation lives at
-   `%USERPROFILE%\.casanovo-gui\.venv\Scripts\casanovo.exe` on Windows and
-   `~/.casanovo-gui/.venv/bin/casanovo` on macOS and Linux, with a `python`
-   executable beside it.
-2. Run the script with that environment's Python (it needs `psutil`, which
-   Casanovo already depends on):
+- **Benchmarked:** 2026-09-10 to 2026-09-11 (America/Los_Angeles)
+- **Input:** Loo_20240205_BoAI_46_DDA_HeLa01.mzML
+- **GPU:** NVIDIA RTX 5000 Ada Generation (30 GiB visible; driver 595.95)
+- **Operating system:** Windows 11 (build 26200)
+- **Casanovo:** 5.2.1
+- **CasanovoGUI:** 1.4.0 (source checkout)
+- **PyTorch:** 2.14.0+cu132 (CUDA 13.2)
+- **Model:** casanovo_orbitrap_v5-2-0.ckpt
+- **Settings:** batch size: 1024; beams: 1; precision: 32-true
 
-   ```sh
-   python .github/scripts/speed_benchmark.py \
-       --input Loo_20240205_BoAI_46_DDA_HeLa01.mzML \
-       --casanovo ~/.casanovo-gui/.venv/bin/casanovo \
-       --devices gpu cpu --out-dir benchmark
-   ```
+Each run uses the same input, model and settings in a new process.
+The PyTorch limit covers tensors and cached memory. Peak GPU memory also includes CUDA overhead.
 
-   In PowerShell, where `\` is not a line continuation:
+| PyTorch limit (GiB) | Outcome | Total time (s) | Peak GPU memory (GiB) | PSM rows | Matches baseline |
+|---:|---|---:|---:|---:|---|
+| Unrestricted | Completed | 513.2 | 19.64 | 86,311 | Yes |
+| 4.0 | Completed | 498.8 | 4.23 | 86,311 | Yes |
+| 2.5 | CUDA OOM | 107.8 | 2.73 | 9,216 | n/a |
+| 3.0 | CUDA OOM | 191.5 | 3.30 | 27,646 | n/a |
+| 3.5 | Completed | 507.9 | 3.82 | 86,311 | Yes |
+| 3.5 | Completed | 500.8 | 3.79 | 86,311 | Yes |
 
-   ```powershell
-   python .github\scripts\speed_benchmark.py `
-       --input Loo_20240205_BoAI_46_DDA_HeLa01.mzML `
-       --casanovo $env:USERPROFILE\.casanovo-gui\.venv\Scripts\casanovo.exe `
-       --devices gpu cpu --out-dir benchmark
-   ```
+**Lowest tested successful PyTorch limit: 3.5 GiB (2 complete runs).**
+**Observed GPU memory at that limit reached 3.82 GiB.**
+A budget test does not verify that a physical card of that size can run the job.
 
-   Use `--devices mps` on Apple Silicon. The CPU run of a full DDA file takes a
-   few hours; nothing else should use the machine while it runs, because the
-   memory figures are for the Casanovo process alone but the timing is not.
-3. The script writes `benchmark/benchmark.md` (the table and machine details) and
-   `benchmark/benchmark.json` (the same data for scripts).
+"Matches baseline" compares every PSM row with the unrestricted run.
+OOM means out of memory; those row counts are partial results.
 
-## Updating this page for a new release
+GPU memory is sampled about every two seconds; brief peaks may be missed.
+Device readings subtract starting usage (0 MiB in these runs).
+Other GPU activity can affect these readings.
 
-Run the measurement above on the release's Casanovo version. The next step
-overwrites what is on this page, so if the comparison is worth showing, first move
-the current block — table and machine details together, since neither means much
-without the other — under the "Previous releases" heading below. Then replace
-everything between the `BENCHMARK:BEGIN` and `BENCHMARK:END` markers with the
-contents of `benchmark.md`.
+<!-- GPU-MEMORY:END -->
 
-## Previous releases
+## Running the benchmark for a release
 
-None yet: the table above is the first measurement on record.
+Use the release's GUI-managed Casanovo environment, the full test input and a local
+model checkpoint. Run from the repository root on a machine with one NVIDIA GPU;
+update the checkpoint and output-directory name for the release.
+
+```powershell
+& "$env:USERPROFILE\.casanovo-gui\.venv\Scripts\python.exe" .github\scripts\speed_benchmark.py `
+    --input test_data\Loo_20240205_BoAI_46_DDA_HeLa01\Loo_20240205_BoAI_46_DDA_HeLa01.mzML `
+    --casanovo "$env:USERPROFILE\.casanovo-gui\.venv\Scripts\casanovo.exe" `
+    --model "$env:LOCALAPPDATA\casanovo\casanovo_orbitrap_v5-2-0.ckpt" `
+    --devices gpu cpu `
+    --gpu-memory-budgets 4 2.5 3 3.5 3.5 `
+    --out-dir test_data\benchmark-casanovo-5.2.1-gui-1.4.0 `
+    --update-doc docs\performance.md
+```
+
+Use a new or empty output directory and allow several hours. The script uses the
+release's default settings. Adjust the PyTorch limits as needed and repeat the
+lowest successful limit. To reuse this report's settings, add
+`--config docs\benchmarks\gpu-memory-2026-09-11.yaml`.
+
+Results and logs are saved under `--out-dir`, including `benchmark.md` and
+`benchmark.json`. `--update-doc` updates both result tables after a successful run;
+omit it to save results without changing this page.
