@@ -61,4 +61,4 @@ measured for each major Casanovo release in **[Performance](docs/performance.md)
 
 ## How to cite
 
-Bo Wen, Kai Li, Michael Riffle, Michael J. MacCoss, Wout Bittremieux, William Stafford Noble. ["CasanovoGUI: a cross-platform desktop application for deep learning-based de novo peptide sequencing with Casanovo"](https://doi.org/10.64898/2026.07.11.737889). ***bioRxiv***. 2026.07.11.737889
+Bo Wen, Kai Li, Michael Riffle, Michael J. MacCoss, Wout Bittremieux, William Stafford Noble; [CasanovoGUI: A Cross-Platform Desktop Application for Deep Learning-Based De Novo Peptide Sequencing with Casanovo](https://doi.org/10.1021/acs.jproteome.6c00617). *J. Proteome Res.* 2026; https://doi.org/10.1021/acs.jproteome.6c00617
