@@ -1,4 +1,4 @@
-# CasanovoGUI
+# [CasanovoGUI](https://doi.org/10.1021/acs.jproteome.6c00617)
 
 ![Downloads](https://img.shields.io/github/downloads/Noble-Lab/CasanovoGUI/total.svg) ![Release](https://img.shields.io/github/release/Noble-Lab/CasanovoGUI.svg)![Downloads](https://img.shields.io/github/downloads/Noble-Lab/CasanovoGUI/latest/total)
 
